@@ -145,9 +145,13 @@ function parseDate(text, now) {
   // 下周三 / 下下周一 / 下下周周五 / 本周一 / 周三 / 星期四
   // 「下」前不能是数词，否则「记一下周六」「等一下周报」里的「下」会被吃成「下周六」。
   // 「周」可以叠写（「下下周周五」和「下下周五」是一回事），所以第二段「周」是可选的。
-  if ((match = /(?<![\d一二两三四五六七八九十])(下下个?|下个?|本|这|这个)?\s*(?:周|星期|礼拜)\s*(?:周|星期|礼拜)?\s*([一二三四五六日天七])/u.exec(text))) {
+  // 第二组允许「周一三五」这种连写的多天：没有「每」就不生成重复规则，
+  // 但整段都要从标题里剔掉，否则「三五」会粘在标题上（「三五健身」）。
+  // 日期仍按第一个星期几算，语义与「只认带每的写法」的取舍一致。
+  // 多天之间只认连写或「和/、」，不跨空格：否则「下周三 一点」里的「一」会被连着吃掉。
+  if ((match = /(?<![\d一二两三四五六七八九十])(下下个?|下个?|本|这|这个)?\s*(?:周|星期|礼拜)\s*(?:周|星期|礼拜)?\s*([一二三四五六日天七](?:(?:和|、|,|，)?(?:周|星期|礼拜)?[一二三四五六日天七])*)/u.exec(text))) {
     const prefix = match[1] ?? '';
-    const targetDay = WEEKDAY[match[2]];
+    const targetDay = WEEKDAY[match[2][0]];
     const today = startOfDay(now);
     const currentDay = today.getDay() === 0 ? 7 : today.getDay();
     // 以「本周一」为原点数周，而不是在「距今天几天」上打补丁。
@@ -536,7 +540,9 @@ function parseDuration(text) {
 }
 
 const FILLERS = /^(?:帮我|请|麻烦|给我|我想要|我想|我要|想要|提醒我|提醒|叫我|添加|新增|加个|加一个|建个|安排|记一下|记个|创建一个|现在|马上|一会儿|待会儿|一个|个)\s*/u;
-const TRAILING = /(?:的|吧|呀|啊|呢|哦|，|,|。|\.|、|\s)+$/u;
+// 「的」不在这里清：它常是结构助词（「吃点好的」「我的生日」），砍掉会改掉意思。
+// 时间片段被剔走后真正悬空的「的」，由 LEADING 和 DANGLING_DE 处理。
+const TRAILING = /(?:吧|呀|啊|呢|哦|，|,|。|\.|、|\s)+$/u;
 const LEADING = /^[的，,。.、:：\s]+/u;
 /**
  * 时间/时长片段被剔走后，动词和宾语之间常留下一截悬空的助词：
@@ -585,6 +591,8 @@ const LANDMARKS = [
   '澡堂', '澡堂子', '浴室', '游泳馆', '洗衣房', '卫生间', '洗手间', '厕所',
   // 常去的店：不加这些就得靠模型兜，而模型隔着网络才知道「星巴克」是地点
   '星巴克', '麦当劳', '肯德基', '瑞幸', '便利店', '健身房', '自习室', '打印店', '快递站', '驿站',
+  // 口语里最高频的几个泛地点。少了它们，「在万达」「去公司开会」会把整截话留在标题里
+  '公司', '单位', '家里', '万达', '海底捞', '银行', '影院', '电影院', '菜市场', '地铁站',
 ];
 /**
  * 在「华东理工大学图书馆学习」里找地名的右边界。
@@ -674,11 +682,12 @@ function parseLocation(text) {
     }
   }
 
-  // ④ 句首就是带房间号的教学楼：「三教201交作业」「教三201 交作业」。
-  //    必须带门牌号，否则「三教活动」这种普通名词会被误当地点。
-  match = /^(教[一二三四五六七八九十\d]{1,2}|[一二三四五六七八九十\d]{1,3}教)\s*([A-Za-z]?\d{2,4}(?:[-－]\d{1,4})?)/u.exec(text);
+  // ④ 带房间号的教学楼 / 楼号：「三教201交作业」「八号楼302 开会」。
+  //    句首或句中都认（「明天下午三点 教三201 交作业」以前会把地点烂在标题里）。
+  //    必须带门牌号，否则「三教活动」「八号楼开会」这种普通名词会被误当地点。
+  match = /(?:^|[，,、\s])((?:教[一二三四五六七八九十\d]{1,2}|[一二三四五六七八九十\d]{1,3}教|[一二三四五六七八九十\d]{1,3}号?楼)\s*([A-Za-z]?\d{2,4}(?:[-－]\d{1,4})?))/u.exec(text);
   if (match) {
-    return { location: match[1] + match[2], matched: match[0] };
+    return { location: match[1].replace(/\s+/gu, ''), matched: match[1] };
   }
 
   return parseInlinePlace(text);
@@ -820,15 +829,23 @@ export function parseEvent(input, now = new Date(), options = {}) {
 
   // 三个出口（相对时间 / 全天 / 常规）共用；调用时 pieces 已经填满
   const finish = (fields) => {
-    const raw = cleanTitle(strip(text, pieces.map((piece) => piece.text)));
+    let title = cleanTitle(strip(text, pieces.map((piece) => piece.text)));
+    let place = location;
+    // 「后天 去银行」「九点四十五 到公司」：介词短语本身就是整件事，
+    // 切成地点后标题就空了。把那段原文还回标题，别建一条没有名字的日程。
+    // 只管「在/到/去」这种介词短语：显式写的「地点：X」「@X」按既有规格保持空标题。
+    if (!title && place && locPart && /^(?:在|到|去)/u.test(locPart.matched)) {
+      title = cleanTitle(locPart.matched);
+      place = undefined;
+    }
     // 「每两周复查一次」结尾的「一次」说的是频率，不是要做的事。
     // 只在有重复规则时才清，免得把「买一次菜」这种正常标题砍掉。
-    const trimmed = repeatInfo ? raw.replace(/\s*(?:一|两|二|三|\d{1,2})\s*(?:次|回|遍)\s*$/u, '').trim() : raw;
+    const trimmed = repeatInfo ? title.replace(/\s*(?:一|两|二|三|\d{1,2})\s*(?:次|回|遍)\s*$/u, '').trim() : title;
     return {
-      title: trimmed || raw,
+      title: trimmed || title,
       matched: pieces.map((piece) => piece.text),
       spans: locateSpans(text, pieces),
-      location,
+      location: place,
       calendar,
       repeat: repeatInfo,
       alarmMinutes: alarm?.minutes ?? null,
@@ -1064,9 +1081,14 @@ export function parseEvent(input, now = new Date(), options = {}) {
   }
 
   if (!start) {
+    if (!datePart.matched) throw new Error('没能从这句话里找到时间，请说清楚日期和时间，例如「明天下午三点到四点开会」');
+    // 只说了「20 分钟」却没说几点开始：以前按全天 24 小时写进去，用户明说的时长
+    // 被静默吞掉。宁可让他补一句钟点，也不猜一个起点（和「每周三次」直接报错同理）。
+    if (duration) {
+      throw new Error('说了时长却没说几点开始，请补一句钟点，例如「明天上午九点 开会 20分钟」。');
+    }
     // 没说钟点、只说了日期：整天都算，做成全天日程。
     start = new Date(datePart.date);
-    if (!datePart.matched) throw new Error('没能从这句话里找到时间，请说清楚日期和时间，例如「明天下午三点到四点开会」');
     const nextDay = new Date(start.getTime() + 86400000);
     return finish({ start, end: nextDay, allDay: true, durationAssumed: false, rolled: false });
   }
