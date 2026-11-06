@@ -230,7 +230,7 @@ export async function listCalendars() {
       offline: false,
       default: config.calendar || undefined,
       count: calendars.length,
-      calendars: calendars.map((calendar) => ({ name: calendar.name, writable: calendar.writable })),
+      calendars: calendars.map((calendar) => ({ name: calendar.name, writable: calendar.writable, color: calendar.color ?? null })),
       summary: calendars.map((calendar) => `· ${calendar.name}${calendar.writable ? '' : '（只读）'}${calendar.name === config.calendar ? ' ← 默认' : ''}`).join('\n'),
     };
   } catch (error) {

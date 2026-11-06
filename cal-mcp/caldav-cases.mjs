@@ -48,6 +48,8 @@ let port = 0;
 // 打开后多返回一个「坏日历」：列表时它所在的 REPORT 会返 500。
 // 关着时服务端行为和原来完全一致，前面 16 条用例不受影响。
 let brokenCalendar = null;
+// 打开后服务端在日历属性里带上颜色，用来验证业务层没有把 color 丢掉。
+let calendarColor = null;
 
 const escapeXmlText = (text) => text.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
 const unescapeXmlText = (text) => text.replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&amp;/gu, '&');
@@ -83,8 +85,13 @@ const CALENDARS = `<?xml version="1.0" encoding="UTF-8"?>
 </d:response></d:multistatus>`;
 
 /** 打开 brokenCalendar 时，在日历列表里额外塞一个会返 500 的日历。 */
-const calendarsXml = (broken) => {
-  if (!broken) return CALENDARS;
+const calendarsXml = (broken, color) => {
+  const colorProp = color
+    ? `<cs:calendar-color xmlns:cs="http://calendarserver.org/ns/">${color}</cs:calendar-color>`
+    : '';
+  // 只给第一个日历加颜色属性；既有用例在 color 为 null 时拿到的响应与原来完全一致。
+  const base = CALENDARS.replace('<d:current-user-privilege-set>', `${colorProp}<d:current-user-privilege-set>`);
+  if (!broken) return base;
   const extra = `<d:response>
   <d:href>/u/broken/</d:href>
   <d:propstat><d:prop>
@@ -94,7 +101,7 @@ const calendarsXml = (broken) => {
     <d:current-user-privilege-set><d:privilege><d:write/></d:privilege></d:current-user-privilege-set>
   </d:prop></d:propstat>
 </d:response>`;
-  return CALENDARS.replace('</d:multistatus>', `${extra}</d:multistatus>`);
+  return base.replace('</d:multistatus>', `${extra}</d:multistatus>`);
 };
 
 const server = createServer(async (req, res) => {
@@ -118,7 +125,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'PROPFIND') {
     if (path === '/') return sendXml(PRINCIPAL);
     if (path === '/principals/u/') return sendXml(HOME);
-    if (path === '/u/') return sendXml(calendarsXml(brokenCalendar));
+    if (path === '/u/') return sendXml(calendarsXml(brokenCalendar, calendarColor));
   }
 
   if (req.method === 'REPORT') {
@@ -483,6 +490,44 @@ console.log(JSON.stringify({ partial: result.partial, failed: result.failed, sum
     }
   } finally {
     brokenCalendar = null;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ── 8. 日历颜色不能停在业务层 ─────────────────────────────
+const toolsCalsCode = `import { writeConfig } from ${JSON.stringify(STORE_URL)};
+import { listCalendars } from ${JSON.stringify(TOOLS_URL)};
+const port = process.argv[1];
+writeConfig({ baseUrl: 'http://127.0.0.1:' + port + '/', username: 'u', timeZone: 'Asia/Shanghai' });
+const result = await listCalendars();
+console.log(JSON.stringify({ calendars: result.calendars }));`;
+
+await check('listCalendars 把服务端的日历颜色透传给 CLI/MCP', async () => {
+  calendarColor = '#FF3B30FF';
+  const home = mkdtempSync(join(tmpdir(), 'dsh-color-'));
+  try {
+    const res = await runNode(toolsCalsCode, home, [String(port)]);
+    if (res.code !== 0) throw new Error(`子进程退出 ${res.code}：${res.err}`);
+    const data = JSON.parse(res.out);
+    expect(data.calendars.length, 1, '日历条数');
+    expect(data.calendars[0].name, '测试', '日历名');
+    expect(data.calendars[0].color, '#FF3B30FF', '日历颜色');
+  } finally {
+    calendarColor = null;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+await check('服务端不给颜色时 listCalendars 仍返回 color: null', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-nocolor-'));
+  try {
+    const res = await runNode(toolsCalsCode, home, [String(port)]);
+    if (res.code !== 0) throw new Error(`子进程退出 ${res.code}：${res.err}`);
+    const data = JSON.parse(res.out);
+    expect(data.calendars.length, 1, '日历条数');
+    expect(Object.prototype.hasOwnProperty.call(data.calendars[0], 'color'), true, 'color 字段是否存在');
+    expect(data.calendars[0].color, null, '无颜色时的 color');
+  } finally {
     rmSync(home, { recursive: true, force: true });
   }
 });
