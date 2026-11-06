@@ -22,7 +22,8 @@ export const DEFAULTS = {
   username: '',
   calendar: '',
   // 默认跟本机走：解析用的是机器时区，写入和文字显示也用同一时区，三者才不会错位。
-  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  // Intl 在极少数精简运行时会返回空值，回落上海，保证写入链路的 vtimezone 始终有合法值。
+  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
   llm: {
     enabled: false,
     provider: 'ollama',

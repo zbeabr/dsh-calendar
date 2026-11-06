@@ -2,7 +2,6 @@
   "baseUrl": "https://caldav.icloud.com/",
   "username": "you@example.com",
   "calendar": "学习",
-  "timeZone": "Asia/Shanghai",
   "llm": {
     "enabled": false,
     "provider": "ollama",

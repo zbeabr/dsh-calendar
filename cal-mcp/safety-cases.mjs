@@ -365,6 +365,20 @@ console.log(DEFAULTS.timeZone);`, home);
   }
 });
 
+await checkAsync('HOME 下没有 config.json、TZ=America/New_York 时文字时间按本机显示', async () => {
+  // tmpHome 只建目录、不写 config.json，确保走 DEFAULTS，不被本机已有配置覆盖。
+  const home = tmpHome('zone-noconfig');
+  try {
+    const res = await runNode(`process.env.TZ = 'America/New_York';
+const { formatRange } = await import(${JSON.stringify(TOOLS_URL)});
+console.log(formatRange(new Date(${JSON.stringify(ZONE_START)}), new Date(${JSON.stringify(ZONE_END)})));`, home);
+    expect(res.code, 0, '子进程退出码');
+    expect(res.out, '11/07周六 02:00–03:00', '无配置且本机为纽约时的文字时间');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 await checkAsync('配置时区与本机不同时 doctor 给出警告', async () => {
   const home = tmpHome('zone-doctor');
   try {
