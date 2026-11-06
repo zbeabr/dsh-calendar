@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: 解析器用例（Node）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 安装依赖
+        run: echo "后端零依赖，跳过 npm install"
+      - name: 跑 133 条解析用例
+        working-directory: cal-mcp
+        run: npm test
+
+  build-app:
+    name: 编译 App（macOS 14 / 双架构）
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 编译 arm64
+        run: |
+          swiftc -O cal-app/App.swift \
+            -target arm64-apple-macosx14.0 \
+            -o /tmp/DSHCalendar-arm64 \
+            -framework AppKit
+      - name: 编译 x86_64
+        run: |
+          swiftc -O cal-app/App.swift \
+            -target x86_64-apple-macosx14.0 \
+            -o /tmp/DSHCalendar-x86_64 \
+            -framework AppKit
+      - name: 合成通用二进制
+        run: lipo -create /tmp/DSHCalendar-arm64 /tmp/DSHCalendar-x86_64 -output /tmp/DSHCalendar
+      - name: 确认两个架构都在
+        run: |
+          file /tmp/DSHCalendar
+          lipo -archs /tmp/DSHCalendar
