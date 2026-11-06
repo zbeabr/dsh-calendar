@@ -538,6 +538,13 @@ function parseDuration(text) {
 const FILLERS = /^(?:帮我|请|麻烦|给我|我想要|我想|我要|想要|提醒我|提醒|叫我|添加|新增|加个|加一个|建个|安排|记一下|记个|创建一个|现在|马上|一会儿|待会儿|一个|个)\s*/u;
 const TRAILING = /(?:的|吧|呀|啊|呢|哦|，|,|。|\.|、|\s)+$/u;
 const LEADING = /^[的，,。.、:：\s]+/u;
+/**
+ * 时间/时长片段被剔走后，动词和宾语之间常留下一截悬空的助词：
+ * 「吃个半小时的麻辣烫」→「吃个的麻辣烫」，「吃半小时的麻辣烫」→「吃的麻辣烫」。
+ * 用 lookbehind 限定前面是动作动词，免得把「我的生日」砍成「我生日」；
+ * 只清「个/了/过 + 的」这类残渣，正常的「洗个澡」里没有「的」，不受影响。
+ */
+const DANGLING_DE = /(?<=[吃喝买点做逛看玩打约聊谈见取送拿办找学考洗剪寄借还换练读背写画刷修])(?:个|了|过)?的(?=\S)/gu;
 
 function cleanTitle(text) {
   let title = text.replace(LEADING, '');
@@ -559,6 +566,7 @@ function cleanTitle(text) {
   title = title.replace(/[\s，,、;；:：]+[在到去于]$/u, '').replace(/[\s，,、;；:：]+$/u, '');
   // strip() 用空格占位，纯中文标题里不该留这些空格（英文/数字标题要保留）
   if (!/[A-Za-z0-9]/u.test(title)) title = title.replace(/\s+/gu, '');
+  title = title.replace(DANGLING_DE, '');
   title = title.replace(/\s{2,}/gu, ' ').trim();
   return title;
 }
