@@ -18,6 +18,31 @@ DIST="$ROOT/dist"
 STAGE="$DIST/$NAME"
 APP_NAME="DSH 日历"
 
+# ── 打包前：包里的代码必须等于仓库里的代码 ──────────────────────
+# 历史教训：v1.0.0 的 dmg 里装的是修复前的源码，脚本一声不吭打了出去，
+# 最后是靠人手动比对 sha256 才发现。两道闸：工作区干净、测试全绿。
+if [ -n "${ALLOW_DIRTY:-}" ]; then
+  echo "⚠ ALLOW_DIRTY=1：跳过工作区检查，产出的包可能含未提交改动"
+else
+  DIRTY="$(cd "$ROOT" && git status --porcelain)"
+  if [ -n "$DIRTY" ]; then
+    echo "✗ 工作区有未提交改动，打出来的包会和仓库对不上：" >&2
+    echo "$DIRTY" >&2
+    echo "  先提交，或用 ALLOW_DIRTY=1 强制打包（不建议）。" >&2
+    exit 1
+  fi
+fi
+
+if [ -z "${SKIP_TEST:-}" ]; then
+  echo "▸ 跑测试"
+  if ! ( cd "$ROOT/cal-mcp" && npm test > /tmp/dsh-release-test.log 2>&1 ); then
+    echo "✗ 测试没通过，拒绝打包。最后 15 行：" >&2
+    tail -15 /tmp/dsh-release-test.log >&2
+    exit 1
+  fi
+  echo "  $(tail -3 /tmp/dsh-release-test.log | tr '\n' ' ')"
+fi
+
 # 版本号必须和 Info.plist 一致，否则签名里的版本和 tag 会各说各话
 PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/cal-app/Info.plist")"
 if [ "$PLIST_VERSION" != "$VERSION" ]; then
@@ -57,6 +82,19 @@ mkdir -p "$STAGE/cal-mcp/src"
 cp "$ROOT/cal-mcp/cli.mjs" "$ROOT/cal-mcp/mcp-server.mjs" \
    "$ROOT/cal-mcp/package.json" "$STAGE/cal-mcp/"
 cp "$ROOT/cal-mcp/src/"*.mjs "$STAGE/cal-mcp/src/"
+
+echo "▸ 校验包内后端是不是当前源码"
+# P0-3 的根因就在这里：包和源码不一致而脚本不报错。逐文件比对 sha256，
+# 少一个文件、多一个字节都直接失败，不要只看退出码。
+for f in cli.mjs mcp-server.mjs package.json src/caldav.mjs src/tools.mjs src/nlp.mjs src/store.mjs src/llm.mjs; do
+  A="$(shasum -a 256 "$STAGE/cal-mcp/$f" 2>/dev/null | cut -d' ' -f1)"
+  B="$(shasum -a 256 "$ROOT/cal-mcp/$f" 2>/dev/null | cut -d' ' -f1)"
+  if [ -z "$A" ] || [ "$A" != "$B" ]; then
+    echo "✗ 包内 $f 与源码不一致（包=${A:-缺失} 源=${B:-缺失}）" >&2
+    exit 1
+  fi
+done
+echo "  8 个文件逐字节一致"
 
 cat > "$STAGE/安装说明.txt" <<NOTE
 DSH 日历 · 安装说明
@@ -152,7 +190,7 @@ echo ""
 echo "✓ $DMG_OUT（$SIZE_DMG）  ← 给普通用户"
 echo "✓ $DIST/$NAME.zip（$SIZE_ZIP）  ← 含源码，给要改的人"
 echo ""
-echo "下一步："
+echo "下一步（tag 只新建；已发布的 tag 不要移动，改代码就换版本号）："
 echo "  git tag v$VERSION && git push origin v$VERSION"
 echo "  gh release create v$VERSION \"$DMG_OUT\" \"$DIST/$NAME.zip\" \\"
 echo "    --title \"DSH 日历 v$VERSION\" --notes-file <说明文件>"
