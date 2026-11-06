@@ -18,7 +18,7 @@
 import { createInterface } from 'node:readline';
 import { llmConfig, llmLastError, needsRefine, probeModel, refineWithModel } from './src/llm.mjs';
 import { parseEvent } from './src/nlp.mjs';
-import { cachedCalendarNames, configPath, readConfig, savePassword, writeConfig } from './src/store.mjs';
+import { cachedCalendarNames, configPath, KEYCHAIN_SERVICE, readConfig, redact, savePassword, writeConfig } from './src/store.mjs';
 import {
   addEvent, createCalendar, deleteEvent, doctor, formatRange, listCalendars, listEvents,
   pendingEvents, syncQueue, updateEvent,
@@ -31,8 +31,10 @@ function out(payload) {
 }
 
 function fail(message) {
-  if (jsonMode) out({ ok: false, error: String(message) });
-  else console.error(`✗ ${message}`);
+  // 兜底：任何错误文本在打到终端 / --json 之前先抹掉像密码的片段
+  const text = redact(message);
+  if (jsonMode) out({ ok: false, error: text });
+  else console.error(`✗ ${text}`);
   process.exitCode = 1;
 }
 
@@ -120,7 +122,7 @@ async function cmdLogin(flags) {
 
   savePassword(username, password);
   writeConfig({ ...current, username });
-  console.log(`✓ 密码已存入钥匙串（service=dsh-cal, account=${username}）`);
+  console.log(`✓ 密码已存入钥匙串（service=${KEYCHAIN_SERVICE}, account=${username}）`);
   console.log(`  配置文件：${configPath()}\n`);
 
   console.log('正在连接 CalDAV…');

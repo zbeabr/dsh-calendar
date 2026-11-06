@@ -65,16 +65,47 @@ export function readPassword(username) {
   }
 }
 
-/** Store (or replace) the password in the Keychain. */
+/**
+ * 写入（或覆盖）钥匙串里的密码。
+ *
+ * 密码只能走 `security -w <密码>` 这一条路：`security` 的交互式提示读的是
+ * /dev/tty 而不是 stdin，没有终端时它会一直挂着（实测被 SIGTERM 杀掉），
+ * 所以没法改成从管道喂进去。argv 里那个几十毫秒的窗口只能靠「本机没人
+ * 同时 ps」兜着，README 里写明了。
+ *
+ * 但**错误消息**这条泄漏必须堵：execFileSync 失败时 Node 会把整条 argv 拼进
+ * error.message（形如 `Command failed: security add-generic-password … -w 密码`），
+ * 而 cli 会把它打到 stderr 和 --json 输出、App 会写进日志。钥匙串被锁、
+ * 授权被拒、沙箱拦截任何一次，密码就落到了滚屏和日志里。所以这里一律
+ * 换成不含命令行的错误，并且再过一遍脱敏。
+ */
 export function savePassword(username, password) {
-  execFileSync('security', [
-    'add-generic-password',
-    '-s', KEYCHAIN_SERVICE,
-    '-a', username,
-    '-l', `dsh-cal CalDAV (${username})`,
-    '-w', password,
-    '-U',
-  ]);
+  try {
+    execFileSync('security', [
+      'add-generic-password',
+      '-s', KEYCHAIN_SERVICE,
+      '-a', username,
+      '-l', `dsh-cal CalDAV (${username})`,
+      '-w', password,
+      '-U',
+    ], { stdio: ['ignore', 'ignore', 'ignore'] });
+  } catch (error) {
+    throw new Error(redact(`写入钥匙串失败（${error?.status ?? error?.code ?? '未知原因'}），密码没有保存。`
+      + '请解锁「钥匙串访问」后重试，或用 DSH_CAL_PASSWORD 环境变量临时提供密码。', password));
+  }
+}
+
+/**
+ * 把可能混进文本里的密码换成 ***。
+ * 兜底用：任何要展示给用户或写进日志的字符串都过一遍。
+ * @param {string} text
+ * @param {string} [secret]
+ */
+export function redact(text, secret) {
+  let out = String(text ?? '');
+  if (secret && secret.length >= 4) out = out.split(secret).join('***');
+  // 顺手抹掉 `-w <值>` 这种形态，即使不知道具体密码
+  return out.replace(/(-w\s+)(\S{4,})/gu, '$1***');
 }
 
 export function deletePassword(username) {

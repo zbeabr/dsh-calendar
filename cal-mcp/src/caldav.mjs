@@ -70,6 +70,33 @@ function hostOf(url) {
 }
 
 /**
+ * 会把请求分片到「同父不同子」主机的服务商。只认这几个。
+ * 以前的写法是「末两段相同就放行」，而 `co.uk`、`github.io`、`com.cn` 都是公共后缀：
+ * `foo.bar.co.uk` 和 `evil.co.uk` 末两段一样，但注册人是两个不同的人。
+ * 一旦用户配的是自定义 CalDAV（或托管在 github.io 这类域名上），
+ * 一次重定向就能把 App 专用密码交给别人。这里改成白名单，未列出的默认拒绝。
+ */
+const SHARDED_ZONES = ['icloud.com', 'me.com', 'apple.com', 'icloud.com.cn'];
+
+/**
+ * 公共后缀：这些尾巴下，任意两个不同名字属于不同的人，不能当作「同一个注册者」的依据。
+ * 不是完整 PSL（那要几万行），只覆盖到会把「末两段相同」判断带偏的常见后缀。
+ */
+const PUBLIC_SUFFIXES = new Set([
+  'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'me.uk', 'net.uk', 'sch.uk', 'ltd.uk', 'plc.uk',
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
+  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'id.au',
+  'co.jp', 'or.jp', 'ne.jp', 'ac.jp', 'go.jp', 'ed.jp',
+  'co.kr', 'or.kr', 'ne.kr',
+  'co.nz', 'net.nz', 'org.nz', 'co.in', 'net.in', 'org.in', 'co.za', 'org.za',
+  'com.br', 'com.tw', 'com.hk', 'com.sg', 'com.mx', 'com.tr', 'com.ar', 'com.ua', 'com.ru',
+  // 托管类：每个子域是不同的人
+  'github.io', 'gitlab.io', 'herokuapp.com', 'appspot.com', 'cloudfront.net',
+  's3.amazonaws.com', 'vercel.app', 'netlify.app', 'pages.dev', 'workers.dev',
+  'azurewebsites.net', 'ondigitalocean.app', 'fly.dev', 'render.com', 'glitch.me',
+]);
+
+/**
  * 这个跳转目标能不能收下 Basic 凭据。
  * iCloud 会把请求踢到 p33-caldav.icloud.com 这类同域分片主机，所以不能只比 host 全等；
  * 但也没有任何理由放宽到「任意 https」。http 一律拒绝（明文发密码）。
@@ -88,12 +115,20 @@ export function isTrustedHop(baseUrl, target) {
   const isLocal = (host) => host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1' || host === '::1' || host === '[::1]';
   // 本机调试（假的 CalDAV 服务器）允许 http，但不能从本机跳到公网
   if (isLocal(base.hostname) || isLocal(next.hostname)) return isLocal(base.hostname) && isLocal(next.hostname);
-  if (next.protocol !== 'https:') return false;
-  if (next.hostname === base.hostname) return true;
-  const labels = base.hostname.split('.');
-  // baseUrl 本身就是一级/二级域名（或 IP）时不放宽，只认全等
-  if (labels.length <= 2 || /^\d+\.\d+\.\d+\.\d+$/u.test(base.hostname)) return false;
-  return next.hostname.endsWith(`.${labels.slice(-2).join('.')}`);
+  if (next.protocol !== 'https:' || base.protocol !== 'https:') return false;
+  const from = base.hostname.toLowerCase();
+  const to = next.hostname.toLowerCase();
+  if (to === from) return true;
+  const under = (child, parent) => child.endsWith(`.${parent}`);
+  // 上下级关系算同一个注册者；但任何一方本身就是公共后缀时不算
+  // （`x.co.uk` 和 `co.uk` 不是一家，`evil.github.io` 和 `github.io` 更不是）
+  if (!PUBLIC_SUFFIXES.has(from) && !PUBLIC_SUFFIXES.has(to) && (under(to, from) || under(from, to))) return true;
+  // 同父不同子：只有确知会分片的服务商才放行
+  for (const zone of SHARDED_ZONES) {
+    const inZone = (host) => host === zone || under(host, zone);
+    if (inZone(from) && inZone(to)) return true;
+  }
+  return false;
 }
 
 /** 事件 uid：同一件事从头到尾用它，补发时才不会复制出一条新的。 */
@@ -122,7 +157,11 @@ export class CalDav {
       // 以前每一跳都无条件带 Authorization，一个开放重定向或恶意服务端
       // 就能把 App 专用密码骗到任意主机，而且 http 降级也照发不误。
       if (!isTrustedHop(this.baseUrl, target)) {
-        throw new CalDavError(`重定向到不受信任的地址，已拒绝发送凭据：${hostOf(target)}`, { url: target });
+        throw new CalDavError(
+          `重定向到不受信任的地址，已拒绝发送凭据：${hostOf(target)}。`
+          + '如果这是你服务器的正常跳转，请把 config.json 里的 baseUrl 直接改成跳转后的地址再试。',
+          { url: target },
+        );
       }
       let res;
       try {

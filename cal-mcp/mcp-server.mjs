@@ -107,6 +107,19 @@ function textResult(payload) {
   return { content: [{ type: 'text', text }] };
 }
 
+/**
+ * 模型填的参数不一定是布尔：常见是字符串 "true"/"false"。
+ * 严格转换，不让 "false" 这种非空字符串被当成真值 —— 删除确认就是栽在这上面。
+ */
+function asBool(value) {
+  if (value === true || value === false) return value;
+  if (value === undefined || value === null) return undefined;
+  const text = String(value).trim().toLowerCase();
+  if (text === 'true') return true;
+  if (text === 'false' || text === '') return false;
+  return undefined;
+}
+
 async function callTool(name, args = {}) {
   switch (name) {
     case 'calendar_add_event':
@@ -116,7 +129,7 @@ async function callTool(name, args = {}) {
         start: args.start,
         end: args.end,
         calendar: args.calendar,
-        allDay: args.all_day,
+        allDay: asBool(args.all_day),
         location: args.location,
         description: args.description,
       }));
@@ -130,8 +143,8 @@ async function callTool(name, args = {}) {
         title: args.title,
         calendar: args.calendar,
         days: args.days,
-        confirm: args.confirm,
-        dryRun: args.dryRun,
+        confirm: asBool(args.confirm) === true,
+        dryRun: asBool(args.dryRun) === true,
       }));
     case 'calendar_sync_pending':
       return textResult(await syncQueue());

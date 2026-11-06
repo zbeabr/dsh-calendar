@@ -316,6 +316,10 @@ const MAX_CONFIRM_DELETE = 10;
  */
 export async function deleteEvent({ uid, title, calendar, days = 30, confirm = false, dryRun = false, client: clientOverride } = {}) {
   if (!uid && !title) throw new Error('需要 uid 或日程标题');
+  // 只有布尔 true 才算确认。以前这里是 `!confirm` / `if (dryRun)`，
+  // 而 MCP 的参数是模型填的，传字符串 "false" 会被当成真值 —— 命中多条也照删。
+  const confirmed = confirm === true;
+  const preview = dryRun === true;
   const client = clientOverride ?? getClient().client;
   // 删除时**不**退回默认日历：事件可能在「生活」「课表-*」里，
   // 只去「学习」找会直接报「没找到 uid」，界面上的删除按钮等于失效。
@@ -343,10 +347,10 @@ export async function deleteEvent({ uid, title, calendar, days = 30, confirm = f
       .map((event) => `· ${formatRange(new Date(event.start), new Date(event.end))} ${event.title}（${event.calendar ?? '默认'}）`)
       .join('\n');
 
-    if (dryRun) {
+    if (preview) {
       return { ok: false, dryRun: true, deleted: [], candidates, summary: `命中 ${hits.length} 条，没有删除（dryRun）：\n${listing}` };
     }
-    if (hits.length > 1 && !confirm) {
+    if (hits.length > 1 && !confirmed) {
       return {
         ok: false,
         needsConfirm: true,
