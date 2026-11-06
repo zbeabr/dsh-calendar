@@ -112,6 +112,7 @@ enum Bootstrap {
           "$HOME"/.nvm/versions/node/*/bin/node \\
           "$HOME"/.volta/bin/node \\
           "$HOME"/.local/share/fnm/node-versions/*/installation/bin/node \\
+          "$HOME"/Library/Application\\ Support/fnm/node-versions/*/installation/bin/node \\
           "$HOME"/.local/bin/node
           do
             if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
@@ -210,6 +211,18 @@ enum Engine {
         return head == Data([0x23, 0x21])   // "#!"
     }
 
+    /// 后端一次调用的上限：日历多的时候逐个 REPORT 可能拖好几分钟，
+    /// 没有上限界面就一直转圈，也没法取消。
+    static let callTimeoutSeconds: TimeInterval = 60
+
+    /// watchdog 在后台线程写、callSync 等进程退出后读，用锁护住这个标记
+    private final class TimeoutState {
+        private let lock = NSLock()
+        private var value = false
+        func fire() { lock.lock(); value = true; lock.unlock() }
+        var wasFired: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
     static func callSync(_ args: [String], env: [String: String] = [:]) throws -> [String: Any] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -231,9 +244,22 @@ enum Engine {
             throw EngineError(message: "无法启动命令：\(error.localizedDescription)")
         }
 
+        // 到点还在跑就 terminate：pipe 随之关闭，下面的同步读取不会永远卡住
+        let timedOut = TimeoutState()
+        let watchdog = DispatchWorkItem {
+            guard process.isRunning else { return }
+            timedOut.fire()
+            process.terminate()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + callTimeoutSeconds, execute: watchdog)
+
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        watchdog.cancel()
+        if timedOut.wasFired {
+            throw EngineError(message: "后端超过 \(Int(callTimeoutSeconds)) 秒没有响应，已终止这次调用")
+        }
 
         let text = String(data: data, encoding: .utf8) ?? ""
         let jsonLine = text
@@ -593,6 +619,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
     // 主界面控件
     private var input: NSTextView?
+    /// 一次写入在飞时挡住后续的回车/点击：连按两次回车会各发一次 add，建出两条一样的日程
+    private var isAdding = false
     private var placeholderLabel: NSTextField?
     private var inputCard: CardView?
     private var chipRow: NSView?
@@ -626,7 +654,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 内容槽：所有界面都装进这里，换页时整块淡入
     private var slot: NSView?
     private var addButton: NSButton?
-    private var badge: NSTextField?
     private var dot: StatusDot?
     private var modelLabel: NSTextField?
     /// 第一次布局才把窗口居中，之后重建（比如重新检查连接）保持原位
@@ -949,9 +976,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     }
 
     @objc private func showAbout() {
+        // 版本跟着 Info.plist 走，别再写死一个早就不对的「1.0」
+        let displayName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? "DSH 日历"
+        let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "未知版本"
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "日历",
-            .version: "1.0",
+            .applicationName: displayName,
+            .version: version,
             .credits: NSAttributedString(
                 string: "说一句话就能建日程。\n时间由规则算（毫秒级、离线可用）；「做什么、在哪」交给本机模型理解，规则判不准时才问它。全都不出这台电脑。",
                 attributes: [.font: NSFont.systemFont(ofSize: 11)]
@@ -1087,6 +1118,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     // MARK: 主界面
 
     private func buildMain() {
+        // ⌘R「重新检查连接」会整块重建主界面，输入框也是新建的。
+        // 先把旧控件里没提交的话捞出来，新控件建好后再放回去，别让草稿凭空消失。
+        let savedDraft = self.input?.string ?? ""
         let width: CGFloat = 760
         let height: CGFloat = 720
         let margin: CGFloat = 28
@@ -1168,6 +1202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         scroll.documentView = textView
         card.addSubview(scroll)
         self.input = textView
+        // 程序化地放回草稿不会走 delegate 的编辑通知，解析在 buildMain 末尾补一次
+        if !savedDraft.isEmpty { textView.string = savedDraft }
 
         let placeholder = NSTextField(labelWithString: "说一句，例如：明天下午三点到四点 组会 @图书馆 #学习")
         placeholder.font = NSFont.systemFont(ofSize: 15)
@@ -1175,6 +1211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         placeholder.frame = NSRect(x: 16, y: 54, width: textWidth - 20, height: 20)
         card.addSubview(placeholder)
         self.placeholderLabel = placeholder
+        placeholder.isHidden = !savedDraft.isEmpty
 
         let add = GlassButton(frame: NSRect(x: contentWidth - 14 - 74, y: 29, width: 74, height: 34))
         add.title = "添加"
@@ -1259,6 +1296,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         updateBadge()
         updateModelLabel()
         refreshAgenda()
+        // 重建后把草稿重新解析一遍，时间胶囊 / 冲突提示才不会是空的
+        if !savedDraft.isEmpty { parseNow() }
         // 从设置页自动恢复过来的话，把「已重新连上」补回新的状态栏
         if let note = pendingStatusNote {
             statusLabel?.textColor = .secondaryLabelColor
@@ -2047,7 +2086,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 return
             }
             let events = (payload["events"] as? [[String: Any]]) ?? []
-            self.agendaNote = nil
+            // 有一个日历读失败时后端仍返回读到的那部分，界面必须说清「结果不全」，
+            // 否则用户会以为这几天真的只有这几条。
+            let failed = (payload["failed"] as? [[String: Any]]) ?? []
+            if (payload["partial"] as? Bool) == true {
+                let names = failed.compactMap { $0["name"] as? String }
+                let detail = names.isEmpty ? "" : "（\(names.joined(separator: "、"))）"
+                self.agendaNote = "⚠ \(failed.count) 个日历读取失败\(detail)，结果可能不全"
+            } else {
+                self.agendaNote = nil
+            }
             self.agenda = events.compactMap { AgendaItem(json: $0) }
             self.renderAgenda()
             self.checkConflict()
@@ -2067,13 +2115,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         var lastDay = ""
         var order = 0
 
+        // 离线 / 部分日历读取失败时，即便列表有内容也要把这句挂在最上面
+        if let note = agendaNote {
+            let banner = NSTextField(labelWithString: note)
+            banner.font = NSFont.systemFont(ofSize: 12)
+            banner.textColor = .systemOrange
+            banner.lineBreakMode = .byTruncatingTail
+            banner.frame = NSRect(x: 2, y: y, width: width - 4, height: 20)
+            container.addSubview(banner)
+            y += 26
+        }
+
         if agenda.isEmpty {
-            let empty = NSTextField(labelWithString: agendaNote ?? "接下来几天没有安排。")
+            let empty = NSTextField(labelWithString: agendaNote == nil ? "接下来几天没有安排。" : "暂时没有可显示的日程。")
             empty.font = NSFont.systemFont(ofSize: 13)
             empty.textColor = .tertiaryLabelColor
-            empty.frame = NSRect(x: 2, y: 12, width: width - 4, height: 20)
+            empty.frame = NSRect(x: 2, y: y + 8, width: width - 4, height: 20)
             container.addSubview(empty)
-            y = 44
+            y += 40
         } else {
             for item in agenda {
                 let key = Format.dayKey(item.start)
@@ -2191,8 +2250,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
     @objc private func addEvent() {
         guard let input else { return }
+        // 连按两次回车时，第二次往往还停在防抖前面，照样会再发一次 add。
+        // 这里只让一次写入在飞，回来后才解锁（见 send 的回调）。
+        guard !isAdding else { return }
         let snapshot = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !snapshot.isEmpty else { return }
+        isAdding = true
 
         addButton?.isEnabled = false
         statusLabel?.textColor = .secondaryLabelColor
@@ -2219,6 +2282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         if LocalModel.shared.phase != .ready { addArgs.insert("--fast", at: addArgs.count - 1) }
         Engine.call(addArgs) { [weak self] result in
             guard let self else { return }
+            self.isAdding = false
             self.addButton?.isEnabled = true
             switch result {
             case .success(let payload) where (payload["ok"] as? Bool) == true:
