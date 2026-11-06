@@ -104,7 +104,10 @@ RUNNER
   # 把安装时看到的 node 绝对路径写进启动器。访达启动的 App 没有 shell 的 PATH，
   # 只靠 /opt/homebrew、/usr/local 这几个位置找不到 nvm/workbuddy 这类装的 node。
   NODE_FOUND="$(command -v node 2>/dev/null || true)"
-  sed -i '' "s|__DSH_CAL_NODE_HINT__|${NODE_FOUND}|" "$LIBEXEC/dsh-cal-run"
+  # 不用 sed -i：BSD 要 `-i ''`、GNU 要 `-i`，这个脚本还可能在 toybox 环境里跑。
+  # 脚本本身是 zsh，直接用内建替换最稳。
+  runner_text="$(<"$LIBEXEC/dsh-cal-run")"
+  printf '%s\n' "${runner_text//__DSH_CAL_NODE_HINT__/$NODE_FOUND}" > "$LIBEXEC/dsh-cal-run"
   if [ -n "$NODE_FOUND" ]; then
     say "  记住 node 位置：$NODE_FOUND"
   else
