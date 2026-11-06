@@ -11,6 +11,13 @@
  * 不碰真日历，不需要账号，也不联网。
  */
 
+// 和 parse-cases.mjs 一样固定 +08:00 才可复现：E-2 的样例 ICS 写死了
+// TZID=Asia/Shanghai，用例的 from/to 与期望值也用本机时区构造，
+// nextOccurrence 还按本机本地小时重建发生时刻。机器时区不同会差 8 小时、
+// 甚至让 RECURRENCE-ID 的去重失效（CI 的 UTC runner 上实测挂 2 条）。
+// 注意：这只保证测试环境自洽，**不代表「机器时区 ≠ 日历时区」的组合已验证**。
+process.env.TZ = 'Asia/Shanghai';
+
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
