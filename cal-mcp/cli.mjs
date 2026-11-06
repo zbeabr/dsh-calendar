@@ -290,15 +290,18 @@ async function cmdQuery(text, flags) {
   const hits = matched.length > 0 || !keyword ? matched : result.events;
   const note = keyword && matched.length === 0 ? `（没找到含「${keyword}」的，以下是${label}全部安排）` : '';
 
+  const partialNote = result.partial ? `\n⚠ ${result.failed.length} 个日历读取失败，结果可能不全` : '';
   const payload = {
     ok: true,
     range: { from: from.toISOString(), to: to.toISOString(), label },
     keyword: keyword && matched.length > 0 ? keyword : null,
     count: hits.length,
+    partial: result.partial,
+    failed: result.failed,
     events: hits,
-    summary: hits.length === 0
+    summary: (hits.length === 0
       ? `${label}没有安排。`
-      : `${label}${note}有 ${hits.length} 条：\n${hits.map((event) => `· ${event.when} ${event.title}${event.location ? ` @${event.location}` : ''}`).join('\n')}`,
+      : `${label}${note}有 ${hits.length} 条：\n${hits.map((event) => `· ${event.when} ${event.title}${event.location ? ` @${event.location}` : ''}`).join('\n')}`) + partialNote,
   };
   if (jsonMode) return out(payload);
   console.log(payload.summary);

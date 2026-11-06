@@ -11,7 +11,11 @@
  * 不碰真日历，不需要账号，也不联网。
  */
 
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { CalDav, CalDavError, parseVevents } from './src/caldav.mjs';
 
 let pass = 0;
@@ -41,6 +45,9 @@ let etagSeq = 0;
 // 有些服务端会忽略 UID 过滤器、把整个日历都回给你，客户端必须自己核对 UID
 let ignoreUidFilter = false;
 let port = 0;
+// 打开后多返回一个「坏日历」：列表时它所在的 REPORT 会返 500。
+// 关着时服务端行为和原来完全一致，前面 16 条用例不受影响。
+let brokenCalendar = null;
 
 const escapeXmlText = (text) => text.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
 const unescapeXmlText = (text) => text.replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&amp;/gu, '&');
@@ -75,6 +82,21 @@ const CALENDARS = `<?xml version="1.0" encoding="UTF-8"?>
   </d:prop></d:propstat>
 </d:response></d:multistatus>`;
 
+/** 打开 brokenCalendar 时，在日历列表里额外塞一个会返 500 的日历。 */
+const calendarsXml = (broken) => {
+  if (!broken) return CALENDARS;
+  const extra = `<d:response>
+  <d:href>/u/broken/</d:href>
+  <d:propstat><d:prop>
+    <d:displayname>${escapeXmlText(broken)}</d:displayname>
+    <d:resourcetype><d:collection/><c:calendar/></d:resourcetype>
+    <c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set>
+    <d:current-user-privilege-set><d:privilege><d:write/></d:privilege></d:current-user-privilege-set>
+  </d:prop></d:propstat>
+</d:response>`;
+  return CALENDARS.replace('</d:multistatus>', `${extra}</d:multistatus>`);
+};
+
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, `http://127.0.0.1:${port}`).pathname;
   let body = '';
@@ -96,10 +118,15 @@ const server = createServer(async (req, res) => {
   if (req.method === 'PROPFIND') {
     if (path === '/') return sendXml(PRINCIPAL);
     if (path === '/principals/u/') return sendXml(HOME);
-    if (path === '/u/') return sendXml(CALENDARS);
+    if (path === '/u/') return sendXml(calendarsXml(brokenCalendar));
   }
 
   if (req.method === 'REPORT') {
+    if (brokenCalendar && path === '/u/broken/') {
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end('internal error');
+      return;
+    }
     // 真实服务端会按 calendar-query 里的过滤器挑，这里只实现 UID 过滤这一条
     const asked = /<(?:\w+:)?text-match[^>]*>([^<]*)/iu.exec(body)?.[1];
     const uid = asked ? unescapeXmlText(asked).trim() : undefined;
@@ -397,6 +424,67 @@ await check('全天重复日程的日期型 RECURRENCE-ID 也能去掉重复行'
   expect(rows.length, 1, '同一 uid 的行数');
   expect(rows[0].title, '值班改到次日', '保留的版本');
   expect(new Date(rows[0].start).getTime(), new Date(2026, 10, 12, 0, 0).getTime(), '覆盖后的开始日期');
+});
+
+// ── 7. 某个日历读取失败时不能静默少数据 ───────────────────
+const TOOLS_URL = new URL('./src/tools.mjs', import.meta.url).href;
+const STORE_URL = new URL('./src/store.mjs', import.meta.url).href;
+
+function runNode(code, home, args = []) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', code, ...args], {
+      env: { ...process.env, HOME: home, DSH_CAL_PASSWORD: 'p' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.stderr.on('data', (chunk) => { err += chunk; });
+    child.on('close', (status) => resolve({ code: status, out: out.trim(), err }));
+  });
+}
+
+await check('一个日历返 500 时返回 partial/failed，好日历数据照常给', async () => {
+  brokenCalendar = '坏日历';
+  try {
+    const events = await client.listEvents({ from: new Date(2026, 10, 1), to: new Date(2026, 10, 30) });
+    const failed = events.failed ?? [];
+    expect(events.partial, true, 'partial');
+    expect(failed.length, 1, '失败日历条数');
+    expect(failed[0].name, '坏日历', '失败日历名');
+    expect(failed[0].status, 500, '失败状态码');
+    assert(events.length > 0, '好日历的日程不该被一起丢掉');
+  } finally {
+    brokenCalendar = null;
+  }
+});
+
+await check('全部日历读取成功时 partial 为 false', async () => {
+  const events = await client.listEvents({ from: new Date(2026, 10, 1), to: new Date(2026, 10, 30) });
+  expect(events.partial, false, 'partial');
+  expect((events.failed ?? []).length, 0, '失败日历条数');
+});
+
+await check('tools 层的 summary 会提示日历读取失败', async () => {
+  brokenCalendar = '坏日历';
+  const home = mkdtempSync(join(tmpdir(), 'dsh-partial-'));
+  try {
+    const res = await runNode(`import { writeConfig } from ${JSON.stringify(STORE_URL)};
+import { listEvents } from ${JSON.stringify(TOOLS_URL)};
+const port = process.argv[1];
+writeConfig({ baseUrl: 'http://127.0.0.1:' + port + '/', username: 'u', timeZone: 'Asia/Shanghai' });
+const result = await listEvents({ from: new Date(2026, 10, 1), to: new Date(2026, 10, 30) });
+console.log(JSON.stringify({ partial: result.partial, failed: result.failed, summary: result.summary }));`, home, [String(port)]);
+    if (res.code !== 0) throw new Error(`子进程退出 ${res.code}：${res.err}`);
+    const data = JSON.parse(res.out);
+    expect(data.partial, true, 'tools 层的 partial');
+    if (!data.summary.includes('1 个日历读取失败，结果可能不全')) {
+      throw new Error(`summary 没有提示：${data.summary}`);
+    }
+  } finally {
+    brokenCalendar = null;
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 // ── 汇总 ─────────────────────────────────────────────────

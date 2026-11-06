@@ -354,12 +354,17 @@ export class CalDav {
     // 查全部日历时每个日历发一次 REPORT。串行做 17 个日历要 9 秒多，
     // 日程列表刷新根本等不起，所以开 6 个并发一起去问。
     const events = [];
+    const failed = [];
     const queue = [...targets];
     const worker = async () => {
       while (queue.length > 0) {
         const target = queue.shift();
         const { res, text } = await this.request(target.url, { method: 'REPORT', body, headers: { depth: '1' } });
-        if (res.status >= 400) continue;
+        if (res.status >= 400) {
+          // 6 个 worker 共享这一个数组；Node 单线程，push 天然安全，不用加锁。
+          failed.push({ name: target.name, status: res.status });
+          continue;
+        }
         for (const block of splitResponses(text)) {
           const data = /<(?:\w+:)?calendar-data[^>]*>([\s\S]*?)<\/(?:\w+:)?calendar-data>/u.exec(block)?.[1];
           if (!data) continue;
@@ -397,10 +402,15 @@ export class CalDav {
       resolved.filter((event) => event.recurrenceAt)
         .map((event) => `${event.uid}|${new Date(event.recurrenceAt).getTime()}`),
     );
-    return resolved
+    const result = resolved
       .filter((event) => !(event.recurring
         && overrideMoments.has(`${event.uid}|${new Date(event.start).getTime()}`)))
       .sort((a, b) => a.start.localeCompare(b.start));
+    // 返回仍是数组（3 处调用方都按数组用），把读取状态挂在数组对象上，
+    // 既不改既有调用方也不用动既有用例。上层据此提示「结果可能不全」。
+    result.partial = failed.length > 0;
+    result.failed = failed;
+    return result;
   }
 
   /**

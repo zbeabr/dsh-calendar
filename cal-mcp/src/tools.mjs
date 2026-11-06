@@ -201,17 +201,22 @@ export async function listEvents({ days = 7, calendar, from, to, includeUid = fa
   // 于是加到「生活」「课表-*」的日程在列表里根本不出现——看着像没写进去。
   // 需要只看某一个日历时用 --calendar。
   const events = await client.listEvents({ from: start, to: end, calendar: calendar ?? undefined });
+  const failed = events.failed ?? [];
+  const partial = events.partial === true;
+  const partialNote = partial ? `\n⚠ ${failed.length} 个日历读取失败，结果可能不全` : '';
   return {
     ok: true,
     range: { from: start.toISOString(), to: end.toISOString() },
     count: events.length,
+    partial,
+    failed,
     events: events.map((event) => ({
       ...event,
       when: formatRange(new Date(event.start), new Date(event.end)),
     })),
-    summary: events.length === 0
+    summary: (events.length === 0
       ? '这段时间没有日程。'
-      : events.map((event) => `· ${formatRange(new Date(event.start), new Date(event.end))} ${event.title}${event.calendar ? `（${event.calendar}）` : ''}${includeUid ? ` uid=${event.uid}` : ''}`).join('\n'),
+      : events.map((event) => `· ${formatRange(new Date(event.start), new Date(event.end))} ${event.title}${event.calendar ? `（${event.calendar}）` : ''}${includeUid ? ` uid=${event.uid}` : ''}`).join('\n')) + partialNote,
   };
 }
 
