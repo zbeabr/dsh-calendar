@@ -88,7 +88,8 @@ resolve_node() {
     "$HOME"/.nvm/versions/node/*/bin/node \
     "$HOME"/.volta/bin/node \
     "$HOME"/.local/share/fnm/node-versions/*/installation/bin/node \
-    "$HOME"/Library/Application\ Support/fnm/node-versions/*/installation/bin/node
+    "$HOME"/Library/Application\ Support/fnm/node-versions/*/installation/bin/node \
+    "$HOME"/.local/bin/node
   do
     if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
   done
@@ -141,9 +142,28 @@ if [ "$MODE" != "cli" ]; then
     TARGET_APP="$HOME/Applications/$APP_NAME.app"
     say "▸ 安装预编译 App 到 $TARGET_APP"
     mkdir -p "$HOME/Applications"
-    # 覆盖旧版：只动我们自己这个 bundle
-    [ -d "$TARGET_APP" ] && rm -rf "$TARGET_APP"
-    /usr/bin/ditto "$APP_SRC" "$TARGET_APP"
+    # 先把新 App 完整拷到同盘的临时目录，校验过了再替换。
+    # 以前是先 rm -rf 旧 App 再 ditto：拷到一半失败，机器上就一个 App 都没有了。
+    STAGE="$(mktemp -d "$HOME/Applications/.dsh-install-XXXXXX")"
+    STAGED_APP="$STAGE/$APP_NAME.app"
+    PREV_APP="$STAGE/previous-$APP_NAME.app"
+    cleanup_stage() { /bin/rm -rf "$STAGE"; }
+    if ! /usr/bin/ditto "$APP_SRC" "$STAGED_APP"; then
+      cleanup_stage
+      die "拷贝新 App 失败，原来的 App 未动"
+    fi
+    if [ -d "$TARGET_APP" ]; then
+      if ! /bin/mv "$TARGET_APP" "$PREV_APP"; then
+        cleanup_stage
+        die "备份旧 App 失败，原来的 App 未动"
+      fi
+    fi
+    if ! /bin/mv "$STAGED_APP" "$TARGET_APP"; then
+      # 新 App 没放上去就把旧的挪回来，宁可留在旧版也不能没 App
+      if [ -d "$PREV_APP" ]; then /bin/mv "$PREV_APP" "$TARGET_APP"; fi
+      cleanup_stage
+      die "安装新 App 失败，已回滚到旧版"
+    fi
     # 浏览器下载的包带 quarantine 标记，而这个 App 只有本地 ad-hoc 签名、没有 Apple 公证，
     # 不去掉的话双击只会看到「无法验证开发者」。安装脚本替用户摘掉这个标记。
     xattr -dr com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
@@ -152,6 +172,7 @@ if [ "$MODE" != "cli" ]; then
     else
       say "  ⚠ 签名校验没通过，App 可能起不来"
     fi
+    cleanup_stage
   elif [ -x "$HERE/cal-app/build.sh" ]; then
     say "▸ 编译 App（arm64 + x86_64，首次约一分钟）"
     "$HERE/cal-app/build.sh"
