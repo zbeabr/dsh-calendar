@@ -323,7 +323,8 @@ async function cmdUpdate(uid, flags) {
   return undefined;
 }
 
-/** `dsh-cal llm` —— 看看模型通不通；给一句话就看规则和模型各自读成什么。 */async function cmdLlm(text, flags) {
+/** `dsh-cal llm` —— 看看模型通不通；给一句话就看规则和模型各自读成什么。 */
+async function cmdLlm(text, flags) {
   const current = llmConfig();
 
   if (flags.warm) {

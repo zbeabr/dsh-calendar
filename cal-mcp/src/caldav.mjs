@@ -44,7 +44,8 @@ export class CalDavError extends Error {
 }
 
 /** 把 fetch 的底层错误翻译成能看懂的中文，并标记为「网络类」错误（可离线排队）。 */
-function networkMessage(code) {  switch (code) {
+function networkMessage(code) {
+  switch (code) {
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
     case 'ENETUNREACH':
