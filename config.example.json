@@ -1,0 +1,14 @@
+{
+  "baseUrl": "https://caldav.icloud.com/",
+  "username": "you@example.com",
+  "calendar": "学习",
+  "timeZone": "Asia/Shanghai",
+  "llm": {
+    "enabled": false,
+    "provider": "ollama",
+    "model": "qwen3:8b",
+    "baseUrl": "http://127.0.0.1:11434",
+    "apiKey": "",
+    "timeoutMs": 25000
+  }
+}
