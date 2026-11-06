@@ -8,7 +8,7 @@
     "dsh-cal": "./cli.mjs"
   },
   "scripts": {
-    "test": "node parse-cases.mjs && node safety-cases.mjs && node caldav-cases.mjs",
+    "test": "node parse-cases.mjs && node safety-cases.mjs && node caldav-cases.mjs && node parse-corpus.mjs",
     "test:llm": "node llm-cases.mjs",
     "login": "node cli.mjs login",
     "doctor": "node cli.mjs doctor",
