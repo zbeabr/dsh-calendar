@@ -317,6 +317,72 @@ console.log(JSON.stringify({
   }
 });
 
+// ── 6. 时区：文字输出与默认时区（P1-5） ────────────────────
+// 以前 formatRange 把 Asia/Shanghai 写死，config.timeZone 形同虚设；
+// store 的默认时区也写死上海，没改过配置的纽约用户看到的仍是上海时间。
+// HOME（配置路径在模块加载时就定死）和 TZ（模块级常量在 import 时求值）
+// 都只能在子进程里换，所以这几条全部走 runNode。
+const ZONE_START = '2026-11-07T15:00:00+08:00';
+const ZONE_END = '2026-11-07T16:00:00+08:00';
+const zoneRange = (extra = '') => `import { formatRange } from ${JSON.stringify(TOOLS_URL)};
+console.log(formatRange(new Date(${JSON.stringify(ZONE_START)}), new Date(${JSON.stringify(ZONE_END)})${extra}));`;
+
+await checkAsync('config.timeZone=America/New_York 时文字时间按纽约显示', async () => {
+  const home = tmpHome('zone-cfg');
+  try {
+    const res = await runNode(`import { writeConfig } from ${JSON.stringify(STORE_URL)};
+import { formatRange } from ${JSON.stringify(TOOLS_URL)};
+writeConfig({ timeZone: 'America/New_York' });
+console.log(formatRange(new Date(${JSON.stringify(ZONE_START)}), new Date(${JSON.stringify(ZONE_END)})));`, home);
+    expect(res.code, 0, '子进程退出码');
+    expect(res.out, '11/07周六 02:00–03:00', '纽约时区的文字时间');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+await checkAsync('formatRange 显式传时区参数时按该时区显示', async () => {
+  const home = tmpHome('zone-arg');
+  try {
+    const res = await runNode(zoneRange(", 'Asia/Tokyo'"), home);
+    expect(res.code, 0, '子进程退出码');
+    expect(res.out, '11/07周六 16:00–17:00', '东京时区的文字时间');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+await checkAsync('默认时区取本机时区，不再写死上海', async () => {
+  const home = tmpHome('zone-default');
+  try {
+    const res = await runNode(`process.env.TZ = 'America/New_York';
+const { DEFAULTS } = await import(${JSON.stringify(STORE_URL)});
+console.log(DEFAULTS.timeZone);`, home);
+    expect(res.code, 0, '子进程退出码');
+    expect(res.out, 'America/New_York', '默认时区');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+await checkAsync('配置时区与本机不同时 doctor 给出警告', async () => {
+  const home = tmpHome('zone-doctor');
+  try {
+    const res = await runNode(`process.env.TZ = 'Asia/Shanghai';
+const { writeConfig } = await import(${JSON.stringify(STORE_URL)});
+const { doctor } = await import(${JSON.stringify(TOOLS_URL)});
+writeConfig({ timeZone: 'America/New_York' });
+const report = await doctor();
+console.log(JSON.stringify(report.warnings ?? []));`, home);
+    expect(res.code, 0, '子进程退出码');
+    const warnings = JSON.parse(res.out);
+    expect(warnings.length, 1, '警告条数');
+    if (!warnings[0].includes('本机时区')) throw new Error(`警告没说清输入按本机时区：${warnings[0]}`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // ── 汇总 ─────────────────────────────────────────────────
 if (failures.length === 0) {
   console.log(`✓ ${pass} 条安全用例全部通过`);

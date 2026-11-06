@@ -21,7 +21,8 @@ export const DEFAULTS = {
   baseUrl: 'https://caldav.icloud.com/',
   username: '',
   calendar: '',
-  timeZone: 'Asia/Shanghai',
+  // 默认跟本机走：解析用的是机器时区，写入和文字显示也用同一时区，三者才不会错位。
+  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   llm: {
     enabled: false,
     provider: 'ollama',

@@ -50,12 +50,17 @@ export function toDate(value, label = 'time') {
   throw new Error(`${label} 无法识别：${String(value)}`);
 }
 
-export function formatRange(start, end) {
+/**
+ * 文字时间按 config.timeZone 显示，调用方也可显式传第三参数覆盖。
+ * 缺省回落到本机时区 —— parseEvent 用的是机器时区，保持一致才不会念错时间。
+ */
+export function formatRange(start, end, timeZone = readConfig().timeZone) {
+  const zone = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const day = (date) => new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit', day: '2-digit', weekday: 'short', timeZone: 'Asia/Shanghai',
+    month: '2-digit', day: '2-digit', weekday: 'short', timeZone: zone,
   }).format(date);
   const time = (date) => new Intl.DateTimeFormat('zh-CN', {
-    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai',
+    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: zone,
   }).format(date);
   // 全天事件是「当天 00:00 到次日 00:00」，直接说「全天」比列两个 00:00 清楚
   const allDay = time(start) === '00:00'
@@ -503,7 +508,13 @@ export async function createCalendar({ name } = {}) {
 /** Probe the connection and report what is usable. */
 export async function doctor() {
   const config = readConfig();
-  const report = { config: { path: undefined, baseUrl: config.baseUrl, username: config.username, calendar: config.calendar }, checks: [] };
+  const report = { config: { path: undefined, baseUrl: config.baseUrl, username: config.username, calendar: config.calendar }, checks: [], warnings: [] };
+  const machineZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (config.timeZone && config.timeZone !== machineZone) {
+    report.warnings.push(
+      `配置时区 ${config.timeZone} 与本机时区 ${machineZone} 不一致：输入按本机时区理解，写入和文字显示按配置时区，「明天下午三点」可能落到另一个钟点。`,
+    );
+  }
   if (!config.username) {
     report.checks.push({ name: '账号', ok: false, detail: '未配置，运行 node cli.mjs login' });
     return report;

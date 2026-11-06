@@ -154,6 +154,7 @@ function printDoctor(report) {
   for (const check of report.checks) {
     console.log(`  ${check.ok ? '✓' : '✗'} ${check.name}：${check.detail}`);
   }
+  for (const warning of report.warnings ?? []) console.log(`  ⚠ ${warning}`);
   return undefined;
 }
 
