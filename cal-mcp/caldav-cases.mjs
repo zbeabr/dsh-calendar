@@ -340,6 +340,65 @@ await check('服务端不回应时按超时处理', async () => {
   assert(Date.now() - started < 5000, '没有在超时时间内返回');
 });
 
+// ── 6. RECURRENCE-ID：改过单次的重复日程不该出现两行 ──────
+// 服务端把「整条重复规则」和「被改过的那一次」当作两份 VEVENT 返回，UID 相同。
+// 主事件折到区间里的下一次发生时必须跳过被覆盖的那一天，否则同一实例出现两行。
+const vevent = (...lines) => [
+  'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Test//EN',
+  'BEGIN:VEVENT', ...lines, 'END:VEVENT', 'END:VCALENDAR', '',
+].join('\r\n');
+const putIcs = (path, body) => stored.set(path, { etag: `"v${(etagSeq += 1)}"`, body });
+
+const overrideUid = 'recur-override@example.com';
+putIcs('/u/cal/override-master.ics', vevent(
+  `UID:${overrideUid}`, 'DTSTAMP:20261101T000000Z',
+  'DTSTART;TZID=Asia/Shanghai:20261107T090000',
+  'DTEND;TZID=Asia/Shanghai:20261107T100000',
+  'RRULE:FREQ=WEEKLY;BYDAY=SA',
+  'SUMMARY:每周组会',
+));
+putIcs('/u/cal/override-instance.ics', vevent(
+  `UID:${overrideUid}`, 'DTSTAMP:20261101T000000Z',
+  'RECURRENCE-ID;TZID=Asia/Shanghai:20261107T090000',
+  'DTSTART;TZID=Asia/Shanghai:20261108T140000',
+  'DTEND;TZID=Asia/Shanghai:20261108T150000',
+  'SUMMARY:改到周日的组会',
+));
+
+await check('改过单次的重复日程只出一行，且保留覆盖版本', async () => {
+  const events = await client.listEvents({ from: new Date(2026, 10, 7, 0, 0), to: new Date(2026, 10, 9, 0, 0) });
+  const rows = events.filter((item) => item.uid === overrideUid);
+  expect(rows.length, 1, '同一 uid 的行数');
+  expect(rows[0].title, '改到周日的组会', '保留的版本');
+  expect(new Date(rows[0].start).getTime(), new Date(2026, 10, 8, 14, 0).getTime(), '覆盖后的开始时间');
+});
+
+// 全天日程的 RECURRENCE-ID 是日期型（20261111）而不是时间型，
+// new Date(raw) 会解析不出或按 UTC 跑偏，必须走 parseIcsDate。
+const allDayUid = 'allday-override@example.com';
+putIcs('/u/cal/allday-master.ics', vevent(
+  `UID:${allDayUid}`, 'DTSTAMP:20261101T000000Z',
+  'DTSTART;VALUE=DATE:20261111',
+  'DTEND;VALUE=DATE:20261112',
+  'RRULE:FREQ=DAILY;COUNT=1',
+  'SUMMARY:全天值班',
+));
+putIcs('/u/cal/allday-instance.ics', vevent(
+  `UID:${allDayUid}`, 'DTSTAMP:20261101T000000Z',
+  'RECURRENCE-ID;VALUE=DATE:20261111',
+  'DTSTART;VALUE=DATE:20261112',
+  'DTEND;VALUE=DATE:20261113',
+  'SUMMARY:值班改到次日',
+));
+
+await check('全天重复日程的日期型 RECURRENCE-ID 也能去掉重复行', async () => {
+  const events = await client.listEvents({ from: new Date(2026, 10, 11, 0, 0), to: new Date(2026, 10, 13, 0, 0) });
+  const rows = events.filter((item) => item.uid === allDayUid);
+  expect(rows.length, 1, '同一 uid 的行数');
+  expect(rows[0].title, '值班改到次日', '保留的版本');
+  expect(new Date(rows[0].start).getTime(), new Date(2026, 10, 12, 0, 0).getTime(), '覆盖后的开始日期');
+});
+
 // ── 汇总 ─────────────────────────────────────────────────
 server.closeAllConnections?.();
 await new Promise((resolve) => server.close(resolve));

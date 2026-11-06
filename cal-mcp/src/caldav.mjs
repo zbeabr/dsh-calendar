@@ -378,10 +378,29 @@ export class CalDav {
     await Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker));
 
     // 重复日程在服务端只会以「系列起点」回来，折到区间里才有正确的日期。
+    // 同一 uid 的覆盖实例用 RECURRENCE-ID 指向「被替换掉的那一次发生」，
+    // 把这些时刻并进 nextOccurrence 已有的 skip 集合，主事件就不会折到那一天。
+    const overridden = new Map();
+    for (const event of events) {
+      if (!event.uid || !event.recurrenceAt) continue;
+      if (!overridden.has(event.uid)) overridden.set(event.uid, new Set());
+      overridden.get(event.uid).add(new Date(event.recurrenceAt).getTime());
+    }
     const resolved = events
-      .map((event) => (event.rrule && !event.recurrenceId ? nextOccurrence(event, from, to) : event))
+      .map((event) => (event.rrule && !event.recurrenceId
+        ? nextOccurrence(event, from, to, overridden.get(event.uid))
+        : event))
       .filter(Boolean);
-    return resolved.sort((a, b) => a.start.localeCompare(b.start));
+    // 折叠之后再去重：主事件若仍和覆盖实例撞在同一时刻，保留覆盖版本
+    // （那才是用户真改过的那一次）。
+    const overrideMoments = new Set(
+      resolved.filter((event) => event.recurrenceAt)
+        .map((event) => `${event.uid}|${new Date(event.recurrenceAt).getTime()}`),
+    );
+    return resolved
+      .filter((event) => !(event.recurring
+        && overrideMoments.has(`${event.uid}|${new Date(event.start).getTime()}`)))
+      .sort((a, b) => a.start.localeCompare(b.start));
   }
 
   /**
@@ -772,8 +791,11 @@ function mondayOf(date) {
  * 同一条重复事件铺成好几行时，点任意一行都会把整个系列删掉。
  *
  * 返回 undefined 表示这个系列在区间内已经没有发生（上完了 / 已过期）。
+ *
+ * `overridden` 是同一 uid 下被 RECURRENCE-ID 单独改过的那些发生时刻（毫秒戳），
+ * 并进下面的 skip 集合即可，不要再写一套发生日期遍历。
  */
-function nextOccurrence(event, from, to) {
+function nextOccurrence(event, from, to, overridden = new Set()) {
   const rrule = parseRrule(event.rrule);
   const freq = String(rrule.FREQ ?? '').toUpperCase();
   if (!['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(freq)) return event;
@@ -789,6 +811,8 @@ function nextOccurrence(event, from, to) {
   const seriesStart = new Date(event.start);
   const duration = new Date(event.end).getTime() - seriesStart.getTime();
   const skip = new Set((event.exdate ?? []).map((iso) => new Date(iso).getTime()));
+  // 被单独改过的那一次已经有自己的 VEVENT，主事件不能再折到同一天。
+  for (const moment of overridden) skip.add(moment);
 
   const firstDay = new Date(seriesStart);
   firstDay.setHours(0, 0, 0, 0);
@@ -870,6 +894,10 @@ export function parseVevents(ics, timeZone) {
     const exdates = exdateField
       ? exdateField.value.split(',').map((raw) => parseIcsDate(raw, exdateField.tzid ?? timeZone)).filter(Boolean).map((date) => date.toISOString())
       : [];
+    // RECURRENCE-ID 指向「被替换掉的那一次发生」，不是改后的时间。
+    // 全天日程这里是日期型（20261111），new Date(raw) 解析不出来或按 UTC 跑偏，必须走 parseIcsDate。
+    const ridField = field('RECURRENCE-ID');
+    const recurrenceAt = ridField ? parseIcsDate(ridField.value, ridField.tzid ?? timeZone) : undefined;
     events.push({
       uid: (field('UID')?.value ?? '').replace(/\.ics$/u, ''),
       title: text('SUMMARY') ?? '(无标题)',
@@ -880,6 +908,7 @@ export function parseVevents(ics, timeZone) {
       rrule: text('RRULE'),
       exdate: exdates,
       recurrenceId: text('RECURRENCE-ID'),
+      recurrenceAt: recurrenceAt?.toISOString(),
     });
   }
   return events;
