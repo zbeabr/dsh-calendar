@@ -101,7 +101,6 @@ echo "▸ 制作 dmg"
 # 「删除已安装 App 的签名文件」，整个打包被拒。这里改成：建空卷 → cp 进去 → 压缩。
 DMG_RW="$DIST/dmg-rw.dmg"
 DMG_OUT="$DIST/$NAME.dmg"
-VOL="/Volumes/$APP_NAME"
 rm -f "$DMG_RW" "$DMG_OUT"
 
 cat > "$DIST/使用说明.txt" <<'NOTE'
@@ -128,13 +127,22 @@ DSH 日历 · 安装
 NOTE
 
 hdiutil create -quiet -size 40m -fs HFS+ -volname "$APP_NAME" "$DMG_RW"
-hdiutil attach -quiet -nobrowse "$DMG_RW"
-cp -R "$STAGE/$APP_NAME.app" "$VOL/"
-ln -s /Applications "$VOL/Applications"
-cp "$DIST/使用说明.txt" "$VOL/使用说明.txt"
+# 挂载点不一定是 /Volumes/<卷名>：同名卷已挂载时系统会加 " 1"、" 2" 后缀，
+# 拼字符串就会把内容拷到错的地方。从 attach 输出里取真实挂载点。
+MOUNT="$(hdiutil attach -nobrowse "$DMG_RW" | awk -F'\t' '/\/Volumes\//{print $NF}' | tail -1)"
+if [ -z "$MOUNT" ] || [ ! -d "$MOUNT" ]; then
+  echo "✗ dmg 挂载失败（可能残留了同名卷，先 hdiutil detach 掉再试）" >&2
+  exit 1
+fi
+trap 'hdiutil detach "$MOUNT" -quiet 2>/dev/null || true' EXIT
+
+cp -R "$STAGE/$APP_NAME.app" "$MOUNT/"
+ln -s /Applications "$MOUNT/Applications"
+cp "$DIST/使用说明.txt" "$MOUNT/使用说明.txt"
 # 卸载前校验一次，确认拷进卷里的包签名没坏
-codesign -v "$VOL/$APP_NAME.app" || { echo "✗ dmg 里的 App 签名损坏" >&2; hdiutil detach "$VOL" -quiet; exit 1; }
-hdiutil detach "$VOL" -quiet
+codesign -v "$MOUNT/$APP_NAME.app" || { echo "✗ dmg 里的 App 签名损坏" >&2; exit 1; }
+hdiutil detach "$MOUNT" -quiet
+trap - EXIT
 hdiutil convert -quiet "$DMG_RW" -format UDZO -o "$DMG_OUT"
 rm -f "$DMG_RW"
 
