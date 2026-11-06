@@ -62,7 +62,7 @@
 </td>
 <td width="33%" valign="top">
 <h3>一个解析器，三个入口</h3>
-<p>App、命令行、MCP 共用同一套规则和 133 条用例，行为不会各说各话。</p>
+<p>App、命令行、MCP 共用同一套规则和 163 条用例，行为不会各说各话。</p>
 </td>
 </tr>
 </table>
@@ -139,7 +139,7 @@
 
 - **`nlp.mjs` 是纯 ECMAScript**，1097 行，零 import、零 Node API。它同时被 App、CLI、MCP 使用，将来也能直接在浏览器里跑。
 - 网络、钥匙串这些平台能力都在 `caldav.mjs` / `store.mjs` 里，和解析逻辑分开。
-- 解析器有 **133 条用例**，`npm test` 一条命令跑完，0.12 秒。历史 bug 全部固化成用例（「全天日程被写早一天」「用半小时无效」「区间句的时长烂在标题里」这类）。
+- 解析器有 **133 条用例**，另加 16 条安全用例和 14 条 CalDAV 往返用例，`npm test` 一条命令跑完，4 秒左右。历史 bug 全部固化成用例（「全天日程被写早一天」「用半小时无效」「区间句的时长烂在标题里」「改时间改到 VTIMEZONE 上」这类）。
 - 后端随 App 一起分发（`Contents/Resources/engine`），首次启动复制到 `~/.local`，所以 App 和命令行永远同版本。
 
 </details>
@@ -193,11 +193,11 @@ cd dsh-cal
 <summary><b>开发</b></summary>
 
 ```bash
-npm test                        # 133 条解析用例（不需要网络）
+npm test                        # 163 条用例：解析 + 安全 + CalDAV 往返（不需要网络）
 npm run test:llm                # 需要本地 Ollama，对比规则与模型的输出
 cd cal-app && ./build.sh        # 只编译 App
 DSH_CAL_ARCHS=arm64 ./build.sh  # 只编本机架构，快一半
-./scripts/make-release.sh 1.1.0 # 出 dmg + zip
+./scripts/make-release.sh 1.1.1 # 出 dmg + zip
 ```
 
 调试环境变量：`DSH_CAL_DEBUG=1`（打印子进程调用）、`DSH_CAL_GLOW_DEBUG=1`（打印光圈相位）、`DSH_CAL_NO_BOOTSTRAP=1`（App 不接管 `~/.local` 里的后端，改后端时用）、`DSH_CAL_DEMO_DARK=1 / DSH_CAL_DEMO_LIGHT=1`（强制深/浅色，用于截图）。
@@ -212,7 +212,7 @@ DSH_CAL_ARCHS=arm64 ./build.sh  # 只编本机架构，快一半
 - 重复日程在列表里只显示**下一次**发生；还不能"只删这一次"
 - 界面上**不能编辑**已有日程（只能删了重建，CLI 的 `update` 可以）
 - 地点识别靠介词或空格，纯口语长句可能把地点留在标题里
-- 跨天日程、时区切换、农历/节假日还没有
+- 时区按配置固定写死（换到别的时区后不会自动按当地墙钟换算），农历/节假日也还没有
 - 没有 Apple 付费开发者账号，所以**没做代码签名和公证**。从 dmg 装完若被 Gatekeeper 拦，右键「打开」或 `xattr -dr com.apple.quarantine "/Applications/DSH 日历.app"`
 
 ## 许可
