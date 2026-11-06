@@ -7,8 +7,8 @@ import { CalDav, CalDavError, newEventUid } from './caldav.mjs';
 import { needsRefine, refineWithModel } from './llm.mjs';
 import { parseEvent, toRrule } from './nlp.mjs';
 import {
-  cachedCalendarNames, dequeueEvent, enqueueEvent, readCalendarCache, readConfig, readPassword,
-  readQueue, writeCalendarCache,
+  cachedCalendarNames, dequeueEvent, enqueueEvent, markAttempt, readCalendarCache, readConfig, readDeadLetter,
+  readPassword, readQueue, writeCalendarCache,
 } from './store.mjs';
 
 export class NotConfiguredError extends Error {
@@ -163,7 +163,10 @@ export async function addEvent(input = {}) {
       allDay: Boolean(allDay),
       tag: tag ?? undefined,
       ...extras,
-      summary: `已暂存本地（${error.message}）：${trimmedTitle} ${formatRange(startDate, endDate)}${location ? ` @ ${location}` : ''}，联网后自动同步`,
+      // 队列文件坏了但已另存时，这件事必须让用户看见，不能吞掉
+      ...(entry.warnings ? { warnings: entry.warnings } : {}),
+      summary: `已暂存本地（${error.message}）：${trimmedTitle} ${formatRange(startDate, endDate)}${location ? ` @ ${location}` : ''}，联网后自动同步`
+        + (entry.warnings ? `\n! ${entry.warnings.join('\n! ')}` : ''),
     };
   }
 
@@ -239,20 +242,33 @@ export async function listCalendars() {
   }
 }
 
-/** 把离线队列里的日程补发到服务器。 */
-export async function syncQueue() {
+/**
+ * 把离线队列里的日程补发到服务器。
+ * @param {{ client?: object, config?: object }} [options] 只给测试用：注入假客户端，免得真连网
+ */
+export async function syncQueue(options = {}) {
   const items = readQueue();
   if (items.length === 0) {
-    return { ok: true, synced: 0, remaining: 0, summary: '没有待同步的日程。' };
+    const dead = readDeadLetter();
+    return {
+      ok: true,
+      synced: 0,
+      remaining: 0,
+      deadLettered: dead.length,
+      summary: dead.length === 0
+        ? '没有待同步的日程。'
+        : `没有待同步的日程。另有 ${dead.length} 条补发失败已转入死信（${dead.map((item) => item.title).join('、')}），可以手动重建。`,
+    };
   }
 
-  const { client, config } = getClient();
+  const { client, config } = options.client
+    ? { client: options.client, config: options.config ?? readConfig() }
+    : getClient();
   const synced = [];
   const problems = [];
-  let stop = false;
+  const deadLettered = [];
 
   for (const item of items) {
-    if (stop) break;
     try {
       const result = await client.createEvent({
         uid: item.uid ?? newEventUid(),
@@ -270,16 +286,29 @@ export async function syncQueue() {
       // exists: 这条其实上一次就写进去了，只是响应丢了。算补发成功，但单独标出来。
       synced.push({ title: item.title, calendar: result.calendar, uid: result.uid, alreadyThere: Boolean(result.exists) });
     } catch (error) {
-      problems.push({ title: item.title, error: error.message, network: Boolean(error.network) });
-      // 断网就整体停下，等下次；其它错误也只停这一轮，条目保留在队列里
-      stop = true;
+      const network = Boolean(error.network);
+      // 断网：整体停下等下次，一条都不算失败（否则重连前每条都会被记一次失败次数）
+      if (network) {
+        problems.push({ title: item.title, error: error.message, network, attempts: item.attempts ?? 0, dead: false });
+        break;
+      }
+      // 非网络错误（日历被删、权限没了、数据非法）：记一次失败，够了就挪进死信，
+      // 然后**继续处理下一条**。以前这里 stop = true，一条坏条目就把整队永久堵死。
+      const { attempts, dead } = markAttempt(item.id, error.message);
+      problems.push({ title: item.title, error: error.message, network, attempts, dead });
+      if (dead) deadLettered.push({ title: item.title, error: error.message, attempts });
     }
   }
 
   const remaining = readQueue().length;
   const lines = [];
   if (synced.length > 0) lines.push(`✓ 已补发 ${synced.length} 条：${synced.map((item) => item.title).join('、')}`);
-  if (problems.length > 0) lines.push(`✗ 还留在本地 ${remaining} 条（${problems[0].error}）`);
+  for (const problem of problems) {
+    lines.push(problem.dead
+      ? `✗ ${problem.title}：试了 ${problem.attempts} 次仍然失败（${problem.error}），已转入死信，不再占着队列`
+      : `✗ ${problem.title}：${problem.error}${problem.attempts ? `（第 ${problem.attempts} 次，还留在本地）` : ''}`);
+  }
+  if (problems.length > 0) lines.push(`还留在本地 ${remaining} 条。`);
   if (lines.length === 0) lines.push('没有变化。');
 
   return {
@@ -288,19 +317,28 @@ export async function syncQueue() {
     remaining,
     events: synced,
     problems,
+    deadLettered,
     summary: lines.join('\n'),
   };
 }
 
 export function pendingEvents() {
   const items = readQueue();
+  const dead = readDeadLetter();
+  const lines = items.map((item) => `· ${formatRange(new Date(item.start), new Date(item.end))} ${item.title}（${item.calendar ?? '默认日历'}）${item.attempts ? ` — 失败 ${item.attempts} 次：${item.lastError ?? ''}` : ''}`);
+  if (dead.length > 0) {
+    lines.push(`· 死信 ${dead.length} 条（补发失败已放弃，日程本身没写进日历）：`);
+    for (const item of dead) lines.push(`  – ${item.title}（${item.lastError ?? '未知原因'}）`);
+  }
   return {
     ok: true,
     count: items.length,
-    events: items.map((item) => ({ title: item.title, start: item.start, end: item.end, calendar: item.calendar })),
-    summary: items.length === 0
+    deadLettered: dead.length,
+    events: items.map((item) => ({ title: item.title, start: item.start, end: item.end, calendar: item.calendar, attempts: item.attempts ?? 0 })),
+    dead: dead.map((item) => ({ title: item.title, lastError: item.lastError, deadAt: item.deadAt })),
+    summary: items.length === 0 && dead.length === 0
       ? '本地没有待同步的日程。'
-      : items.map((item) => `· ${formatRange(new Date(item.start), new Date(item.end))} ${item.title}（${item.calendar ?? '默认日历'}）`).join('\n'),
+      : lines.join('\n'),
   };
 }
 

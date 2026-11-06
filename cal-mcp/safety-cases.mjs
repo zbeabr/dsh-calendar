@@ -8,11 +8,14 @@
  *   4. 钥匙串写入失败时，密码会不会跟着错误消息跑出来
  */
 
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import {
+  chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isTrustedHop, newEventUid } from './src/caldav.mjs';
-import { deleteEvent } from './src/tools.mjs';
+import { deleteEvent, syncQueue } from './src/tools.mjs';
 import { redact, savePassword } from './src/store.mjs';
 
 let pass = 0;
@@ -203,6 +206,115 @@ await checkAsync('钥匙串写入失败时，错误消息里没有密码', async
 check('uid 每次都不同', () => expect(newEventUid() === newEventUid(), false));
 check('uid 带项目后缀，便于在 iCloud 上认出来', () => {
   if (!newEventUid().endsWith('@dsh-cal')) throw new Error('缺少 @dsh-cal 后缀');
+});
+
+// ── 5. 离线队列：并发、损坏、死信 ─────────────────────────
+// 队列读写都是同步的、且路径在模块加载时就定了，所以要换 HOME 只能在子进程里做。
+// 这也是最接近真实情况的测法：App / CLI / MCP 本来就是不同进程。
+const STORE_URL = new URL('./src/store.mjs', import.meta.url).href;
+const TOOLS_URL = new URL('./src/tools.mjs', import.meta.url).href;
+
+function tmpHome(label) {
+  const home = mkdtempSync(join(tmpdir(), `dsh-${label}-`));
+  mkdirSync(join(home, '.config', 'dsh-cal'), { recursive: true });
+  return home;
+}
+
+function runNode(code, home, args = []) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', code, ...args], {
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.stderr.on('data', (chunk) => { err += chunk; });
+    child.on('close', (code2) => resolve({ code: code2, out: out.trim(), err }));
+  });
+}
+
+const ENQ = `import { enqueueEvent } from ${JSON.stringify(STORE_URL)};
+const tag = process.argv[1];
+enqueueEvent({ uid: 'uid-' + tag, title: '条目 ' + tag, start: new Date().toISOString(), end: new Date().toISOString(), allDay: false });`;
+
+await checkAsync('8 个进程同时入队，一条都不丢', async () => {
+  const home = tmpHome('q-conc');
+  try {
+    await Promise.all(Array.from({ length: 8 }, (_, index) => runNode(ENQ, home, [String(index)])));
+    const count = await runNode(`import { readQueue } from ${JSON.stringify(STORE_URL)}; console.log(readQueue().length);`, home);
+    expect(count.out, '8', '队列条数');
+    const lock = await runNode(`import { readdirSync } from 'node:fs'; import { dirname } from 'node:path'; import { queuePath } from ${JSON.stringify(STORE_URL)};
+console.log(readdirSync(dirname(queuePath())).filter((name) => name.endsWith('.lock')).length);`, home);
+    expect(lock.out, '0', '剩下的锁文件数');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+await checkAsync('队列文件损坏时报错，不当成「没有待发日程」', async () => {
+  const home = tmpHome('q-bad');
+  try {
+    await runNode(`import { writeFileSync } from 'node:fs'; import { queuePath } from ${JSON.stringify(STORE_URL)};
+writeFileSync(queuePath(), '{"items":[{"id":"a"');`, home);
+    const res = await runNode(`import { readQueue } from ${JSON.stringify(STORE_URL)};
+try { const items = readQueue(); console.log('returned:' + items.length); }
+catch (error) { console.log('threw:' + error.name); }`, home);
+    expect(res.out, 'threw:QueueCorruptError', '损坏时的行为');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+await checkAsync('队列损坏后入队：坏文件另存，新条目照常记下', async () => {
+  const home = tmpHome('q-recover');
+  try {
+    await runNode(`import { writeFileSync } from 'node:fs'; import { queuePath } from ${JSON.stringify(STORE_URL)};
+writeFileSync(queuePath(), 'not json at all');`, home);
+    const res = await runNode(`import { readdirSync } from 'node:fs'; import { dirname } from 'node:path'; import { enqueueEvent, readQueue, queuePath } from ${JSON.stringify(STORE_URL)};
+const entry = enqueueEvent({ title: '断网时建的', start: new Date().toISOString(), end: new Date().toISOString(), allDay: false });
+const backups = readdirSync(dirname(queuePath())).filter((name) => name.includes('.corrupt-'));
+console.log(JSON.stringify({ pending: readQueue().length, backups: backups.length, warned: (entry.warnings ?? []).length }));`, home);
+    const data = JSON.parse(res.out);
+    expect(data.pending, 1, '新队列条数');
+    expect(data.backups, 1, '坏文件备份数');
+    expect(data.warned, 1, 'warnings 条数');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+await checkAsync('一条永久失败不堵队：好的照发，坏的试满 3 次进死信', async () => {
+  const home = tmpHome('q-dead');
+  try {
+    const code = `import { enqueueEvent, readQueue, readDeadLetter } from ${JSON.stringify(STORE_URL)};
+import { syncQueue } from ${JSON.stringify(TOOLS_URL)};
+const mk = (title) => ({ title, start: '2026-11-07T07:00:00.000Z', end: '2026-11-07T08:00:00.000Z', allDay: false });
+enqueueEvent(mk('坏条目'));
+enqueueEvent(mk('正常条目'));
+const client = { async createEvent({ title }) {
+  if (title === '坏条目') throw new Error('日历「学习」不存在');
+  return { uid: 'u1', calendar: '学习' };
+} };
+const runs = [];
+for (let index = 0; index < 3; index += 1) runs.push(await syncQueue({ client }));
+console.log(JSON.stringify({
+  runs: runs.map((run) => ({ synced: run.synced, remaining: run.remaining, dead: run.deadLettered.length })),
+  pending: readQueue().map((item) => item.title),
+  dead: readDeadLetter().map((item) => item.title),
+}));`;
+    const res = await runNode(code, home);
+    const data = JSON.parse(res.out);
+    // 第一轮：坏条目失败，但正常条目必须照发 —— 以前是一条失败整轮停
+    expect(data.runs[0].synced, 1, '第一轮补发成功数');
+    expect(data.runs[0].remaining, 1, '第一轮剩余');
+    // 第三轮满 3 次，进死信
+    expect(data.runs[2].dead, 1, '第三轮进死信数');
+    expect(data.pending.length, 0, '最终待发条数');
+    expect(data.dead[0], '坏条目', '死信里的标题');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 // ── 汇总 ─────────────────────────────────────────────────
