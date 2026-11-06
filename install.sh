@@ -109,10 +109,32 @@ WRAPPER
 fi
 
 # ── 3. App
+# 两种来源，按目录里有什么自动判断：
+#   a) 发行版 zip：根目录直接放着「DSH 日历.app」，拷过去即可，不需要 Xcode / CLT
+#   b) git clone：调 cal-app/build.sh 现场编译（需要 swiftc）
 if [ "$MODE" != "cli" ]; then
-  [ -x "$HERE/cal-app/build.sh" ] || die "找不到 cal-app/build.sh"
-  say "▸ 编译 App（arm64 + x86_64，首次约一分钟）"
-  "$HERE/cal-app/build.sh"
+  APP_SRC="$HERE/$APP_NAME.app"
+  if [ -d "$APP_SRC" ]; then
+    TARGET_APP="$HOME/Applications/$APP_NAME.app"
+    say "▸ 安装预编译 App 到 $TARGET_APP"
+    mkdir -p "$HOME/Applications"
+    # 覆盖旧版：只动我们自己这个 bundle
+    [ -d "$TARGET_APP" ] && rm -rf "$TARGET_APP"
+    /usr/bin/ditto "$APP_SRC" "$TARGET_APP"
+    # 浏览器下载的包带 quarantine 标记，而这个 App 只有本地 ad-hoc 签名、没有 Apple 公证，
+    # 不去掉的话双击只会看到「无法验证开发者」。安装脚本替用户摘掉这个标记。
+    xattr -dr com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
+    if codesign -v "$TARGET_APP" >/dev/null 2>&1; then
+      say "  ✓ 签名完整（ad-hoc，未经 Apple 公证）"
+    else
+      say "  ⚠ 签名校验没通过，App 可能起不来"
+    fi
+  elif [ -x "$HERE/cal-app/build.sh" ]; then
+    say "▸ 编译 App（arm64 + x86_64，首次约一分钟）"
+    "$HERE/cal-app/build.sh"
+  else
+    die "既没有预编译的「$APP_NAME.app」，也没有 cal-app/build.sh"
+  fi
 fi
 
 say ""

@@ -29,3 +29,6 @@ calendars.json
 .vscode/
 .idea/
 *.swp
+
+# ── 发行打包产物
+dist/

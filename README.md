@@ -51,18 +51,33 @@
 
 要求：macOS 14 或更新，Node 18+（`brew install node`）。不需要 Xcode，也不需要 npm install。
 
+**方式一：下载安装包**（不用装 Xcode，适合只想用的）
+
+到 [Releases](https://github.com/zbeabr/dsh-calendar/releases/latest) 下载 `dsh-cal-*-macos.zip`，解压后：
+
+```bash
+cd ~/Downloads/dsh-cal-1.0.0-macos
+./install.sh
+```
+
+包里是预编译的通用二进制（arm64 + x86_64），不会在你机器上现场编译。
+
+**方式二：从源码装**（要改代码就用这个）
+
 ```bash
 git clone https://github.com/zbeabr/dsh-calendar.git dsh-cal
 cd dsh-cal
 ./install.sh
 ```
 
-脚本会依次做四件事，全部不需要 sudo：
+这条需要 Xcode Command Line Tools 提供 `swiftc`（`xcode-select --install` 一条命令装好）。
+
+两种方式装完的东西一样，脚本都会依次做四件事，全部不需要 sudo：
 
 1. 后端装到 `~/.local/share/dsh-cal`
 2. 启动器装到 `~/.local/libexec/dsh-cal-run`（GUI 应用的环境变量很干净，由它负责找 node）
 3. 命令装到 `~/.local/bin/dsh-cal`
-4. 编译并安装 `~/Applications/DSH 日历.app`（arm64 + x86_64 通用二进制）
+4. 安装 `~/Applications/DSH 日历.app`（arm64 + x86_64 通用二进制）
 
 只想要命令行 / MCP：`./install.sh --cli-only`。卸载：`./uninstall.sh`（只会删本程序自己的文件，你的日程在苹果服务器上，不受影响）。
 
@@ -144,7 +159,7 @@ cd dsh-cal
 - 界面上**不能编辑**已有日程（只能删了重建，CLI 的 `update` 可以）
 - 地点识别靠介词或空格，纯口语长句可能把地点留在标题里
 - 跨天日程、时区切换、农历/节假日还没有
-- 没有代码签名和公证：从 Releases 下载的 `.app` 会被 Gatekeeper 拦，需要右键打开，或 `xattr -d com.apple.quarantine`
+- 没有 Apple 付费开发者账号，所以**没做代码签名和公证**。`install.sh` 会摘掉下载隔离标记，正常能直接打开；万一仍被拦，右键 →「打开」，或 `xattr -dr com.apple.quarantine ~/Applications/DSH\ 日历.app`
 
 ## 开发
 
