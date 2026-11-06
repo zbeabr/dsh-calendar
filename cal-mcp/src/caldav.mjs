@@ -325,7 +325,14 @@ export class CalDav {
           const data = /<(?:\w+:)?calendar-data[^>]*>([\s\S]*?)<\/(?:\w+:)?calendar-data>/u.exec(block)?.[1];
           if (!data) continue;
           const unescaped = unescapeXml(data);
-          for (const event of parseVevents(unescaped, zone)) events.push({ ...event, calendar: target.name });
+          // 服务端返回的 href 才是这条日程的真实地址。苹果里建的、导入的、
+          // 第三方同步来的事件，文件名和 UID 往往不一样，靠「日历目录 + uid + .ics」
+          // 拼地址一定 404 —— 列表里看得见却删不掉、改不了。
+          const rawHref = firstHref(block, undefined, ['href']);
+          const url = rawHref ? new URL(rawHref, target.url).href : undefined;
+          for (const event of parseVevents(unescaped, zone)) {
+            events.push({ ...event, calendar: target.name, ...(url ? { href: rawHref, url } : {}) });
+          }
         }
       }
     };
@@ -338,17 +345,78 @@ export class CalDav {
     return resolved.sort((a, b) => a.start.localeCompare(b.start));
   }
 
-  /** Delete one event by uid; searches the given calendar or all of them. */
-  async deleteEvent({ uid, calendar }) {
+  /**
+   * 找一条日程的真实地址。
+   *
+   * 优先用调用方给的 href；否则按 uid 在服务端查一次（REPORT + UID 过滤），
+   * 查不到才退回「日历目录 + uid + .ics」的猜测——那是本程序自己建的事件才成立的假设。
+   */
+  async eventCandidates({ uid, href, calendar }) {
+    if (href) {
+      const home = await this.discover();
+      return [{ url: /^https?:/iu.test(href) ? href : new URL(href, home.url).href, calendar }];
+    }
     const targets = calendar ? [await this.findCalendar(calendar)] : await this.listCalendars();
-    for (const target of targets) {
-      const href = `${target.href.replace(/\/$/u, '')}/${uid}.ics`;
-      const { res } = await this.request(new URL(href, target.url).href, { method: 'DELETE' });
+    const found = [];
+    const queue = [...targets];
+    const worker = async () => {
+      while (queue.length > 0) {
+        const target = queue.shift();
+        const hit = await this.findHrefByUid(target, uid);
+        if (hit) found.push({ url: hit, calendar: target.name, target });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker));
+    if (found.length > 0) {
+      // 并发回来的顺序不定，按日历原顺序排，行为才可预测
+      found.sort((a, b) => targets.indexOf(a.target) - targets.indexOf(b.target));
+      return found;
+    }
+    return targets.map((target) => ({
+      url: new URL(`${target.href.replace(/\/$/u, '')}/${uid}.ics`, target.url).href,
+      calendar: target.name,
+    }));
+  }
+
+  /** 在某个日历里按 UID 找事件地址；服务端不支持 UID 过滤时返回 undefined。 */
+  async findHrefByUid(target, uid) {
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><c:calendar-data/></d:prop>
+  <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">
+    <c:prop-filter name="UID"><c:text-match collation="i;octet">${escapeXml(uid)}</c:text-match></c:prop-filter>
+  </c:comp-filter></c:comp-filter></c:filter>
+</c:calendar-query>`;
+    let text;
+    try {
+      const result = await this.request(target.url, { method: 'REPORT', body, headers: { depth: '1' } });
+      if (result.res.status >= 400) return undefined;
+      text = result.text;
+    } catch {
+      // 服务端不认这条 REPORT 也不能让删除直接失败，交给调用方退回猜测
+      return undefined;
+    }
+    for (const block of splitResponses(text)) {
+      const rawHref = firstHref(block, undefined, ['href']);
+      if (!rawHref) continue;
+      const data = /<(?:\w+:)?calendar-data[^>]*>([\s\S]*?)<\/(?:\w+:)?calendar-data>/u.exec(block)?.[1];
+      // 有些服务端忽略过滤器，把整个日历都回给你，所以必须核对 UID
+      const found = data ? /^UID:(.*)$/imu.exec(unescapeXml(data))?.[1]?.trim().replace(/\.ics$/u, '') : undefined;
+      if (found ? found === uid : rawHref.endsWith(`${uid}.ics`)) return new URL(rawHref, target.url).href;
+    }
+    return undefined;
+  }
+
+  /** Delete one event by uid (or by its server href); searches the given calendar or all of them. */
+  async deleteEvent({ uid, href, calendar }) {
+    const candidates = await this.eventCandidates({ uid, href, calendar });
+    for (const candidate of candidates) {
+      const { res } = await this.request(candidate.url, { method: 'DELETE' });
       // 404 说明这条不在这个日历里，继续问下一个。以前这里直接 return deleted:false，
       // 于是不在默认日历里的事件永远删不掉（第一条 404 就把整个循环掐断了）。
-      if (res.status < 400) return { deleted: true, uid, calendar: target.name };
+      if (res.status < 400) return { deleted: true, uid, calendar: candidate.calendar };
       if (res.status === 404) continue;
-      return { deleted: false, uid, calendar: target.name, status: res.status };
+      return { deleted: false, uid, calendar: candidate.calendar, status: res.status };
     }
     return { deleted: false, uid };
   }
@@ -357,38 +425,19 @@ export class CalDav {
    * 原地改写一条日程：只替换传进来的字段，其余（RRULE、VALARM、DESCRIPTION）原样保留。
    * 先 GET 拿原 ics 再 PUT 回去，所以重复日程和提醒不会被改坏。
    */
-  async updateEvent({ uid, calendar, title, start, end, location, allDay }) {
-    const targets = calendar ? [await this.findCalendar(calendar)] : await this.listCalendars();
+  async updateEvent({ uid, href, calendar, title, start, end, location }) {
     const zone = this.timeZone || 'Asia/Shanghai';
+    const candidates = await this.eventCandidates({ uid, href, calendar });
 
-    for (const target of targets) {
-      const href = new URL(`${target.href.replace(/\/$/u, '')}/${uid}.ics`, target.url).href;
-      const { res, text } = await this.request(href, { method: 'GET' });
+    for (const candidate of candidates) {
+      const { res, text } = await this.request(candidate.url, { method: 'GET' });
       if (res.status >= 400) continue;
 
-      let body = text.replace(/\r\n[ \t]/gu, ''); // 展开折行
       const etag = res.headers.get('etag');
+      // 展开折行后再改：折行的字段被拆在好几行里，正则匹配不到
+      const body = rewriteVevent(text.replace(/\r\n[ \t]/gu, ''), { title, start, end, location, zone });
 
-      const rewrite = (key, value) => {
-        const pattern = new RegExp(`^${key}([^:\\r\\n]*):.*$`, 'imu');
-        if (!pattern.test(body)) return;
-        body = body.replace(pattern, (_line, params) => `${key}${params}:${value}`);
-      };
-      const paramsOf = (key) => new RegExp(`^${key}([^:\\r\\n]*):`, 'imu').exec(body)?.[1] ?? `;TZID=${zone}`;
-      const stampFor = (params, date) => (/VALUE=DATE/iu.test(params) ? toIcsDate(date, zone) : toIcsZoned(date, zone));
-
-      if (title) rewrite('SUMMARY', escapeIcs(title));
-      if (start) rewrite('DTSTART', stampFor(paramsOf('DTSTART'), start));
-      if (end) rewrite('DTEND', stampFor(paramsOf('DTEND'), end));
-      if (location !== undefined) {
-        if (/^LOCATION[^:]*:/imu.test(body)) {
-          rewrite('LOCATION', escapeIcs(location));
-        } else {
-          body = body.replace(/^(SUMMARY[^\r\n]*)\r?\n/imu, (line) => `${line}\r\nLOCATION:${escapeIcs(location)}`);
-        }
-      }
-
-      const { res: putRes } = await this.request(href, {
+      const { res: putRes } = await this.request(candidate.url, {
         method: 'PUT',
         body: `${body.replace(/\r?\n/gu, '\r\n').replace(/\r\n+$/u, '')}\r\n`,
         headers: {
@@ -396,14 +445,108 @@ export class CalDav {
           ...(etag ? { 'if-match': etag } : {}),
         },
       });
-      if (putRes.status < 400) return { updated: true, uid, calendar: target.name };
-      throw new CalDavError(`改写日程失败 HTTP ${putRes.status}`, { status: putRes.status, url: href });
+      if (putRes.status < 400) return { updated: true, uid, calendar: candidate.calendar };
+      throw new CalDavError(`改写日程失败 HTTP ${putRes.status}`, { status: putRes.status, url: candidate.url });
     }
     return { updated: false, uid };
   }
 }
 
 /* ---------------------------------------------------------------- helpers */
+
+/** 每个 VEVENT 的起止行号（行内不含边界行本身）。 */
+function veventBlocks(lines) {
+  const blocks = [];
+  let begin = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim().toUpperCase();
+    if (line === 'BEGIN:VEVENT') {
+      if (begin < 0) begin = i;
+    } else if (line === 'END:VEVENT' && begin >= 0) {
+      blocks.push({ begin, end: i });
+      begin = -1;
+    }
+  }
+  return blocks;
+}
+
+function blockHasField(lines, block, key) {
+  const pattern = new RegExp(`^${key}[;:]`, 'iu');
+  for (let i = block.begin + 1; i < block.end; i += 1) {
+    if (pattern.test(lines[i])) return true;
+  }
+  return false;
+}
+
+/**
+ * 只改 VEVENT 里的字段。
+ *
+ * 以前用 `^DTSTART` 对全文替换第一个匹配，而本程序写的事件在 VEVENT 之前
+ * 先放了一段 VTIMEZONE（`DTSTART:19700101T000000`）。于是「推迟 30 分钟」
+ * 改的是时区定义：事件开始时间纹丝不动，DTEND 却往后挪，点两次 1 小时的会
+ * 就变成 2 小时，时区定义也被写坏。现在所有替换都限定在 VEVENT 块内。
+ */
+function rewriteVevent(body, { title, start, end, location, zone }) {
+  const lines = body.split(/\r?\n/);
+  const blocks = veventBlocks(lines);
+  if (blocks.length === 0) return body;
+  // 重复日程可能同时有「系列」和「单次覆盖」两个 VEVENT，默认改系列那条
+  const master = blocks.find((block) => !blockHasField(lines, block, 'RECURRENCE-ID')) ?? blocks[0];
+
+  const findField = (key) => {
+    const pattern = new RegExp(`^${key}[;:]`, 'iu');
+    for (let i = master.begin + 1; i < master.end; i += 1) {
+      if (pattern.test(lines[i])) return i;
+    }
+    return -1;
+  };
+  const paramsOf = (key) => {
+    const at = findField(key);
+    if (at < 0) return '';
+    const colon = lines[at].indexOf(':');
+    return lines[at].slice(key.length, colon);
+  };
+  const setField = (key, value, { params = '', after } = {}) => {
+    const at = findField(key);
+    if (at >= 0) {
+      lines[at] = `${lines[at].slice(0, lines[at].indexOf(':'))}:${value}`;
+      return;
+    }
+    // 字段原本没有：插到该在的位置（DTEND 紧跟 DTSTART、LOCATION 跟在 SUMMARY 后），
+    // 其余放 END:VEVENT 前面。插完把块尾行号往后挪，后面的查找才不会错位。
+    const anchor = after ? findField(after) : -1;
+    const insertAt = anchor >= 0 ? anchor + 1 : master.end;
+    lines.splice(insertAt, 0, `${key}${params}:${value}`);
+    master.end += 1;
+  };
+
+  const startParams = paramsOf('DTSTART');
+  const allDay = /(?:^|;)VALUE=DATE(?:$|;)/iu.test(startParams);
+  const parsed = parseVevents(lines.join('\r\n'), zone);
+  const before = parsed.find((event) => !event.recurrenceId) ?? parsed[0];
+
+  let nextStart = start instanceof Date ? start : before ? new Date(before.start) : undefined;
+  let nextEnd = end instanceof Date ? end : before ? new Date(before.end) : undefined;
+  if (start instanceof Date && !(end instanceof Date) && before) {
+    // 只改开始时间时按原时长平移结束时间。否则「往后挪半小时」会留下
+    // 结束时间早于开始时间的非法区间，日历里显示成负时长。
+    const duration = new Date(before.end).getTime() - new Date(before.start).getTime();
+    if (duration > 0) nextEnd = new Date(start.getTime() + duration);
+  }
+  if (nextStart && nextEnd && nextEnd.getTime() <= nextStart.getTime()) {
+    throw new CalDavError('结束时间必须晚于开始时间');
+  }
+  const stamp = (date) => (allDay ? toIcsDate(date, zone) : toIcsZoned(date, zone));
+
+  if (title) setField('SUMMARY', escapeIcs(title));
+  if (location !== undefined) setField('LOCATION', escapeIcs(location), { after: 'SUMMARY' });
+  if (start instanceof Date && nextStart) setField('DTSTART', stamp(nextStart));
+  if ((start instanceof Date || end instanceof Date) && nextStart && nextEnd) {
+    setField('DTEND', stamp(nextEnd), { params: startParams || `;TZID=${zone}`, after: 'DTSTART' });
+  }
+
+  return lines.join('\r\n');
+}
 
 function splitResponses(xml) {
   return xml.split(/<(?:\w+:)?response\b/u).slice(1);

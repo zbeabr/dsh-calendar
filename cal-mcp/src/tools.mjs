@@ -337,6 +337,7 @@ export async function deleteEvent({ uid, title, calendar, days = 30, confirm = f
       start: event.start,
       end: event.end,
       calendar: event.calendar,
+      url: event.url,
     }));
     const listing = candidates
       .map((event) => `· ${formatRange(new Date(event.start), new Date(event.end))} ${event.title}（${event.calendar ?? '默认'}）`)
@@ -371,7 +372,13 @@ export async function deleteEvent({ uid, title, calendar, days = 30, confirm = f
     // 已删掉的几条连回执都没有，调用方不知道到底删了什么。
     for (const event of hits) {
       try {
-        const result = await client.deleteEvent({ uid: event.uid, calendar: target });
+        // 列表里带回来的服务端地址直接用，省一次按 uid 的查询，
+        // 也避免「文件名 ≠ UID」时删不掉（苹果里建的、导入的事件都是这样）
+        const result = await client.deleteEvent({
+          uid: event.uid,
+          href: event.url ?? event.href,
+          calendar: event.calendar ?? target,
+        });
         if (result.deleted) deleted.push({ uid: event.uid, title: event.title });
         else failed.push({ uid: event.uid, title: event.title, error: `HTTP ${result.status ?? '未找到'}` });
       } catch (error) {

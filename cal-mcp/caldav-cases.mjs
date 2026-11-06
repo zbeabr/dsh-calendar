@@ -1,16 +1,18 @@
 /**
  * CalDAV 行为用例。跑法：node caldav-cases.mjs
  *
- * 起一个本机的假 CalDAV 服务端，验证三件只能在真实 HTTP 往返里暴露的事：
+ * 起一个本机的假 CalDAV 服务端，验证这些只能在真实 HTTP 往返里暴露的事：
  *   1. 同一个 uid 重复写不会变成两条（补发幂等）
- *   2. 重定向到别的域名时，凭据不许跟过去
- *   3. 服务端不回应时，请求会超时而不是一直挂着
+ *   2. 改时间只动 VEVENT，不会写坏前面的 VTIMEZONE
+ *   3. 服务端文件名和 UID 不一致时，按 uid 也能改、能删
+ *   4. 重定向到别的域名时，凭据不许跟过去
+ *   5. 服务端不回应时，请求会超时而不是一直挂着
  *
  * 不碰真日历，不需要账号，也不联网。
  */
 
 import { createServer } from 'node:http';
-import { CalDav, CalDavError } from './src/caldav.mjs';
+import { CalDav, CalDavError, parseVevents } from './src/caldav.mjs';
 
 let pass = 0;
 const failures = [];
@@ -33,8 +35,18 @@ function assert(condition, message) {
 }
 
 // ── 假的 CalDAV 服务端 ────────────────────────────────────
+// stored: path → { body, etag }
 const stored = new Map();
+let etagSeq = 0;
+// 有些服务端会忽略 UID 过滤器、把整个日历都回给你，客户端必须自己核对 UID
+let ignoreUidFilter = false;
 let port = 0;
+
+const escapeXmlText = (text) => text.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
+const unescapeXmlText = (text) => text.replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&amp;/gu, '&');
+
+/** 从一份 ics 里取 UID。 */
+const uidOf = (ics) => /^UID:(.*)$/imu.exec(ics)?.[1]?.trim();
 
 const PRINCIPAL = `<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:"><d:response>
@@ -87,26 +99,54 @@ const server = createServer(async (req, res) => {
     if (path === '/u/') return sendXml(CALENDARS);
   }
 
+  if (req.method === 'REPORT') {
+    // 真实服务端会按 calendar-query 里的过滤器挑，这里只实现 UID 过滤这一条
+    const asked = /<(?:\w+:)?text-match[^>]*>([^<]*)/iu.exec(body)?.[1];
+    const uid = asked ? unescapeXmlText(asked).trim() : undefined;
+    const items = [];
+    for (const [key, record] of stored) {
+      if (!key.startsWith('/u/cal/')) continue;
+      if (uid && !ignoreUidFilter && uidOf(record.body) !== uid) continue;
+      items.push(`<d:response><d:href>${key}</d:href><d:propstat><d:prop>`
+        + `<d:getetag>${record.etag}</d:getetag>`
+        + `<c:calendar-data>${escapeXmlText(record.body)}</c:calendar-data>`
+        + '</d:prop></d:propstat></d:response>');
+    }
+    return sendXml(`<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">${items.join('')}</d:multistatus>`);
+  }
+
   if (req.method === 'PUT') {
-    if (stored.has(path)) {
+    const ifNone = req.headers['if-none-match'];
+    const ifMatch = req.headers['if-match'];
+    // if-none-match: * 是「只新建」；if-match 是「按版本覆盖」。以前这里一律 412，
+    // 于是「读出来改完写回去」根本没法测。
+    if (ifNone === '*' && stored.has(path)) {
       res.writeHead(412, { 'content-type': 'text/plain' });
       res.end('precondition failed');
       return;
     }
-    stored.set(path, body);
-    res.writeHead(201);
+    if (ifMatch && (!stored.has(path) || ifMatch !== stored.get(path).etag)) {
+      res.writeHead(412, { 'content-type': 'text/plain' });
+      res.end('precondition failed');
+      return;
+    }
+    const existed = stored.has(path);
+    stored.set(path, { body, etag: `"v${(etagSeq += 1)}"` });
+    res.writeHead(existed ? 204 : 201);
     res.end();
     return;
   }
 
   if (req.method === 'GET') {
-    if (!stored.has(path)) {
+    const record = stored.get(path);
+    if (!record) {
       res.writeHead(404);
       res.end();
       return;
     }
-    res.writeHead(200, { 'content-type': 'text/calendar', etag: '"v1"' });
-    res.end(stored.get(path));
+    res.writeHead(200, { 'content-type': 'text/calendar', etag: record.etag });
+    res.end(record.body);
     return;
   }
 
@@ -167,7 +207,112 @@ await check('按 uid 删除', async () => {
   expect(stored.size, 1, '服务端条数');
 });
 
-// ── 2. 重定向到外域 ──────────────────────────────────────
+// ── 2. 改时间：只能改 VEVENT，不能改到 VTIMEZONE ──────────
+const timed = { start: new Date(2026, 10, 7, 15, 0), end: new Date(2026, 10, 7, 16, 0) };
+const pathOf = (uid) => [...stored.keys()].find((key) => key.endsWith(`${uid}.ics`));
+const eventOf = (path) => parseVevents(stored.get(path).body, 'Asia/Shanghai')[0];
+
+await check('建一条带 VTIMEZONE 的定时日程', async () => {
+  await client.createEvent({ calendar: '测试', title: '组会', ...timed, uid: 'zone-uid@dsh-cal' });
+  const ics = stored.get(pathOf('zone-uid@dsh-cal')).body;
+  assert(/BEGIN:VTIMEZONE/u.test(ics), '定时事件应该带 VTIMEZONE');
+  assert(/DTSTART:19700101T000000/u.test(ics), 'VTIMEZONE 里应有一个固定的 DTSTART');
+});
+
+await check('改时间：事件真的挪了，VTIMEZONE 没被动', async () => {
+  const path = pathOf('zone-uid@dsh-cal');
+  const moved = { start: new Date(2026, 10, 7, 18, 0), end: new Date(2026, 10, 7, 19, 0) };
+  const result = await client.updateEvent({ uid: 'zone-uid@dsh-cal', ...moved });
+  expect(result.updated, true, 'updated');
+  const ics = stored.get(path).body;
+  assert(/DTSTART:19700101T000000/u.test(ics), 'VTIMEZONE 的 DTSTART 被改坏了');
+  expect(ics.match(/^DTSTART[:;]/gmu).length, 2, 'DTSTART 行数（VTIMEZONE + 事件）');
+  const event = eventOf(path);
+  expect(new Date(event.start).getTime(), moved.start.getTime(), '事件开始时间');
+  expect(new Date(event.end).getTime(), moved.end.getTime(), '事件结束时间');
+});
+
+await check('只改开始时间：结束时间按原时长平移，不留非法区间', async () => {
+  const path = pathOf('zone-uid@dsh-cal');
+  const later = new Date(2026, 10, 7, 20, 0);
+  await client.updateEvent({ uid: 'zone-uid@dsh-cal', start: later });
+  const event = eventOf(path);
+  expect(new Date(event.start).getTime(), later.getTime(), '开始时间');
+  expect(new Date(event.end).getTime(), later.getTime() + 3600000, '结束时间应按原 1 小时平移');
+});
+
+await check('改标题不会弄丢重复规则和提醒', async () => {
+  await client.createEvent({
+    calendar: '测试', title: '早读', ...timed, repeat: 'FREQ=WEEKLY;BYDAY=SA', alarmMinutes: 10, uid: 'repeat-uid@dsh-cal',
+  });
+  const path = pathOf('repeat-uid@dsh-cal');
+  await client.updateEvent({ uid: 'repeat-uid@dsh-cal', title: '早读（改）' });
+  const ics = stored.get(path).body;
+  assert(/RRULE:FREQ=WEEKLY;BYDAY=SA/u.test(ics), 'RRULE 丢了');
+  assert(/TRIGGER:-PT10M/u.test(ics), 'VALARM 丢了');
+  assert(/SUMMARY:早读（改）/u.test(ics), '标题没改成');
+});
+
+// ── 3. 文件名 ≠ UID：苹果里建的、导入的、第三方同步的事件都这样 ──
+const importedPath = '/u/cal/imported-9f3.ics';
+const importedUid = 'apple-uid-1@icloud.com';
+
+await check('按 uid 改：服务端文件名和 UID 不一样也能改', async () => {
+  stored.set(importedPath, {
+    etag: '"v900"',
+    body: [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Apple Inc.//iOS 17//EN',
+      'BEGIN:VEVENT', `UID:${importedUid}`, 'DTSTAMP:20261101T000000Z',
+      'DTSTART;TZID=Asia/Shanghai:20261108T090000',
+      'DTEND;TZID=Asia/Shanghai:20261108T100000',
+      'SUMMARY:苹果里建的课', 'END:VEVENT', 'END:VCALENDAR', '',
+    ].join('\r\n'),
+  });
+  const result = await client.updateEvent({ uid: importedUid, title: '改过的课' });
+  expect(result.updated, true, 'updated');
+  assert(/SUMMARY:改过的课/u.test(stored.get(importedPath).body), '内容没写回原文件');
+});
+
+await check('按 uid 删：服务端文件名和 UID 不一样也能删', async () => {
+  const result = await client.deleteEvent({ uid: importedUid });
+  expect(result.deleted, true, 'deleted');
+  assert(!stored.has(importedPath), '服务端文件还在');
+});
+
+await check('服务端忽略 UID 过滤时，也不会改错文件', async () => {
+  await client.createEvent({ calendar: '测试', title: '别的日程', ...timed, uid: 'other-uid@dsh-cal' });
+  const decoy = '/u/cal/apple-photo-77.ics';
+  stored.set(decoy, {
+    etag: '"v901"',
+    body: [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Apple Inc.//macOS 14//EN',
+      'BEGIN:VEVENT', 'UID:orphan-uid@icloud.com', 'DTSTAMP:20261101T000000Z',
+      'DTSTART;TZID=Asia/Shanghai:20261109T090000',
+      'DTEND;TZID=Asia/Shanghai:20261109T100000',
+      'SUMMARY:原始标题', 'END:VEVENT', 'END:VCALENDAR', '',
+    ].join('\r\n'),
+  });
+  ignoreUidFilter = true;
+  try {
+    const result = await client.updateEvent({ uid: 'orphan-uid@icloud.com', title: '挑对了' });
+    expect(result.updated, true, 'updated');
+  } finally {
+    ignoreUidFilter = false;
+  }
+  assert(/SUMMARY:挑对了/u.test(stored.get(decoy).body), '改错了文件');
+  assert(!/SUMMARY:挑对了/u.test(stored.get(pathOf('other-uid@dsh-cal')).body), '把别的日程也改了');
+});
+
+await check('列表里的每条日程都带服务端地址', async () => {
+  const events = await client.listEvents({ from: new Date(2026, 10, 1), to: new Date(2026, 10, 30) });
+  assert(events.length > 0, '应该有日程');
+  assert(
+    events.every((event) => /^http:\/\/127\.0\.0\.1:\d+\/u\/cal\//u.test(event.url ?? '')),
+    '有日程没带 href，按文件名找会 404',
+  );
+});
+
+// ── 4. 重定向到外域 ──────────────────────────────────────
 await check('跳到外域时拒绝发送凭据', async () => {
   let error;
   try {
@@ -180,7 +325,7 @@ await check('跳到外域时拒绝发送凭据', async () => {
   assert(!error.network, '这不该被当成网络错误，否则会被塞进离线队列反复重试');
 });
 
-// ── 3. 服务端不回应 ──────────────────────────────────────
+// ── 5. 服务端不回应 ──────────────────────────────────────
 await check('服务端不回应时按超时处理', async () => {
   let error;
   const started = Date.now();
