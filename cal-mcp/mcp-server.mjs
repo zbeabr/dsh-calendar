@@ -4,13 +4,17 @@
  * Compatible with 豆包「自定义连接器」的 STDIO 模式、Claude Desktop、Cursor 等。
  */
 
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import {
   addEvent, createCalendar, deleteEvent, listCalendars, listEvents, pendingEvents, syncQueue,
 } from './src/tools.mjs';
 
 const PROTOCOL_VERSION = '2024-11-05';
-const SERVER_INFO = { name: 'dsh-cal', version: '1.0.0' };
+// 版本号只有一个来源（package.json）。以前这里硬编码 1.0.0，项目到 1.1.1 了
+// 宿主看到的还是 1.0.0，出问题时排查都从版本开始对不上。
+const PKG = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+const SERVER_INFO = { name: 'dsh-cal', version: PKG.version };
 
 const TOOLS = [
   {
