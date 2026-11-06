@@ -44,8 +44,7 @@ export class CalDavError extends Error {
 }
 
 /** 把 fetch 的底层错误翻译成能看懂的中文，并标记为「网络类」错误（可离线排队）。 */
-function networkMessage(code) {
-  switch (code) {
+function networkMessage(code) {  switch (code) {
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
     case 'ENETUNREACH':
@@ -62,15 +61,56 @@ function networkMessage(code) {
   }
 }
 
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return String(url);
+  }
+}
+
+/**
+ * 这个跳转目标能不能收下 Basic 凭据。
+ * iCloud 会把请求踢到 p33-caldav.icloud.com 这类同域分片主机，所以不能只比 host 全等；
+ * 但也没有任何理由放宽到「任意 https」。http 一律拒绝（明文发密码）。
+ * @param {string} baseUrl 用户配置的 CalDAV 根地址
+ * @param {string} target 这一跳的目标地址
+ */
+export function isTrustedHop(baseUrl, target) {
+  let base;
+  let next;
+  try {
+    base = new URL(baseUrl);
+    next = new URL(target);
+  } catch {
+    return false;
+  }
+  const isLocal = (host) => host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  // 本机调试（假的 CalDAV 服务器）允许 http，但不能从本机跳到公网
+  if (isLocal(base.hostname) || isLocal(next.hostname)) return isLocal(base.hostname) && isLocal(next.hostname);
+  if (next.protocol !== 'https:') return false;
+  if (next.hostname === base.hostname) return true;
+  const labels = base.hostname.split('.');
+  // baseUrl 本身就是一级/二级域名（或 IP）时不放宽，只认全等
+  if (labels.length <= 2 || /^\d+\.\d+\.\d+\.\d+$/u.test(base.hostname)) return false;
+  return next.hostname.endsWith(`.${labels.slice(-2).join('.')}`);
+}
+
+/** 事件 uid：同一件事从头到尾用它，补发时才不会复制出一条新的。 */
+export function newEventUid() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}@dsh-cal`;
+}
+
 export class CalDav {
   /**
-   * @param {{ baseUrl?: string, username: string, password: string, timeZone?: string }} options
+   * @param {{ baseUrl?: string, username: string, password: string, timeZone?: string, timeoutMs?: number }} options
    */
-  constructor({ baseUrl = 'https://caldav.icloud.com/', username, password, timeZone = 'Asia/Shanghai' }) {
+  constructor({ baseUrl = 'https://caldav.icloud.com/', username, password, timeZone = 'Asia/Shanghai', timeoutMs = 20000 }) {
     this.baseUrl = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
     this.username = username;
     this.password = password;
     this.timeZone = timeZone;
+    this.timeoutMs = timeoutMs;
     this.auth = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
     this.home = undefined;
   }
@@ -78,6 +118,12 @@ export class CalDav {
   async request(url, { method = 'PROPFIND', body, headers = {}, redirects = 3 } = {}) {
     let target = url;
     for (let hop = 0; hop <= redirects; hop += 1) {
+      // 凭据只发给同域（含 iCloud 的 p33-caldav 这类分片主机）或本机调试地址。
+      // 以前每一跳都无条件带 Authorization，一个开放重定向或恶意服务端
+      // 就能把 App 专用密码骗到任意主机，而且 http 降级也照发不误。
+      if (!isTrustedHop(this.baseUrl, target)) {
+        throw new CalDavError(`重定向到不受信任的地址，已拒绝发送凭据：${hostOf(target)}`, { url: target });
+      }
       let res;
       try {
         res = await fetch(target, {
@@ -89,8 +135,17 @@ export class CalDav {
           },
           body,
           redirect: 'manual',
+          // 没有超时的 fetch 会一直挂着，界面就永远停在「加载中」。
+          signal: AbortSignal.timeout(this.timeoutMs),
         });
       } catch (error) {
+        if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+          throw new CalDavError(`请求超时（${Math.round(this.timeoutMs / 1000)} 秒没有响应），日程会先存在本地`, {
+            url: target,
+            network: true,
+            code: 'ETIMEDOUT',
+          });
+        }
         const code = error?.cause?.code ?? error?.cause?.cause?.code ?? error?.cause?.errors?.[0]?.code ?? error?.code;
         throw new CalDavError(networkMessage(code), { url: target, network: true, code });
       }
@@ -195,11 +250,13 @@ export class CalDav {
    * repeat 是 RRULE 片段（FREQ=WEEKLY;BYDAY=WE），alarmMinutes 是提前几分钟提醒——
    * 提醒写进 VALARM 由系统日历负责弹，App 自己不需要通知权限。
    */
-  async createEvent({ calendar, title, start, end, description, location, allDay = false, repeat, alarmMinutes }) {
+  async createEvent({ calendar, title, start, end, description, location, allDay = false, repeat, alarmMinutes, uid: givenUid }) {
     const target = await this.findCalendar(calendar, { create: false });
     if (!target.writable) throw new CalDavError(`日历「${target.name}」是只读的`);
 
-    const uid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}@dsh-cal`;
+    // uid 可以由调用方给（离线队列补发时复用入队时那一枚）。
+    // 以前每次 PUT 都现生成，于是「服务端写成功但响应超时」→ 重试 → 多出一条重复日程。
+    const uid = givenUid || newEventUid();
     const stamp = toIcsStamp(new Date());
     const zone = this.timeZone || 'Asia/Shanghai';
     const lines = [
@@ -235,6 +292,11 @@ export class CalDav {
       body: `${lines.join('\r\n')}\r\n`,
       headers: { 'content-type': 'text/calendar; charset=utf-8', 'if-none-match': '*' },
     });
+    if (res.status === 412) {
+      // 带着 if-none-match: * 却撞上 412，说明这个 uid 已经写进去了
+      // （上一次 PUT 成功但响应丢了）。视为已存在，不要当失败重试。
+      return { uid, href, calendar: target.name, exists: true };
+    }
     if (res.status >= 400) throw new CalDavError(`写入事件失败 HTTP ${res.status}`, { status: res.status });
     return { uid, href, calendar: target.name };
   }

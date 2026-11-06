@@ -58,7 +58,8 @@ const TOOLS = [
   },
   {
     name: 'calendar_delete_event',
-    description: '删除日程。优先直接传 title（标题里的一段字即可），工具会在未来 30 天里找标题包含它的日程并删除；也可以传 calendar_list_events 查到的 uid 精确删除。',
+    description: '删除日程。传 uid 精确删除；或传 title（标题里的一段字），工具会在未来 30 天里找标题包含它的日程。'
+      + '命中 1 条直接删；命中多条时**不会删**，只返回候选和 needsConfirm，此时要先把候选念给用户、确认后再带 confirm=true 调一次，或者改用其中某条的 uid。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -66,6 +67,8 @@ const TOOLS = [
         uid: { type: 'string', description: '日程 uid（可选，精确删除时用）' },
         calendar: { type: 'string', description: '在哪个日历里找' },
         days: { type: 'number', description: '按标题查找时往后找几天，默认 30' },
+        confirm: { type: 'boolean', description: '按标题命中多条时，确认要全部删除才传 true' },
+        dryRun: { type: 'boolean', description: '只看会删除哪些，不真的删' },
       },
       required: [],
     },
@@ -127,6 +130,8 @@ async function callTool(name, args = {}) {
         title: args.title,
         calendar: args.calendar,
         days: args.days,
+        confirm: args.confirm,
+        dryRun: args.dryRun,
       }));
     case 'calendar_sync_pending':
       return textResult(await syncQueue());

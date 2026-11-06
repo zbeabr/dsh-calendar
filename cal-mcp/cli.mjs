@@ -417,9 +417,18 @@ async function main() {
       return undefined;
     }
     case 'rm': {
-      const result = await deleteEvent({ uid: rest[0], title: flags.title, calendar: flags.calendar });
+      const result = await deleteEvent({
+        uid: rest[0],
+        title: flags.title,
+        calendar: flags.calendar,
+        days: flags.days,
+        confirm: flags.confirm === true || flags.confirm === 'true',
+        dryRun: flags['dry-run'] === true || flags['dry-run'] === 'true',
+      });
       if (jsonMode) return out(result);
       console.log(result.summary);
+      // 命中多条、等用户确认时，用非零退出码，脚本里能判断「没删成」
+      if (result.needsConfirm) process.exitCode = 1;
       return undefined;
     }
     case 'new-cal': {

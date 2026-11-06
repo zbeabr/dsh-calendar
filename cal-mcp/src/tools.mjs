@@ -3,7 +3,7 @@
  * All user-facing text is Chinese; ISO timestamps are used for machine fields.
  */
 
-import { CalDav, CalDavError } from './caldav.mjs';
+import { CalDav, CalDavError, newEventUid } from './caldav.mjs';
 import { needsRefine, refineWithModel } from './llm.mjs';
 import { parseEvent, toRrule } from './nlp.mjs';
 import {
@@ -131,12 +131,16 @@ export async function addEvent(input = {}) {
   };
 
   let result;
+  // uid 在这里就定下来，第一次写入和之后的补发共用同一枚，
+  // 否则「写成功但响应超时」会让队列再发一条，日历里出现两条一样的日程。
+  const uid = newEventUid();
   try {
-    result = await client.createEvent(payload);
+    result = await client.createEvent({ ...payload, uid });
   } catch (error) {
     // 只有「网络类」错误才排队；密码错、权限错要立刻报出来
     if (!(error instanceof CalDavError) || !error.network) throw error;
     const entry = enqueueEvent({
+      uid,
       title: trimmedTitle,
       start: startDate.toISOString(),
       end: endDate.toISOString(),
@@ -251,6 +255,7 @@ export async function syncQueue() {
     if (stop) break;
     try {
       const result = await client.createEvent({
+        uid: item.uid ?? newEventUid(),
         calendar: item.calendar ?? config.calendar ?? undefined,
         title: item.title,
         start: new Date(item.start),
@@ -262,7 +267,8 @@ export async function syncQueue() {
         alarmMinutes: item.alarmMinutes,
       });
       dequeueEvent(item.id);
-      synced.push({ title: item.title, calendar: result.calendar, uid: result.uid });
+      // exists: 这条其实上一次就写进去了，只是响应丢了。算补发成功，但单独标出来。
+      synced.push({ title: item.title, calendar: result.calendar, uid: result.uid, alreadyThere: Boolean(result.exists) });
     } catch (error) {
       problems.push({ title: item.title, error: error.message, network: Boolean(error.network) });
       // 断网就整体停下，等下次；其它错误也只停这一轮，条目保留在队列里
@@ -298,10 +304,19 @@ export function pendingEvents() {
   };
 }
 
-/** Delete by uid, or by title substring within the next `days` days. */
-export async function deleteEvent({ uid, title, calendar, days = 30 } = {}) {
+/** 按标题删除时，一次最多删几条。命中多条必须先确认，超过这个数直接拒绝。 */
+const MAX_CONFIRM_DELETE = 10;
+
+/**
+ * Delete by uid, or by title substring within the next `days` days.
+ *
+ * 按标题删是会误伤的：`title.includes(needle)` 里「开会」能同时命中「组会」「开会」。
+ * 以前命中几条就删几条，而调这个函数的是模型，一句「把开会删了」可能清掉一整周。
+ * 现在的规矩：命中 1 条直接删（用户说的就是它），命中多条只回候选、要求 confirm。
+ */
+export async function deleteEvent({ uid, title, calendar, days = 30, confirm = false, dryRun = false, client: clientOverride } = {}) {
   if (!uid && !title) throw new Error('需要 uid 或日程标题');
-  const { client } = getClient();
+  const client = clientOverride ?? getClient().client;
   // 删除时**不**退回默认日历：事件可能在「生活」「课表-*」里，
   // 只去「学习」找会直接报「没找到 uid」，界面上的删除按钮等于失效。
   const target = calendar ?? undefined;
@@ -315,13 +330,63 @@ export async function deleteEvent({ uid, title, calendar, days = 30 } = {}) {
     if (hits.length === 0) {
       return { ok: false, deleted: [], summary: `未来 ${days} 天里没找到标题包含「${needle}」的日程。` };
     }
+
+    const candidates = hits.map((event) => ({
+      uid: event.uid,
+      title: event.title,
+      start: event.start,
+      end: event.end,
+      calendar: event.calendar,
+    }));
+    const listing = candidates
+      .map((event) => `· ${formatRange(new Date(event.start), new Date(event.end))} ${event.title}（${event.calendar ?? '默认'}）`)
+      .join('\n');
+
+    if (dryRun) {
+      return { ok: false, dryRun: true, deleted: [], candidates, summary: `命中 ${hits.length} 条，没有删除（dryRun）：\n${listing}` };
+    }
+    if (hits.length > 1 && !confirm) {
+      return {
+        ok: false,
+        needsConfirm: true,
+        deleted: [],
+        candidates,
+        summary: `未来 ${days} 天里有 ${hits.length} 条标题含「${needle}」，没有删除：\n${listing}\n`
+          + '要全删就把 confirm 传 true 再调一次；只想删其中一条就传它的 uid。',
+      };
+    }
+    if (hits.length > MAX_CONFIRM_DELETE) {
+      return {
+        ok: false,
+        needsConfirm: true,
+        deleted: [],
+        candidates,
+        summary: `命中 ${hits.length} 条，超过一次删除上限 ${MAX_CONFIRM_DELETE} 条，已拒绝。请用更精确的标题，或者传 uid 逐条删。`,
+      };
+    }
+
+    const deleted = [];
+    const failed = [];
+    // 逐条删、逐条记：以前第一条抛错就把整个循环带走，
+    // 已删掉的几条连回执都没有，调用方不知道到底删了什么。
     for (const event of hits) {
-      await client.deleteEvent({ uid: event.uid, calendar: target });
+      try {
+        const result = await client.deleteEvent({ uid: event.uid, calendar: target });
+        if (result.deleted) deleted.push({ uid: event.uid, title: event.title });
+        else failed.push({ uid: event.uid, title: event.title, error: `HTTP ${result.status ?? '未找到'}` });
+      } catch (error) {
+        failed.push({ uid: event.uid, title: event.title, error: error.message });
+      }
+    }
+    if (deleted.length === 0) {
+      return { ok: false, deleted: [], failed, candidates, summary: `没能删掉任何一条：\n${failed.map((item) => `· ${item.title}：${item.error}`).join('\n')}` };
     }
     return {
-      ok: true,
-      deleted: hits.map((event) => event.uid),
-      summary: `已删除 ${hits.length} 个日程：\n${hits.map((event) => `· ${formatRange(new Date(event.start), new Date(event.end))} ${event.title}`).join('\n')}`,
+      ok: failed.length === 0,
+      deleted: deleted.map((item) => item.uid),
+      failed,
+      summary: `已删除 ${deleted.length} 个日程：\n${deleted.map((item) => `· ${item.title}`).join('\n')}`
+        + (failed.length > 0 ? `\n失败的 ${failed.length} 条：\n${failed.map((item) => `· ${item.title}：${item.error}`).join('\n')}` : ''),
     };
   }
 
@@ -329,6 +394,7 @@ export async function deleteEvent({ uid, title, calendar, days = 30 } = {}) {
   return {
     ok: result.deleted,
     uid,
+    deleted: result.deleted ? [uid] : [],
     summary: result.deleted ? `已删除日程 ${uid}` : `没找到 uid 为 ${uid} 的日程`,
   };
 }
