@@ -52,6 +52,25 @@ function startOfDay(date) {
   return copy;
 }
 
+/** 某年某月（monthIndex 从 0 开始，可越界）有多少天。 */
+function monthLength(year, monthIndex) {
+  return new Date(year, monthIndex + 1, 0).getDate();
+}
+
+/**
+ * 明确写了年月日、但那天根本不存在时，报错而不是挪到月末。
+ *
+ * 以前「2月30号」会被夹成 2 月 28 号、「11月31号」夹成 11 月 30 号。
+ * 用户说的是哪一天，程序却悄悄改成另一天写进日历 —— 这比报错危险得多，
+ * README 里也是这么承诺的（「日期错了比报错严重得多」）。
+ */
+function assertRealDay(year, monthIndex, day, label) {
+  const last = monthLength(year, monthIndex);
+  if (day > last) {
+    throw new Error(`${label}没有 ${day} 号（那个月只有 ${last} 天），换个日期吧。`);
+  }
+}
+
 /**
  * Resolve the date part of a phrase.
  * @returns {{ date: Date, matched: string, evening: boolean }}
@@ -91,7 +110,7 @@ function parseDate(text, now) {
   }
 
   // 周末 / 这周末 / 下周末 → 默认按周六算
-  if ((match = /(?<![\d一二两三四五六七八九十])(下下|下个?|这个?|本)?\s*(?:周|星期|礼拜)\s*末/u.exec(text))) {
+  if ((match = /(?<![\d一二两三四五六七八九十])(下下个?|下个?|这个?|本)?\s*(?:周|星期|礼拜)\s*末/u.exec(text))) {
     const prefix = match[1] ?? '';
     const today = startOfDay(now);
     const currentDay = today.getDay() === 0 ? 7 : today.getDay();
@@ -123,21 +142,20 @@ function parseDate(text, now) {
     return { date: startOfDay(date), matched: match[0], evening: false };
   }
 
-  // 下周三 / 下下周一 / 本周一 / 周三 / 星期四
+  // 下周三 / 下下周一 / 下下周周五 / 本周一 / 周三 / 星期四
   // 「下」前不能是数词，否则「记一下周六」「等一下周报」里的「下」会被吃成「下周六」。
-  if ((match = /(?<![\d一二两三四五六七八九十])(下下|下个|下|本|这|这个)?\s*(?:周|星期|礼拜)\s*([一二三四五六日天七])/u.exec(text))) {
+  // 「周」可以叠写（「下下周周五」和「下下周五」是一回事），所以第二段「周」是可选的。
+  if ((match = /(?<![\d一二两三四五六七八九十])(下下个?|下个?|本|这|这个)?\s*(?:周|星期|礼拜)\s*(?:周|星期|礼拜)?\s*([一二三四五六日天七])/u.exec(text))) {
     const prefix = match[1] ?? '';
     const targetDay = WEEKDAY[match[2]];
     const today = startOfDay(now);
     const currentDay = today.getDay() === 0 ? 7 : today.getDay();
-    let delta = targetDay - currentDay;
-    if (prefix === '下下') {
-      delta += 14 - (delta > 0 ? 7 : 0);
-    } else if (prefix.startsWith('下')) {
-      delta += 7;
-    } else if (prefix === '' && delta < 0) {
-      delta += 7;
-    }
+    // 以「本周一」为原点数周，而不是在「距今天几天」上打补丁。
+    // 以前下下周五做的事是 delta += 14 - (delta > 0 ? 7 : 0)，周三说「下下周五」
+    // 得到的是 7 天后 —— 和「下周五」同一天，等于把「下下」整个吞掉了。
+    const weekOffset = prefix.startsWith('下下') ? 2 : prefix.startsWith('下') ? 1 : 0;
+    let delta = targetDay - currentDay + weekOffset * 7;
+    if (weekOffset === 0 && delta < 0) delta += 7;
     // bareWeekday：「周三」这种没带任何限定词的写法。周三晚上说「周三九点」，
     // 指的一定是还没到的那个周三，不是今天上午那个（见下面的 +7 天规则）。
     // 「这周三 / 本周三」带了限定词，就按字面留在本周，不标。
@@ -158,13 +176,28 @@ function parseDate(text, now) {
     const offset = /下下/u.test(prefix) ? 2 : /下/u.test(prefix) ? 1 : 0;
     const day = cnToNumber(match[2]);
     const monthIndex = now.getMonth() + offset;
-    // 31 号落在 30 天的月份上时取月末，别溢出到下个月 1 号
-    const lastDay = new Date(now.getFullYear(), monthIndex + 1, 0).getDate();
+    const year = now.getFullYear() + Math.floor(monthIndex / 12);
+    const realMonth = ((monthIndex % 12) + 12) % 12;
+    // 以前这里取 min(day, 月末)，把「下个月31号」悄悄变成 30 号
+    assertRealDay(year, realMonth, day, `${realMonth + 1} 月`);
     return {
-      date: new Date(now.getFullYear(), monthIndex, Math.min(day, lastDay)),
+      date: new Date(year, realMonth, day),
       matched: match[0],
       evening: false,
     };
+  }
+
+  // 2027年3月15号 / 明年3月15号 / 今年12月1号
+  // 必须排在「3月15号」前面：否则年份没被吃掉，标题里会剩一个「2027年」。
+  if ((match = /(?:(\d{4})\s*年|(明年|后年|今年))\s*(\d{1,2}|[一二三四五六七八九十]{1,3})\s*月\s*(\d{1,2}|[一二三四五六七八九十]{1,3})\s*[日号]/u.exec(text))) {
+    const baseYear = now.getFullYear();
+    const year = match[1] ? Number(match[1]) : /后年/u.test(match[2]) ? baseYear + 2 : /明年/u.test(match[2]) ? baseYear + 1 : baseYear;
+    const month = cnToNumber(match[3]);
+    const day = cnToNumber(match[4]);
+    if (!(month >= 1 && month <= 12)) throw new Error(`月份「${match[3]}」超出范围了，应该是 1 到 12。`);
+    if (!(day >= 1 && day <= 31)) throw new Error(`日期「${match[4]}」超出范围了，应该是 1 到 31。`);
+    assertRealDay(year, month - 1, day, `${year} 年 ${month} 月`);
+    return { date: new Date(year, month - 1, day), matched: match[0], evening: false };
   }
 
   // 11月8号 / 十一月八号 / 11月8日
@@ -175,9 +208,9 @@ function parseDate(text, now) {
     if (!(month >= 1 && month <= 12)) throw new Error(`月份「${match[1]}」超出范围了，应该是 1 到 12。`);
     if (!(day >= 1 && day <= 31)) throw new Error(`日期「${match[2]}」超出范围了，应该是 1 到 31。`);
     const year = month < now.getMonth() + 1 ? now.getFullYear() + 1 : now.getFullYear();
-    // 2月30号 / 11月31号：夹到当月最后一天，不溢出到下个月 1 号
-    const lastDay = new Date(year, month, 0).getDate();
-    return { date: new Date(year, month - 1, Math.min(day, lastDay)), matched: match[0], evening: false };
+    // 2月30号 / 11月31号：那天根本不存在，报错让用户重说
+    assertRealDay(year, month - 1, day, `${month} 月`);
+    return { date: new Date(year, month - 1, day), matched: match[0], evening: false };
   }
 
   // 8号 / 八号（本月，已经过了就顺到下个月）
@@ -186,8 +219,15 @@ function parseDate(text, now) {
     const day = cnToNumber(match[1]);
     // 0 号 / 32 号 会被 Date 解析成上月末、下月初，宁可让用户重说
     if (!(day >= 1 && day <= 31)) throw new Error(`日期「${match[1]}」超出范围了，应该是 1 到 31。`);
-    let date = new Date(now.getFullYear(), now.getMonth(), day);
-    if (day < now.getDate()) date = new Date(now.getFullYear(), now.getMonth() + 1, day);
+    let date;
+    if (day > monthLength(now.getFullYear(), now.getMonth())) {
+      // 「31号」在 11 月说，指的是下个月 31 号（12 月）；下个月也没有就报错
+      assertRealDay(now.getFullYear(), now.getMonth() + 1, day, `${now.getMonth() + 2} 月`);
+      date = new Date(now.getFullYear(), now.getMonth() + 1, day);
+    } else {
+      date = new Date(now.getFullYear(), now.getMonth(), day);
+      if (day < now.getDate()) date = new Date(now.getFullYear(), now.getMonth() + 1, day);
+    }
     return { date, matched: match[0], evening: false };
   }
 
@@ -258,17 +298,51 @@ function parseRepeat(text) {
     if (interval >= 2) return { freq: 'DAILY', days: [], interval, matched: match[0] };
   }
   // 「每两周」「每两个星期」「每 2 周」：WEEKLY + INTERVAL
-  if ((match = /每\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个)?\s*(?:周|星期|礼拜)(?![一二三四五六日天七])/u.exec(text))) {
+  // 这里不再用负向断言把「每两周一」挡掉：那样「每两周一次」也会被挡住，
+  // 整句反而报「找不到时间」。间隔后面的「星期几」交给下面统一解析。
+  if ((match = /每\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个)?\s*(?:周|星期|礼拜)/u.exec(text))) {
     const interval = cnToNumber(match[1]);
-    if (interval >= 2) return { freq: 'WEEKLY', days: [], interval, matched: match[0] };
+    if (interval >= 2) {
+      // 「每两周周一和周三」：间隔后面的星期几也得一起认。
+      // 以前只返回 INTERVAL，BYDAY 丢掉，「周一和周三」还留在标题里。
+      const rest = text.slice(match.index + match[0].length);
+      const chunkRe = new RegExp(`^\\s*(?:的|个)?\\s*((?:周|星期|礼拜)?\\s*${WEEKDAY_CHAR}(?:(?:\\s*(?:${DAY_SEP}|${DAY_RANGE})\\s*(?:周|星期|礼拜)?\\s*)?${WEEKDAY_CHAR})*)`, 'u');
+      const chunkMatch = chunkRe.exec(rest);
+      let days = [];
+      let extra = '';
+      if (chunkMatch) {
+        const tail = rest.slice(chunkMatch[0].length);
+        const unit = /^\s*(?:次|回|遍)/u.exec(tail);
+        if (unit) {
+          // 「每两周一次」：这里的「一」是次数，不是星期一
+          extra = `${chunkMatch[0].trim()}${unit[0].trim()}`;
+        } else {
+          days = expandDayChunk(chunkMatch[1]);
+          if (days.length) extra = chunkMatch[0].trim();
+        }
+      }
+      return {
+        freq: 'WEEKLY',
+        days,
+        ...(days.length ? { byday: days.map((day) => ICS_DAY[day]) } : {}),
+        interval,
+        matched: match[0] + extra,
+      };
+    }
   }
   if ((match = /每(?:个)?月\s*(\d{1,2}|[一二三四五六七八九十]{1,3})\s*[日号]/u.exec(text))) {
     const day = cnToNumber(match[1]);
     if (day >= 1 && day <= 31) return { freq: 'MONTHLY', bymonthday: day, days: [], matched: match[0] };
   }
-  // 「每周三次」「每星期两回」：只说了频率没说是哪几天，按第一次那天每周重复，
-  // 但「三次」要一起吃掉，否则标题里会剩个「每次」。
+  // 「每周三次」「每星期两回」：只说了频率没说是哪几天。
+  // 「每周一次」就是每周，没问题；三次以上 RRULE 表达不了（它只认「哪天」），
+  // 以前是静默降级成每周一次 —— 用户以为是三次，日历里只出现一次，属于「悄悄少写」。
+  // 宁可让他补一句「每周一三五」，也不要在他的日历里写一条不对的规则。
   if ((match = /每(?:个)?\s*(?:周|星期|礼拜)\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:次|回|遍)/u.exec(text))) {
+    const times = cnToNumber(match[1]);
+    if (times > 1) {
+      throw new Error(`「${match[0]}」还没法精确表达（日历的重复规则只认「哪天」，不认「几次」）。请指明哪几天，比如「每周一三五」。`);
+    }
     return { freq: 'WEEKLY', days: [], matched: match[0] };
   }
   // 「每周末」：周六和周日两天。必须排在「每周X」之前，否则「每周」先吃掉、「末」留在标题里。
@@ -295,9 +369,18 @@ function repeatStartDate(repeat, now) {
   const today = startOfDay(now);
   if (repeat.freq === 'DAILY') return today;
   if (repeat.freq === 'MONTHLY') {
-    const at = (monthOffset) => new Date(now.getFullYear(), now.getMonth() + monthOffset, repeat.bymonthday);
-    const first = at(0);
-    return startOfDay(first.getTime() < today.getTime() ? at(1) : first);
+    // 「每月31号」：31 号不是每个月都有。以前直接 new Date(y, m, 31)，
+    // 在 11 月会溢出成 12 月 1 号 —— 第一次就错了一天。
+    // 按 RFC 5545 的 BYMONTHDAY 语义，没有这一天的月份直接跳过。
+    const day = repeat.bymonthday;
+    for (let offset = 0; offset <= 12; offset += 1) {
+      const monthStart = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+      const last = monthLength(monthStart.getFullYear(), monthStart.getMonth());
+      if (day > last) continue;
+      const candidate = new Date(monthStart.getFullYear(), monthStart.getMonth(), day);
+      if (candidate.getTime() >= today.getTime()) return candidate;
+    }
+    throw new Error(`「每月 ${day} 号」在任何月份都对不上，换个日期吧。`);
   }
   if (!repeat.days.length) return today;
   const currentDay = today.getDay() === 0 ? 7 : today.getDay();
@@ -380,16 +463,23 @@ function parseClock(text) {
     if (Number.isNaN(minute)) minute = 0;
   }
   // "六点半" / "18:30" — a bare 4-digit clock like 1830 is not supported on purpose.
-  if (minute > 59) return undefined;
+  // 分钟越界以前是直接 return undefined，于是「3点75分开会」整句掉成一条全天日程，
+  // 而「3点75分」还烂在标题里。这里改成明确报错。
+  if (minute > 59) throw new Error(`「${match[0].replace(/\s+/gu, '')}」里的分钟超出 0–59 了，换个时间说吧。`);
+  if (hour > 24) throw new Error(`钟点「${match[2]}点」超出范围了，应该是 0 到 24 点。`);
 
   let dayOffset = 0;
-  if (hour === 12 && NIGHT_PERIOD.test(period ?? '')) {
+  if (hour === 24) {
+    // 「24点」= 次日零点
+    hour = 0;
+    dayOffset = 1;
+  } else if (hour === 12 && NIGHT_PERIOD.test(period ?? '')) {
     hour = 0;
     dayOffset = 1; // 那一夜跨到第二天零点
   } else {
     hour = applyPeriod(hour, period);
   }
-  if (hour > 23) return undefined;
+  if (hour > 23) throw new Error(`钟点「${match[2]}点」超出范围了，应该是 0 到 24 点。`);
   // 没有分钟时，别把后面那个「分」当成时间吃掉（「三点分析」→ 标题留下「析」）
   const matched = rawMinute === undefined ? match[0].replace(/\s*分$/u, '') : match[0];
   return { hour, minute, matched, dayOffset };
@@ -743,8 +833,15 @@ export function parseEvent(input, now = new Date(), options = {}) {
   if (relative) {
     pieces.push({ text: relative.matched, kind: 'time' });
     const relStart = new Date(now.getTime() + relative.minutes * 60000);
-    const relEnd = new Date(relStart.getTime() + Math.max(15, relative.minutes) * 60000);
-    return finish({ start: relStart, end: relEnd, allDay: false, durationAssumed: false, rolled: false });
+    // 「2小时后开会」说的是**什么时候开始**，不是「开多久」。
+    // 以前直接拿这个偏移当长度，于是 2 小时后的会真的开了两小时。
+    // 只有句子里另说了长度（「2小时后开会，用半小时」）才按它算。
+    const rest = text.replace(relative.matched, ' '.repeat(relative.matched.length));
+    const relDuration = parseDuration(rest);
+    if (relDuration) pieces.push({ text: relDuration.matched, kind: 'duration' });
+    const length = relDuration?.minutes ?? 60;
+    const relEnd = new Date(relStart.getTime() + length * 60000);
+    return finish({ start: relStart, end: relEnd, allDay: false, durationAssumed: !relDuration, rolled: false });
   }
 
   // 重复规则要先于普通日期判断：「每周三」里的「周三」本来会被读成本周三
@@ -1019,7 +1116,10 @@ export function parseEvent(input, now = new Date(), options = {}) {
   // 下午六点说「三点到四点」，+12 得到的 15:00 也已经过去，会被一路顺延成
   // 「明天凌晨三点」—— 这不是常人会安排的日程。
   // 明说过 0 点/24 点、或者写成 3:00 这种 24 小时制时，尊重字面，不动。
-  const saidNight = /(凌晨|半夜|深夜|午夜|夜里|夜间|一早)/u.test(text)
+  const saidNight = saidPeriod
+    // 「早上五点」「上午五点」是用户自己讲清楚的钟点，不能按「没人凌晨安排日程」去推成下午。
+    // 以前这份清单里只有「凌晨/半夜」这类词，于是早上五点被推到 17:00。
+    || /(凌晨|半夜|深夜|午夜|夜里|夜间|一早|清晨|早上|早晨|上午)/u.test(text)
     || /(零点|24\s*点|0\s*点)/u.test(timeText);
   // 「晚上十二点」已经把起点推到第二天零点了，那是明说的午夜，别再推到中午
   const nightShifted = !saidNight && !explicitClock && !startDayOffset && start.getHours() < 6;
