@@ -11,11 +11,11 @@
  * 不碰真日历，不需要账号，也不联网。
  */
 
-// 和 parse-cases.mjs 一样固定 +08:00 才可复现：E-2 的样例 ICS 写死了
-// TZID=Asia/Shanghai，用例的 from/to 与期望值也用本机时区构造，
-// nextOccurrence 还按本机本地小时重建发生时刻。机器时区不同会差 8 小时、
-// 甚至让 RECURRENCE-ID 的去重失效（CI 的 UTC runner 上实测挂 2 条）。
-// 注意：这只保证测试环境自洽，**不代表「机器时区 ≠ 日历时区」的组合已验证**。
+// 和 parse-cases.mjs 一样固定 +08:00：前 21 条用例用 `new Date(2026, …)` 按本机
+// 时区构造 from/to 与期望值，样例 ICS 又写死了 TZID=Asia/Shanghai，固定 TZ 才能
+// 让这批断言在 UTC runner 上也稳定复现（CI 曾因此挂过 2 条）。
+// 这不等于「机器时区 ≠ 日历时区」已验证：第 9 节另有一组用例在 5 个机器时区下
+// 用绝对时刻验证重复日程的折叠与去重，那一组才是跨时区组合的覆盖。
 process.env.TZ = 'Asia/Shanghai';
 
 import { spawn } from 'node:child_process';
@@ -537,6 +537,66 @@ await check('服务端不给颜色时 listCalendars 仍返回 color: null', asyn
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+// ── 9. 机器时区 ≠ 日历时区：重复日程折叠不该跟着机器跑 ──────
+// 服务端 ICS 写的是 TZID=Asia/Shanghai，机器时区可以是任何值。旧实现用本机
+// getHours/getDay/setHours 重建发生时刻：同一个绝对时刻在纽约是「周五 20:00」，
+// BYDAY=SA 判断、发生日期、RECURRENCE-ID 的 skip 集合会全部错位。
+// 这里的 from/to 与期望一律用绝对时刻，不把本机时区当成日历时区。
+// 新数据在汇总前才放进去，前面 21 条用例看到的 stored 完全不变。
+const crossUid = 'cross-zone-master@example.com';
+putIcs('/u/cal/cross-zone-master.ics', vevent(
+  `UID:${crossUid}`, 'DTSTAMP:20261101T000000Z',
+  'DTSTART;TZID=Asia/Shanghai:20261107T090000',
+  'DTEND;TZID=Asia/Shanghai:20261107T100000',
+  'RRULE:FREQ=WEEKLY;BYDAY=SA',
+  'SUMMARY:跨时区周会',
+));
+
+const CROSS_ZONES = ['Asia/Shanghai', 'UTC', 'America/New_York', 'Pacific/Auckland', 'Asia/Tokyo'];
+const CROSS_FROM = new Date('2026-11-06T16:00:00Z'); // 上海 11/07 00:00
+const CROSS_TO = new Date('2026-11-09T16:00:00Z');   // 上海 11/10 00:00
+const MASTER_START = Date.parse('2026-11-07T01:00:00Z');  // 上海 11/07 09:00
+const OVERRIDE_START = Date.parse('2026-11-08T06:00:00Z'); // 上海 11/08 14:00
+const ALLDAY_FROM = new Date('2026-11-10T16:00:00Z');
+const ALLDAY_TO = new Date('2026-11-13T16:00:00Z');
+const ALLDAY_START = Date.parse('2026-11-11T16:00:00Z'); // 上海 11/12 00:00
+
+async function withZones(fn) {
+  const saved = process.env.TZ;
+  try {
+    for (const zone of CROSS_ZONES) {
+      process.env.TZ = zone;
+      await fn(zone);
+    }
+  } finally {
+    process.env.TZ = saved;
+  }
+}
+
+await check('机器时区与日历时区不同时，重复主事件仍折到同一个绝对时刻', async () => {
+  await withZones(async (zone) => {
+    const events = await client.listEvents({ from: CROSS_FROM, to: CROSS_TO });
+    const rows = events.filter((item) => item.uid === crossUid);
+    expect(rows.length, 1, `${zone} 下主事件行数`);
+    expect(new Date(rows[0].start).getTime(), MASTER_START, `${zone} 下折到的开始时刻`);
+  });
+});
+
+await check('机器时区与日历时区不同时，RECURRENCE-ID 去重仍生效（普通 + 全天）', async () => {
+  await withZones(async (zone) => {
+    const events = await client.listEvents({ from: CROSS_FROM, to: CROSS_TO });
+    const rows = events.filter((item) => item.uid === overrideUid);
+    expect(rows.length, 1, `${zone} 下同一 uid 的行数`);
+    expect(rows[0].title, '改到周日的组会', `${zone} 下保留的版本`);
+    expect(new Date(rows[0].start).getTime(), OVERRIDE_START, `${zone} 下覆盖后的开始时刻`);
+
+    const allDay = await client.listEvents({ from: ALLDAY_FROM, to: ALLDAY_TO });
+    const dayRows = allDay.filter((item) => item.uid === allDayUid);
+    expect(dayRows.length, 1, `${zone} 下全天日程同一 uid 的行数`);
+    expect(new Date(dayRows[0].start).getTime(), ALLDAY_START, `${zone} 下全天覆盖后的开始时刻`);
+  });
 });
 
 // ── 汇总 ─────────────────────────────────────────────────

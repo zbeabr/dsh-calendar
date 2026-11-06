@@ -782,12 +782,22 @@ function parseRrule(text) {
 
 const WEEKDAY_INDEX = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
 
-/** 某天所在那一周的周一零点。算「隔几周」必须用同一把尺子。 */
-function mondayOf(date) {
-  const day = new Date(date);
-  day.setHours(0, 0, 0, 0);
-  day.setDate(day.getDate() - ((day.getDay() + 6) % 7));
-  return day;
+/**
+ * 日历日的稳定锚点：用 UTC 正午代表「事件时区里的某一天」。
+ * 加减整天全在 UTC 里算，既不会碰到 DST 跳变，也不依赖进程所在时区。
+ */
+function dayAnchor(year, month, day) {
+  return Date.UTC(year, month - 1, day, 12);
+}
+
+function anchorParts(anchor) {
+  const date = new Date(anchor);
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    weekday: date.getUTCDay(),
+  };
 }
 
 /**
@@ -804,6 +814,11 @@ function mondayOf(date) {
  *
  * `overridden` 是同一 uid 下被 RECURRENCE-ID 单独改过的那些发生时刻（毫秒戳），
  * 并进下面的 skip 集合即可，不要再写一套发生日期遍历。
+ *
+ * 遍历在 `event.timeZone`（DTSTART 的 TZID，没写就是日历时区）的**日历日**上进行。
+ * 早先用本机 setHours/getDay/setHours 重建发生时刻：机器时区与日历时区不同时，
+ * 同一个绝对时刻在纽约是「周五 20:00」，BYDAY=SA 的星期判断、发生日期、
+ * RECURRENCE-ID 的 skip 会全部错位，同一 uid 甚至会出两行。
  */
 function nextOccurrence(event, from, to, overridden = new Set()) {
   const rrule = parseRrule(event.rrule);
@@ -818,43 +833,52 @@ function nextOccurrence(event, from, to, overridden = new Set()) {
   const count = rrule.COUNT ? Number(rrule.COUNT) : undefined;
   const until = rrule.UNTIL ? parseIcsDate(rrule.UNTIL, undefined) : undefined;
 
+  const zone = event.timeZone || 'Asia/Shanghai';
   const seriesStart = new Date(event.start);
   const duration = new Date(event.end).getTime() - seriesStart.getTime();
   const skip = new Set((event.exdate ?? []).map((iso) => new Date(iso).getTime()));
   // 被单独改过的那一次已经有自己的 VEVENT，主事件不能再折到同一天。
   for (const moment of overridden) skip.add(moment);
 
-  const firstDay = new Date(seriesStart);
-  firstDay.setHours(0, 0, 0, 0);
+  const startParts = tzParts(seriesStart, zone);
+  const firstDay = dayAnchor(startParts.year, startParts.month, startParts.day);
+  const startWeekday = new Date(firstDay).getUTCDay();
+  const fromParts = tzParts(from, zone);
+  const toParts = tzParts(to, zone);
+  const fromDay = dayAnchor(fromParts.year, fromParts.month, fromParts.day);
+  const toDay = dayAnchor(toParts.year, toParts.month, toParts.day);
   // 有 COUNT 时必须从系列起点数起来；没有的话直接从区间前一周开始扫，别白扫几个月。
-  const cursor = count === undefined
-    ? new Date(Math.max(firstDay.getTime(), from.getTime() - 7 * 86400000))
-    : new Date(firstDay);
-  cursor.setHours(0, 0, 0, 0);
-  const baseMonday = mondayOf(seriesStart).getTime();
-  const limit = to.getTime() + 86400000;
+  let cursor = count === undefined
+    ? Math.max(firstDay, fromDay - 7 * 86400000)
+    : firstDay;
+  const baseMonday = firstDay - ((startWeekday + 6) % 7) * 86400000;
+  const limit = toDay + 86400000;
   let seen = 0;
 
-  for (let guard = 0; guard < 4000 && cursor.getTime() <= limit; guard += 1) {
-    const dayGap = Math.round((cursor.getTime() - firstDay.getTime()) / 86400000);
+  for (let guard = 0; guard < 4000 && cursor <= limit; guard += 1) {
+    const parts = anchorParts(cursor);
+    const dayGap = Math.round((cursor - firstDay) / 86400000);
     let hit = false;
     if (freq === 'DAILY') {
       hit = dayGap % interval === 0;
     } else if (freq === 'WEEKLY') {
-      const weeks = Math.round((mondayOf(cursor).getTime() - baseMonday) / (7 * 86400000));
-      const wanted = byday.length > 0 ? byday : [seriesStart.getDay()];
-      hit = weeks % interval === 0 && wanted.includes(cursor.getDay());
+      const monday = cursor - ((parts.weekday + 6) % 7) * 86400000;
+      const weeks = Math.round((monday - baseMonday) / (7 * 86400000));
+      const wanted = byday.length > 0 ? byday : [startWeekday];
+      hit = weeks % interval === 0 && wanted.includes(parts.weekday);
     } else if (freq === 'MONTHLY') {
-      const months = (cursor.getFullYear() - seriesStart.getFullYear()) * 12 + (cursor.getMonth() - seriesStart.getMonth());
-      hit = months % interval === 0 && cursor.getDate() === (bymonthday ?? seriesStart.getDate());
+      const months = (parts.year - startParts.year) * 12 + (parts.month - startParts.month);
+      hit = months % interval === 0 && parts.day === (bymonthday ?? startParts.day);
     } else {
-      const years = cursor.getFullYear() - seriesStart.getFullYear();
-      hit = years % interval === 0 && cursor.getMonth() === seriesStart.getMonth() && cursor.getDate() === seriesStart.getDate();
+      const years = parts.year - startParts.year;
+      hit = years % interval === 0 && parts.month === startParts.month && parts.day === startParts.day;
     }
 
     if (hit) {
-      const occurrence = new Date(cursor);
-      occurrence.setHours(seriesStart.getHours(), seriesStart.getMinutes(), seriesStart.getSeconds(), 0);
+      // 把「事件时区里的日历日 + 系列起点的墙钟时刻」换算回绝对时刻，
+      // 这样 DST 也由 zonedToUtc 处理，不经过本机时区的任何字段。
+      const occurrence = zonedToUtc(parts.year, parts.month, parts.day,
+        startParts.hour, startParts.minute, startParts.second, zone);
       if (occurrence.getTime() >= seriesStart.getTime()) {
         if (until && occurrence.getTime() > until.getTime()) return undefined;
         seen += 1;
@@ -872,7 +896,7 @@ function nextOccurrence(event, from, to, overridden = new Set()) {
         }
       }
     }
-    cursor.setDate(cursor.getDate() + 1);
+    cursor += 86400000;
   }
   return undefined;
 }
@@ -891,6 +915,9 @@ export function parseVevents(ics, timeZone) {
     };
     const startField = field('DTSTART');
     const endField = field('DTEND');
+    // DTSTART 带 TZID 时，RRULE 里的「星期几 / 几点」都按那个时区理解；
+    // 没带就用日历配置时区兜底（全天日程的 VALUE=DATE 尤其依赖它）。
+    const eventZone = startField?.tzid ?? timeZone ?? 'Asia/Shanghai';
     const start = startField ? parseIcsDate(startField.value, startField.tzid ?? timeZone) : undefined;
     if (!start) continue;
     const end = endField
@@ -919,6 +946,7 @@ export function parseVevents(ics, timeZone) {
       exdate: exdates,
       recurrenceId: text('RECURRENCE-ID'),
       recurrenceAt: recurrenceAt?.toISOString(),
+      timeZone: eventZone,
     });
   }
   return events;
