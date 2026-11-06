@@ -4,11 +4,18 @@
  * 固定「现在」为 2026-11-04（周三）20:48，所以「今天下午一点半」这种
  * 已经过去的时刻应该被顺延到明天。
  */
+// 用例是按中国时区的口语习惯写的（「下午三点」「20:48 已过就顺延」），
+// 所以在任何机器上都固定成 +08:00 才可复现。不固定的话 CI（UTC）会挂 21 条。
+process.env.TZ = 'Asia/Shanghai';
+
 import { parseEvent } from './src/nlp.mjs';
 
-const NOW = new Date('2026-11-04T20:48:00+08:00');
-const EVENING = new Date('2026-11-05T18:20:00+08:00');
-const SUNDAY = new Date('2026-11-08T10:00:00+08:00');
+// 必须用「本地时间」构造：解析器全程按本地时钟取年月日（getHours/getFullYear），
+// 写成 '2026-11-04T20:48:00+08:00' 这种绝对时刻的话，在 UTC 的 CI 上换算出来是 12:48，
+// 预期值会整体错位（实测 UTC 112/133、纽约 96/133）。用本地构造后，任何时区都是 20:48。
+const NOW = new Date(2026, 10, 4, 20, 48);
+const EVENING = new Date(2026, 10, 5, 18, 20);
+const SUNDAY = new Date(2026, 10, 8, 10, 0);
 const NAMES = ['学习', '家庭', '特别事件'];
 
 const pad = (n) => String(n).padStart(2, '0');
