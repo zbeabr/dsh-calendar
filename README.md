@@ -1,4 +1,9 @@
 <p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-111111?style=flat-square" alt="简体中文"></a>
+  <a href="README.en.md"><img src="https://img.shields.io/badge/English-d9d9d9?style=flat-square" alt="English"></a>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/icon.png" width="104" alt="DSH 日历图标">
 </p>
 

@@ -50,7 +50,7 @@ echo "  架构：$ARCHS　最低系统：$(echo "$MINOS" | tr '\n' ' ')"
 [ "$MINOS" = "14.0" ] || { echo "✗ 最低系统版本不是 14.0（实际：$MINOS）" >&2; exit 1; }
 
 echo "▸ 组装发行包"
-cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/README.md" "$ROOT/config.example.json" "$STAGE/"
+cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/README.md" "$ROOT/README.en.md" "$ROOT/config.example.json" "$STAGE/"
 chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh"
 # 后端：只要运行时需要的，测试用例和文档不进包
 mkdir -p "$STAGE/cal-mcp/src"
