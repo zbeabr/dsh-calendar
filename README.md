@@ -246,7 +246,7 @@ App 专用密码是 Apple 的 CalDAV 认证方式决定的，**覆盖 iCloud 的
 - 补发连续失败 3 次的条目会转入**死信**：留在本地、不再自动重试，`dsh-cal pending` 里能看到。这样一条坏数据不会把后面的日程永远堵在队列里
 - 界面上**不能编辑**已有日程（只能删了重建，CLI 的 `update` 可以）
 - 地点识别靠介词或空格，纯口语长句可能把地点留在标题里
-- **输入按本机时区理解**：不写 `config.json` 里的 `timeZone` 时默认取本机时区，解析、写入、文字显示三者一致；若显式配置了与本机不同的时区，运行 `node cli.mjs doctor` 会给出警告——此时写入和文字显示按配置时区，口语里的「明天下午三点」仍按本机时区理解，可能落到另一个钟点。`config.example.json` 里的 `timeZone` 只是示例，本机不在该时区时请删掉这一行
+- **输入按本机时区理解**：不写 `config.json` 里的 `timeZone` 时默认取本机时区，解析、写入、文字显示三者一致；若显式配置了与本机不同的时区，运行 `node cli.mjs doctor` 会给出警告——此时写入和文字显示按配置时区，口语里的「明天下午三点」仍按本机时区理解，可能落到另一个钟点。`config.example.json` 默认不带 `timeZone`，照抄即可按本机时区工作
 - **`config.timeZone` 为空或非法时写入链路回落上海**：`VTIMEZONE` 需要一个确定的时区，兜底按 `Asia/Shanghai` 写入，避免生成非法 ICS
 - 农历/节假日也还没有
 - 没有 Apple 付费开发者账号，所以**没做代码签名和公证**。从 dmg 装完若被 Gatekeeper 拦，右键「打开」或 `xattr -dr com.apple.quarantine "/Applications/DSH 日历.app"`
