@@ -72,13 +72,24 @@ if [ "$MODE" != "app" ]; then
 
   say "▸ 安装启动器到 $LIBEXEC/dsh-cal-run"
   mkdir -p "$LIBEXEC"
-  cat > "$LIBEXEC/dsh-cal-run" <<'RUNNER'
+    cat > "$LIBEXEC/dsh-cal-run" <<'RUNNER'
 #!/bin/sh
 # dsh-cal runner — 不依赖 PATH 找 node（GUI 应用的环境变量很干净，没有 shell 配置）。
+# 安装时探测到的 node 路径已经烘焙在下一行；换掉 node 也能靠下面的 fallback 兜住。
+: "${DSH_CAL_NODE:=__DSH_CAL_NODE_HINT__}"
 resolve_node() {
   if [ -n "$DSH_CAL_NODE" ] && [ -x "$DSH_CAL_NODE" ]; then printf '%s' "$DSH_CAL_NODE"; return 0; fi
   if command -v node >/dev/null 2>&1; then command -v node; return 0; fi
-  for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+  for candidate in \
+    /opt/homebrew/bin/node \
+    /usr/local/bin/node \
+    /usr/bin/node \
+    "$HOME"/.workbuddy/binaries/node/versions/*/bin/node \
+    "$HOME"/.nvm/versions/node/*/bin/node \
+    "$HOME"/.volta/bin/node \
+    "$HOME"/.local/share/fnm/node-versions/*/installation/bin/node \
+    "$HOME"/Library/Application\ Support/fnm/node-versions/*/installation/bin/node
+  do
     if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
   done
   return 1
@@ -90,6 +101,15 @@ if [ -z "$NODE" ]; then
 fi
 exec "$NODE" "$HOME/.local/share/dsh-cal/cli.mjs" "$@"
 RUNNER
+  # 把安装时看到的 node 绝对路径写进启动器。访达启动的 App 没有 shell 的 PATH，
+  # 只靠 /opt/homebrew、/usr/local 这几个位置找不到 nvm/workbuddy 这类装的 node。
+  NODE_FOUND="$(command -v node 2>/dev/null || true)"
+  sed -i '' "s|__DSH_CAL_NODE_HINT__|${NODE_FOUND}|" "$LIBEXEC/dsh-cal-run"
+  if [ -n "$NODE_FOUND" ]; then
+    say "  记住 node 位置：$NODE_FOUND"
+  else
+    say "  警告：当前 PATH 里没有 node，App 启动时可能找不到。装好 Node 18+ 后重跑一次本脚本。"
+  fi
   chmod +x "$LIBEXEC/dsh-cal-run"
 
   say "▸ 安装命令 $BINDIR/dsh-cal"

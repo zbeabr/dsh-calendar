@@ -67,6 +67,20 @@ cp "$HERE/Info.plist" "$STAGE/Contents/Info.plist"
 cp "$ICNS" "$STAGE/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$STAGE/Contents/PkgInfo"
 
+# ── 后端随包走：App 首次启动时把这块装到 ~/.local，用户就不用再跑 install.sh。
+# 只带运行时需要的文件（不带用例和 llm-cases），128 KB 左右。
+ENGINE="$HERE/../cal-mcp"
+ENGINE_DST="$STAGE/Contents/Resources/engine"
+if [ -f "$ENGINE/cli.mjs" ]; then
+  echo "▸ 打包后端…"
+  mkdir -p "$ENGINE_DST/src"
+  cp "$ENGINE/cli.mjs" "$ENGINE/mcp-server.mjs" "$ENGINE/package.json" "$ENGINE_DST/"
+  cp "$ENGINE"/src/*.mjs "$ENGINE_DST/src/"
+  /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$HERE/Info.plist" > "$ENGINE_DST/VERSION"
+else
+  echo "  ⚠ 找不到 $ENGINE/cli.mjs，这份 App 不带后端（只能配已装好的后端用）"
+fi
+
 if [ "${SKIP_SIGN:-0}" = "1" ]; then
   echo "▸ 本地签名…（SKIP_SIGN=1，跳过；改了二进制不重签会被系统拒启，仅调试用）"
 else
@@ -87,6 +101,13 @@ chmod +x "$TARGET/Contents/MacOS/DSHCalendar"
 install_file "$STAGE/Contents/Info.plist" "$TARGET/Contents/Info.plist"
 install_file "$STAGE/Contents/PkgInfo" "$TARGET/Contents/PkgInfo"
 install_file "$STAGE/Contents/Resources/AppIcon.icns" "$TARGET/Contents/Resources/AppIcon.icns"
+
+# 后端同样逐个覆写：engine 里的文件少，但每次升级都可能增删，按相对路径对齐。
+if [ -d "$ENGINE_DST" ]; then
+  while IFS= read -r rel; do
+    install_file "$ENGINE_DST/$rel" "$TARGET/Contents/Resources/engine/$rel"
+  done < <(cd "$ENGINE_DST" && find . -type f | sed 's|^\./||')
+fi
 
 # 旧版本可能残留 ditto 的临时文件，会让 codesign 认不出包体，顺手清掉（有才动）
 if find "$TARGET" -name ".BC.T_*" -print -quit 2>/dev/null | grep -q .; then

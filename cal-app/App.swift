@@ -1,6 +1,143 @@
 import AppKit
 import Network
 
+// MARK: - 后端自举
+//
+// App 里自带一份后端（Contents/Resources/engine），首次启动时复制到 ~/.local，
+// 这样从 dmg 拖进「应用程序」就能直接用，不必先跑 install.sh。
+// 版本号写在 engine/VERSION 与 ~/.local/share/dsh-cal/.engine-version，
+// 两者不一致（App 升级了）才会重装一次。
+
+enum Bootstrap {
+    enum Outcome {
+        case ready              // 后端已就位，版本也一致
+        case installed          // 刚刚装好
+        case missingNode        // 后端有了，但机器上没有 node
+        case noEngine(String)   // 这份 App 没带后端
+        case failed(String)
+    }
+
+    /// 手动装了后端（改代码调试）时，用这个跳过接管
+    private static var disabled: Bool {
+        ProcessInfo.processInfo.environment["DSH_CAL_NO_BOOTSTRAP"] == "1"
+    }
+
+    private static let sharePath = ("~/.local/share/dsh-cal" as NSString).expandingTildeInPath
+    private static let libexecPath = ("~/.local/libexec" as NSString).expandingTildeInPath
+    private static let binPath = ("~/.local/bin" as NSString).expandingTildeInPath
+
+    private static var engineSource: URL? {
+        guard let base = Bundle.main.resourceURL?.appendingPathComponent("engine") else { return nil }
+        return FileManager.default.fileExists(atPath: base.appendingPathComponent("cli.mjs").path) ? base : nil
+    }
+
+    static func ensure() -> Outcome {
+        let fm = FileManager.default
+        guard let source = engineSource else {
+            return .noEngine("这份 App 没有内置后端，请从 Releases 下载完整包，或用 install.sh 安装")
+        }
+
+        let cli = (sharePath as NSString).appendingPathComponent("cli.mjs")
+        let runner = (libexecPath as NSString).appendingPathComponent("dsh-cal-run")
+        let stamp = (sharePath as NSString).appendingPathComponent(".engine-version")
+
+        let want = ((try? String(contentsOf: source.appendingPathComponent("VERSION"), encoding: .utf8)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let have = ((try? String(contentsOfFile: stamp, encoding: .utf8)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let upToDate = fm.fileExists(atPath: cli)
+            && fm.fileExists(atPath: runner)
+            && !want.isEmpty
+            && have == want
+
+        if upToDate || disabled {
+            return Engine.findNode() == nil ? .missingNode : .ready
+        }
+
+        do {
+            try fm.createDirectory(atPath: sharePath, withIntermediateDirectories: true)
+            try fm.createDirectory(atPath: libexecPath, withIntermediateDirectories: true)
+            try fm.createDirectory(atPath: binPath, withIntermediateDirectories: true)
+
+            try copyTree(source, into: sharePath)
+            try writeFile(runnerScript(node: Engine.findNode()),
+                          to: runner, mode: 0o755)
+            try writeFile(wrapperScript,
+                          to: (binPath as NSString).appendingPathComponent("dsh-cal"), mode: 0o755)
+            try writeFile(want + "\n", to: stamp, mode: 0o644)
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+
+        return Engine.findNode() == nil ? .missingNode : .installed
+    }
+
+    /// 逐文件覆盖，不整体删除目录：用户可能在里面放过自己的东西
+    private static func copyTree(_ src: URL, into dst: String) throws {
+        let fm = FileManager.default
+        for name in try fm.contentsOfDirectory(atPath: src.path) where name != "VERSION" {
+            let from = src.appendingPathComponent(name)
+            let to = (dst as NSString).appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: from.path, isDirectory: &isDir) else { continue }
+            if isDir.boolValue {
+                try fm.createDirectory(atPath: to, withIntermediateDirectories: true)
+                try copyTree(from, into: to)
+            } else {
+                if fm.fileExists(atPath: to) { try fm.removeItem(atPath: to) }
+                try fm.copyItem(at: from, to: URL(fileURLWithPath: to))
+            }
+        }
+    }
+
+    private static func writeFile(_ text: String, to path: String, mode: Int) throws {
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: path)
+    }
+
+    private static func runnerScript(node: String?) -> String {
+        """
+        #!/bin/sh
+        # 由「DSH 日历」App 在首次启动时生成。删掉 App 不会自动清理这里的文件。
+        : "${DSH_CAL_NODE:=\(node ?? "")}"
+        resolve_node() {
+          if [ -n "$DSH_CAL_NODE" ] && [ -x "$DSH_CAL_NODE" ]; then printf '%s' "$DSH_CAL_NODE"; return 0; fi
+          if command -v node >/dev/null 2>&1; then command -v node; return 0; fi
+          for candidate in \\
+          /opt/homebrew/bin/node \\
+          /usr/local/bin/node \\
+          /usr/bin/node \\
+          "$HOME"/.workbuddy/binaries/node/versions/*/bin/node \\
+          "$HOME"/.nvm/versions/node/*/bin/node \\
+          "$HOME"/.volta/bin/node \\
+          "$HOME"/.local/share/fnm/node-versions/*/installation/bin/node \\
+          "$HOME"/.local/bin/node
+          do
+            if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
+          done
+          return 1
+        }
+        NODE=$(resolve_node)
+        if [ -z "$NODE" ]; then
+          echo '{"ok":false,"error":"找不到 node，请安装 Node 18+ 或设置 DSH_CAL_NODE"}'
+          exit 1
+        fi
+        exec "$NODE" "$HOME/.local/share/dsh-cal/cli.mjs" "$@"
+
+        """
+    }
+
+    private static var wrapperScript: String {
+        """
+        #!/bin/sh
+        # dsh-cal — 自然语言日历（CalDAV 后端）
+        exec "$HOME/.local/libexec/dsh-cal-run" "$@"
+
+        """
+    }
+}
+
 // MARK: - 引擎（调用 dsh-cal 命令行，输出 JSON）
 
 struct EngineError: LocalizedError {
@@ -14,11 +151,71 @@ enum Engine {
         NSString(string: "~/.local/libexec/dsh-cal-run").expandingTildeInPath
     }
 
+    /// 从访达双击启动的 App，PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，看不到 brew、nvm、
+    /// volta 装的 node，后端会直接报「找不到 node」——然后被当成账号没配置，弹出设置页。
+    /// 这里问一次登录 shell 要真实 PATH，再并上常见安装位置；只算一次。
+    static let searchPATH: String = {
+        var raw: [String] = []
+        if let shell = loginShellPATH() { raw.append(shell) }
+        raw.append("/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.local/bin")
+        raw.append("/usr/bin:/bin:/usr/sbin:/sbin")
+
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for piece in raw.joined(separator: ":").split(separator: ":") {
+            let dir = String(piece)
+            guard !dir.isEmpty, seen.insert(dir).inserted else { continue }
+            ordered.append(dir)
+        }
+        return ordered.joined(separator: ":")
+    }()
+
+    private static func loginShellPATH() -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-l", "-c", "printf %s \"$PATH\""]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return text.isEmpty ? nil : text
+    }
+
+    /// 在 searchPATH 里找 node，供自举时把它烘焙进启动器（找不到返回 nil）。
+    /// 优先真实二进制：~/.local/bin/node 常是「拿 Electron 冒充 node」的 shim，
+    /// 能跑但少一层保障，只有实在没有真 node 时才用它。
+    static func findNode() -> String? {
+        let fm = FileManager.default
+        var shim: String?
+        for dir in searchPATH.split(separator: ":") {
+            let path = (String(dir) as NSString).appendingPathComponent("node")
+            guard fm.isExecutableFile(atPath: path) else { continue }
+            if isScript(path) {
+                if shim == nil { shim = path }
+                continue
+            }
+            return path
+        }
+        return shim
+    }
+
+    private static func isScript(_ path: String) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return false }
+        defer { try? handle.close() }
+        let head = handle.readData(ofLength: 2)
+        return head == Data([0x23, 0x21])   // "#!"
+    }
+
     static func callSync(_ args: [String], env: [String: String] = [:]) throws -> [String: Any] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [runner] + args
         var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = searchPATH
         for (key, value) in env { environment[key] = value }
         process.environment = environment
 
@@ -486,6 +683,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         showMessage("正在读取日历…")
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // 从 dmg 拖进「应用程序」的第一次打开：把内置后端装到 ~/.local。
+        // 这里失败不能走 buildSetup —— 那会让用户以为要重新输入 Apple ID 密码。
+        switch Bootstrap.ensure() {
+        case .ready, .installed:
+            break
+        case .missingNode:
+            buildBootstrapHint(note: "找不到 node。装好在之后点「重新检测」即可，不用重装 App。", needsNode: true)
+            snapshotIfRequested()
+            return
+        case .noEngine(let why), .failed(let why):
+            buildBootstrapHint(note: why, needsNode: false)
+            snapshotIfRequested()
+            return
+        }
 
         if let force = ProcessInfo.processInfo.environment["DSH_CAL_FORCE_SETUP"], force == "1" || force == "settings" {
             if force == "settings" { openSettings() } else { buildSetup(note: "") }
@@ -1221,6 +1433,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     }
 
     // MARK: 首次配置界面
+
+    /// 后端起不来时的专门提示页（多数情况是没装 node）。
+    /// 刻意不复用 buildSetup：那边一出现就是 Apple ID 加密码框，会让人以为账号失效了。
+    private func buildBootstrapHint(note: String, needsNode: Bool) {
+        let height: CGFloat = 330
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: height))
+        root.wantsLayer = true
+
+        let title = makeLabel(needsNode ? "还差一个 Node.js 运行时" : "后端没有装好",
+                              size: 19, weight: .semibold, color: .labelColor)
+        title.frame = NSRect(x: 24, y: 266, width: 500, height: 26)
+        root.addSubview(title)
+
+        let desc = makeLabel(
+            needsNode
+                ? "解析器是 JavaScript 写的，运行需要 Node.js 18 或更新版本。装完回到这里点「重新检测」就行——不用重装 App，也不用重新输入密码。"
+                : "这份 App 自带的后端没能装进 ~/.local。可以用 install.sh 手动装一次，或者重新下载安装包。",
+            size: 12, weight: .regular, color: .secondaryLabelColor
+        )
+        desc.frame = NSRect(x: 24, y: 206, width: 512, height: 54)
+        desc.lineBreakMode = .byWordWrapping
+        desc.maximumNumberOfLines = 3
+        root.addSubview(desc)
+
+        let detail = makeLabel(note, size: 11, weight: .regular, color: .tertiaryLabelColor)
+        detail.frame = NSRect(x: 24, y: 164, width: 512, height: 36)
+        detail.lineBreakMode = .byWordWrapping
+        detail.maximumNumberOfLines = 2
+        root.addSubview(detail)
+
+        if needsNode {
+            let download = GlassButton(frame: NSRect(x: 24, y: 96, width: 132, height: 34))
+            download.title = "下载 Node.js"
+            download.target = self
+            download.action = #selector(openNodeDownload)
+            root.addSubview(download)
+        }
+
+        let retry = GlassButton(frame: NSRect(x: 440, y: 96, width: 96, height: 34))
+        retry.title = "重新检测"
+        retry.target = self
+        retry.action = #selector(retryBootstrap)
+        retry.keyEquivalent = "\r"
+        root.addSubview(retry)
+
+        window.setContentSize(NSSize(width: 560, height: height))
+        window.center()
+        installContent(root)
+    }
+
+    @objc private func openNodeDownload() {
+        if let url = URL(string: "https://nodejs.org/zh-cn/download") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func retryBootstrap() {
+        switch Bootstrap.ensure() {
+        case .ready, .installed:
+            refreshConfig()
+        case .missingNode:
+            buildBootstrapHint(note: "还是没找到 node。也可以先退出 App，装好之后再打开。", needsNode: true)
+        case .noEngine(let why), .failed(let why):
+            buildBootstrapHint(note: why, needsNode: false)
+        }
+    }
 
     private func buildSetup(
         note: String,
