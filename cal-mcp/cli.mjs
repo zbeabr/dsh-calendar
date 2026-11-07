@@ -190,9 +190,14 @@ async function cmdParse(text, flags) {
 
   let refined;
   const useModel = Boolean(flags.llm) || (!flags.fast && llmConfig().enabled);
-  // 以前只在「规则没认出地点」时才问模型，规则一旦补全，模型就永远没机会出场。
-  // 现在只要规则结果露出可疑痕迹（脏标题、缺地点、残留时间词）就让它兜一次。
-  if (useModel && (needsRefine(text, parsed) || !parsed.location)) {
+  // 只由 needsRefine 决定：脏标题、量词残渣、残留时间词、有介词却没认出地点。
+  // 以前还加了「!parsed.location」，结果几乎每句话都白调一次模型——
+  // 没写地点不等于需要模型，规则本来就能给出完整的日程。
+  const modelNeeded = needsRefine(text, parsed);
+  const modelAsked = useModel && (modelNeeded || Boolean(flags.llm));
+  if (modelAsked) {
+    // 只报本次调用的结果，别把上一次残留的错误原因带出来。
+    llmLastError.message = undefined;
     refined = await refineWithModel(
       text,
       { title: parsed.title, location: parsed.location, local: formatRange(parsed.start, parsed.end) },
@@ -216,8 +221,10 @@ async function cmdParse(text, flags) {
     spans: parsed.spans,
     repeat: parsed.repeat,
     alarmMinutes: parsed.alarmMinutes,
-    // 规则结果可疑（脏标题 / 缺地点 / 残留时间词）→ App 据此决定要不要再问一次模型
-    needsModel: needsRefine(text, parsed) || !parsed.location,
+    // 规则结果可疑（脏标题 / 量词残渣 / 残留时间词 / 有介词却没地点）→ App 据此决定要不要再问一次模型
+    needsModel: modelNeeded,
+    // 问过模型却没采纳时，把原因说出来（护栏拦下、超时、没连上…），不再静默失败。
+    modelNote: modelAsked && !refined ? (llmLastError.message ?? '模型没兜住，已回落规则结果') : null,
   };
   if (jsonMode) return out(payload);
   const { ok, ...rest } = payload;

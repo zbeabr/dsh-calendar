@@ -53,6 +53,9 @@ const SYSTEM_PROMPT = `你是日历助手的「理解层」。用户会用很口
 - 原句里没有地点，location 就给 null，不要猜。
 - 地点要回答「在哪」。动词的宾语不是地点：「吃杨国福麻辣烫」「喝星巴克」「买杯奶茶」里的那个名字
   是吃什么/喝什么/买什么，location 仍然给 null，title 把整个说法都留着。
+- 「半小时的」「一个小时的」说的是时长，不是定语；「吃个」「喝杯」里的量词删掉后，
+  别留下孤零零的「个」「的」。标题必须是读得通的短语，不能只是个动词加残渣。
+- 不许把规则标题砍短来「美化」：只删时间、地点、语气词，宾语要留在 title 里。
 
 例子：
 「中午我想要十二点半到十三点洗个澡，在澡堂」→ {"title":"洗个澡","location":"澡堂"}
@@ -64,6 +67,8 @@ const SYSTEM_PROMPT = `你是日历助手的「理解层」。用户会用很口
 「晚上九点到十点在华东理工大学图书馆学习高等数学，标签家庭」→ {"title":"学习高等数学","location":"华东理工大学图书馆"}
 「半小时后提醒我喝水」→ {"title":"喝水","location":null}
 「明天中午吃杨国福麻辣烫」→ {"title":"吃杨国福麻辣烫","location":null}
+「下下周三中午吃个半小时的张亮麻辣烫」→ {"title":"吃张亮麻辣烫","location":null}
+「明天中午喝杯星巴克」→ {"title":"喝星巴克","location":null}
 「晚上去食堂吃麻辣烫」→ {"title":"吃麻辣烫","location":"食堂"}`;
 
 function userPrompt(text, ruleResult) {
@@ -149,6 +154,21 @@ function verifyLocation(location, text) {
 const TIME_WORD = /(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|昨天|今天|明天|后天|大后天|下周|下下周|本周|这周|周[一二三四五六日天]|星期[一二三四五六日天]|\d{1,2}\s*[点时]|[零一二两三四五六七八九十]{1,3}\s*[点时])/u;
 
 /**
+ * 悬空的量词/助词残渣：「吃个的」「吃个」「买杯」。
+ * 只认「量词 + 的」和「动作动词 + 量词」这两种明显读不通的尾巴；
+ * 「吃点好的」「我的生日」「洗个澡」「喝一杯」都不命中。
+ * 规则标题与模型标题共用同一把尺子：前者决定要不要问模型，后者决定能不能采纳。
+ */
+const DEBRIS_TAIL = /(?:[个了过趟杯碗回遍份]的|[吃喝买点做逛看玩打约聊谈见取送拿办找学考洗剪寄借还换练读背写画刷修][个了过趟杯碗回遍]{1,2})$/u;
+/** 残渣也可能夹在动词和宾语中间：「吃个的张亮麻辣烫」。 */
+const DEBRIS_INFIX = /[个了过趟杯碗回遍份]的/u;
+
+/** 地点可能带括号等正则元字符，拼进正则前先转义。 */
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+/**
  * 模型给的标题是否是原句的「子序列」——即只删字、没换字。
  * 这是防幻觉最硬的一道闸：8B 模型很爱把「聊一下那个项目的事情」美化成「聊项目」。
  */
@@ -173,6 +193,8 @@ function verifyTitle(title, fallback, text) {
   if (value.length < 2 || value.length > 40) return undefined;
   if (/^(?:null|无|未知)$/iu.test(value)) return undefined;
   if (TIME_WORD.test(value)) return undefined;          // 不该再有时间
+  if (DEBRIS_TAIL.test(value)) return undefined;        // 「吃个的」不是标题，是残渣
+  if (DEBRIS_INFIX.test(value)) return undefined;       // 残渣夹在动词和宾语之间也不行
   // 介词残渣：「跟导师在 吃个饭」这种把地点挖掉后留下孤零零的「在」
   if (/在[\s，,、；;]/u.test(value) || /[\s，,、；;]在$/u.test(value)) return undefined;
   if (!isSubsequence(value, String(text ?? ''))) return undefined; // 只删不改
@@ -181,22 +203,21 @@ function verifyTitle(title, fallback, text) {
 
 /** 规则结果里这些痕迹说明它没吃干净，值得让模型再看一眼。 */
 const WEAK_TITLE = /(?:^[在到去于]|^[楼上下里外对旁]|我想要|我想|我要|帮我|麻烦|那个|这个|一下$|[，,、；;。])/u;
-/**
- * 动作动词。用来判断模型给的地点是不是「动词的宾语」：
- * 「吃杨国福麻辣烫」「喝星巴克」「买杯奶茶」——那是吃什么，不是在哪。
- */
-const VERB_OBJECT = /[吃喝买点做逛看玩打约聊谈见取送拿办找学考洗剪寄借还换练读背写画刷修]$/u;
 
 /**
  * 标题本身有没有问题（不考虑缺地点）。
  *
  * 拆出来是为了让「标题已经干净、只是没地点」这种情形能单独处理：
  * 那时模型只许补地点，不许动标题——不然它会把「复查」顺手写成「复查一次」。
+ * 但「规则自己觉得干净」不等于真的干净：残渣（吃个的）必须算可疑，
+ * 否则会把唯一能纠正它的通道一起关掉。
  */
 function titleNeedsWork(title) {
   const value = String(title ?? '');
   if (!value.trim()) return true;
   if (WEAK_TITLE.test(value)) return true;
+  if (DEBRIS_TAIL.test(value)) return true;
+  if (DEBRIS_INFIX.test(value)) return true;
   if (TIME_WORD.test(value)) return true;
   if (value.replace(/\s/gu, '').length > 16) return true;
   return false;
@@ -258,12 +279,14 @@ export async function refineWithModel(text, ruleResult, options = {}) {
     // 模型有时会把动词的宾语当地点：「明天中午吃杨国福麻辣烫」
     // 被切成 title「吃」+ location「杨国福麻辣烫」，于是日程主题只剩一个「吃」。
     // 「杨国福麻辣烫」确实是家店，但它在这句里回答的是「吃什么」，不是「在哪」。
-    // 判据（都很便宜）：规则本来就没认出地点 + 模型给的地点正好是规则标题的结尾
-    // + 它前面紧挨着一个动作动词。命中就整条放弃模型结果，让规则标题原样留下。
+    // 旧判据要求动词紧挨宾语，「吃个的」这截虚词就能把它绕开。
+    // 现在看原句结构：模型给的地点出现在规则标题里、原句里它前面又没有
+    // 任何地点标记（在/去/到/@/地点：），那就是宾语，整条放弃模型结果。
+    // 宁可少采纳一次补地点，也不能把店名写成地点、把标题削成「吃个的」。
     const objectAsLocation = Boolean(location)
       && !ruleResult.location
-      && base.endsWith(location)
-      && VERB_OBJECT.test(base.slice(0, base.length - location.length));
+      && base.includes(location)
+      && !new RegExp(`(?:在|去|到|@|地点[:：])\\s*${escapeRegExp(location)}`, 'u').test(String(text ?? ''));
     if (objectAsLocation) {
       remember(`模型把「${location}」当地点，其实是动词宾语，已忽略`);
       return undefined;
@@ -285,13 +308,21 @@ export async function refineWithModel(text, ruleResult, options = {}) {
     }
 
     // 模型没给出可用标题时，退回老办法：从规则标题里剔掉地点、去掉开头的介词。
+    // 剔完仍是「吃个的」这种残渣就别用，宁可整条回落规则结果。
     if (!title && location && base.includes(location)) {
       const cleaned = base
         .replace(location, ' ')
         .replace(/^[在到去]\s*/u, '')
         .replace(/\s{2,}/gu, ' ')
         .trim();
-      if (cleaned && cleaned !== base) title = cleaned;
+      if (cleaned && cleaned !== base && !DEBRIS_TAIL.test(cleaned) && !DEBRIS_INFIX.test(cleaned)) title = cleaned;
+    }
+
+    // 质量闸：模型只把标题截短、又没补出任何新地点，不是「更懂」，是信息损失。
+    // 旧逻辑「合法即采纳」会把「跟老王聊一下那个项目的事情」削成「跟老王」。
+    if (!location && title && base.startsWith(title) && title.length < base.length) {
+      remember('模型只把标题截短、没补出新地点，已忽略');
+      return undefined;
     }
 
     if (!location && !title) {

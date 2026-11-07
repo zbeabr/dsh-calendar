@@ -33,9 +33,9 @@ for (const text of CASES) {
     console.log(`\n【${text}】\n规则 → 解析不了：${error.message}`);
     continue;
   }
-  // 跟生产保持一致：App 是「规则觉得可疑，或者压根没认出地点」就去问模型，
-  // 只看 needsRefine 会漏掉「没地点」这一半，检查表就会假装模型没被触发。
-  const need = needsRefine(text, p) || !p.location;
+  // 跟生产保持一致：现在只由 needsRefine 决定（脏标题 / 量词残渣 / 残留时间词 /
+  // 有介词却没认出地点）。「没写地点」本身不再触发模型，否则每句话都白调一次。
+  const need = needsRefine(text, p);
   const stamp = `${p.start.getMonth() + 1}/${p.start.getDate()} ${p.start.toTimeString().slice(0, 5)}`;
   let line = `规则 → 「${p.title}」 @${p.location ?? '无'}  ${stamp}`;
   if (need) {

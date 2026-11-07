@@ -87,8 +87,9 @@ export async function addEvent(input = {}) {
     const calendarNames = cachedCalendarNames();
     const parsed = parseEvent(input.text, new Date(), { calendarNames });
     let refined;
-    // 规则结果可疑（脏标题、缺地点、残留时间词）就让模型兜一次；模型只出标题和地点，时间仍用规则的
-    if (!input.location && !input.noModel && (needsRefine(input.text, parsed) || !parsed.location)) {
+    // 规则结果可疑（脏标题、量词残渣、残留时间词、有介词却没认出地点）就让模型兜一次；
+    // 模型只出标题和地点，时间仍用规则的。「没写地点」本身不再触发，否则每句话都白调一次模型。
+    if (!input.location && !input.noModel && needsRefine(input.text, parsed)) {
       refined = await refineWithModel(
         input.text,
         { title: parsed.title, location: parsed.location, local: formatRange(parsed.start, parsed.end) },
