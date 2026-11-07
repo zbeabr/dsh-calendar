@@ -658,6 +658,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var modelLabel: NSTextField?
     /// 第一次布局才把窗口居中，之后重建（比如重新检查连接）保持原位
     private var didLayoutMain = false
+
+    /// 外观：玻璃 / 轻拟物。偏好持久化；切换只重绘背景与列表，不重建窗口，草稿不丢。
+    private var appearanceStyle: AppearanceStyle = {
+        if let raw = UserDefaults.standard.string(forKey: "appearanceStyle"),
+           let style = AppearanceStyle(rawValue: raw) { return style }
+        return .glass
+    }()
+    private var appearanceMenuItem: NSMenuItem?
+    private var plankViews: [PlankView] = []
+    private var windowMoveObserver: NSObjectProtocol?
     /// 列表里显示的日程
     private var agenda: [AgendaItem] = []
     /// 日历名 → 颜色，给每条日程配左侧色条
@@ -705,6 +715,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         window.isReleasedWhenClosed = false
         window.center()
         makeShell()
+        applyAppearance()
+        observeWindowMove()
 
         // 先把占位文字装好再让窗口露面，第一帧就是完整画面（不再整窗淡入）
         showMessage("正在读取日历…")
@@ -924,6 +936,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "前置全部窗口", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        let appearanceItem = NSMenuItem(
+            title: appearanceStyle == .glass ? "切换到轻拟物外观" : "切换到 Liquid Glass",
+            action: #selector(toggleAppearance), keyEquivalent: ""
+        )
+        appearanceItem.target = self
+        windowMenu.addItem(appearanceItem)
+        self.appearanceMenuItem = appearanceItem
 
         // ── 帮助
         let helpItem = NSMenuItem(title: "帮助", action: nil, keyEquivalent: "")
@@ -2110,7 +2130,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private func renderAgenda() {
         guard let container = listContainer else { return }
         container.subviews.forEach { $0.removeFromSuperview() }
+        plankViews.removeAll()
         let width = max(container.bounds.width, 400)
+        if appearanceStyle == .lightSkeuo {
+            renderPlankAgenda(in: container, width: width)
+            return
+        }
         var y: CGFloat = 4
         var lastDay = ""
         var order = 0
@@ -2162,6 +2187,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             y += 6
         }
 
+        container.frame = NSRect(x: 0, y: 0, width: width, height: max(y, 44))
+    }
+
+    // MARK: - 轻拟物外观
+
+    /// 只改渲染层：玻璃外壳的上半部保留材质，列表区完全不画背景。
+    /// 不重建窗口、不动输入框，所以切换时草稿、滚动位置、预览胶囊都还在。
+    private func applyAppearance() {
+        let skeuo = appearanceStyle == .lightSkeuo
+        // 列表区在 root 的 y=64..426（非翻转坐标），y<430 全部留空
+        shell?.clearBelowY = skeuo ? 430 : 0
+        shell?.needsLayout = true
+        shell?.needsDisplay = true
+        listScroll?.drawsBackground = false
+        listScroll?.backgroundColor = .clear
+    }
+
+    @objc private func toggleAppearance() {
+        appearanceStyle = appearanceStyle == .glass ? .lightSkeuo : .glass
+        UserDefaults.standard.set(appearanceStyle.rawValue, forKey: "appearanceStyle")
+        applyAppearance()
+        renderAgenda()
+        appearanceMenuItem?.title = appearanceStyle == .glass
+            ? "切换到轻拟物外观" : "切换到 Liquid Glass"
+    }
+
+    /// 拖动窗口时木板轻轻摆一下：取通知即可，不做完整刚体模拟。
+    /// 「减少动态效果」开着时完全不动。
+    private func observeWindowMove() {
+        if let old = windowMoveObserver { NotificationCenter.default.removeObserver(old) }
+        windowMoveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification, object: window, queue: .main
+        ) { [weak self] _ in self?.swingPlanks() }
+    }
+
+    private func swingPlanks() {
+        guard appearanceStyle == .lightSkeuo, !Motion.reduced, !plankViews.isEmpty else { return }
+        for (index, plank) in plankViews.enumerated() {
+            guard let layer = plank.layer else { continue }
+            let angle = CGFloat(index % 2 == 0 ? 1 : -1) * 0.024
+            let swing = CABasicAnimation(keyPath: "transform.rotation.z")
+            swing.fromValue = angle
+            swing.toValue = 0
+            swing.duration = 0.42
+            swing.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            layer.add(swing, forKey: "plankSwing")
+        }
+    }
+
+    /// 一条日程 = 一块木板。木板之间不画任何东西，缝里能看见后面的窗口。
+    private func renderPlankAgenda(in container: FlippedView, width: CGFloat) {
+        var y: CGFloat = 4
+        if let note = agendaNote {
+            let banner = NSTextField(labelWithString: note)
+            banner.font = NSFont.systemFont(ofSize: 12)
+            banner.textColor = .systemOrange
+            banner.lineBreakMode = .byTruncatingTail
+            banner.frame = NSRect(x: 14, y: y, width: width - 28, height: 20)
+            container.addSubview(banner)
+            y += 26
+        }
+        if agenda.isEmpty {
+            let empty = NSTextField(labelWithString: agendaNote == nil ? "接下来几天没有安排。" : "暂时没有可显示的日程。")
+            empty.font = NSFont.systemFont(ofSize: 13)
+            empty.textColor = .secondaryLabelColor
+            empty.frame = NSRect(x: 14, y: y + 8, width: width - 28, height: 20)
+            container.addSubview(empty)
+            y += 40
+        } else {
+            let ropeTop = y
+            for item in agenda {
+                let plank = PlankView(item: item, tint: color(for: item.calendar), width: width - 24)
+                plank.frame = NSRect(x: 12, y: y, width: width - 24, height: 50)
+                container.addSubview(plank)
+                plankViews.append(plank)
+                y += 50 + 26
+            }
+            // 绳子从列表容器顶部（也就是输入框下沿）垂到最后一块木板；放在最底层。
+            let rope = RopeView(frame: NSRect(x: 0, y: ropeTop, width: width, height: y - ropeTop))
+            container.addSubview(rope, positioned: .below, relativeTo: nil)
+        }
         container.frame = NSRect(x: 0, y: 0, width: width, height: max(y, 44))
     }
 
@@ -2800,6 +2906,97 @@ enum Theme {
     }
 }
 
+// MARK: - 轻拟物外观的资源
+
+/// 外观风格。切换只换渲染层，数据模型、解析、写入、草稿都共用同一套。
+enum AppearanceStyle: String {
+    case glass
+    case lightSkeuo
+}
+
+/// 两根绳：从输入框下方的列表顶部垂到底，木板两端穿孔串在上面。
+/// 不画背景、不吃点击，绳子之外的地方保持透明。
+final class RopeView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.setStrokeColor(NSColor(calibratedRed: 0.62, green: 0.53, blue: 0.40, alpha: 0.85).cgColor)
+        ctx.setLineWidth(1.5)
+        for x in [CGFloat(40), bounds.width - 40] {
+            ctx.move(to: CGPoint(x: x, y: 0))
+            ctx.addLine(to: CGPoint(x: x, y: bounds.height))
+            ctx.strokePath()
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// 一条日程 = 一块薄木板。轻拟物只做材质暗示：浅木色、顶部高光、底部厚边、两端绳孔。
+final class PlankView: NSView {
+    private let item: AgendaItem
+    private let tint: NSColor
+    private let timeLabel = NSTextField(labelWithString: "")
+    private let titleLabel = NSTextField(labelWithString: "")
+
+    init(item: AgendaItem, tint: NSColor, width: CGFloat) {
+        self.item = item
+        self.tint = tint
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 50))
+        wantsLayer = true
+
+        timeLabel.stringValue = item.allDay ? "全天" : Format.time(item.start)
+        timeLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        timeLabel.textColor = NSColor(calibratedRed: 0.36, green: 0.27, blue: 0.17, alpha: 1)
+        timeLabel.backgroundColor = .clear
+        timeLabel.isBezeled = false
+        timeLabel.frame = NSRect(x: 44, y: 9, width: 62, height: 17)
+        addSubview(timeLabel)
+
+        titleLabel.stringValue = item.title
+        titleLabel.font = NSFont.systemFont(ofSize: 13.5, weight: .medium)
+        titleLabel.textColor = NSColor(calibratedRed: 0.25, green: 0.18, blue: 0.11, alpha: 1)
+        titleLabel.backgroundColor = .clear
+        titleLabel.isBezeled = false
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.frame = NSRect(x: 110, y: 9, width: max(width - 160, 80), height: 19)
+        addSubview(titleLabel)
+    }
+
+    required init?(coder: NSCoder) { fatalError("PlankView 不支持从 nib 初始化") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let body = NSRect(x: 3, y: 3, width: bounds.width - 6, height: bounds.height - 9)
+        let radius: CGFloat = 8
+
+        // 底部厚边：纯色叠一层，不用阴影或渐变
+        let edge = NSRect(x: body.minX, y: body.minY - 3, width: body.width, height: body.height)
+        ctx.setFillColor(NSColor(calibratedRed: 0.78, green: 0.68, blue: 0.55, alpha: 1).cgColor)
+        NSBezierPath(roundedRect: edge, xRadius: radius, yRadius: radius).fill()
+
+        // 木板主体
+        ctx.setFillColor(NSColor(calibratedRed: 0.97, green: 0.92, blue: 0.83, alpha: 1).cgColor)
+        NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius).fill()
+
+        // 顶部一道高光细条
+        ctx.setFillColor(NSColor.white.withAlphaComponent(0.55).cgColor)
+        ctx.fill(NSRect(x: body.minX + radius, y: body.maxY - 2, width: body.width - radius * 2, height: 1.5))
+
+        // 左侧色条：日历颜色照旧用得上
+        ctx.setFillColor(tint.cgColor)
+        ctx.fill(NSRect(x: body.minX + 8, y: body.minY + 9, width: 3, height: body.height - 18))
+
+        // 两端绳孔：绳子从这两个点穿过
+        for x in [CGFloat(28), bounds.width - 28] {
+            let hole = NSRect(x: x - 4, y: body.midY - 4, width: 8, height: 8)
+            ctx.setFillColor(NSColor(calibratedRed: 0.55, green: 0.46, blue: 0.35, alpha: 1).cgColor)
+            ctx.fillEllipse(in: hole)
+            ctx.setFillColor(NSColor(calibratedRed: 0.97, green: 0.92, blue: 0.83, alpha: 1).cgColor)
+            ctx.fillEllipse(in: hole.insetBy(dx: 1.5, dy: 1.5))
+        }
+    }
+}
+
 // MARK: - 自绘容器
 
 /// 从底部翻过来，让子视图按「从上往下」的顺序堆
@@ -2816,6 +3013,12 @@ final class BackdropView: NSView {
     private var tint: NSView?
     private var sheen: CAGradientLayer?
 
+    /// 轻拟物：y 小于这个高度（非翻转坐标，从窗口底部算）不画任何背景。
+    /// 于是日程木板之间的大片空隙是真正透明的，能看见后面的窗口。0 = 整片玻璃。
+    var clearBelowY: CGFloat = 0 {
+        didSet { applyClearRegion() }
+    }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         build()
@@ -2828,13 +3031,29 @@ final class BackdropView: NSView {
 
     override func layout() {
         super.layout()
-        sheen?.frame = bounds
+        applyClearRegion()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         // 窗口尺寸变了（主界面 ↔ 设置），高光层要跟着铺满
-        sheen?.frame = bounds
+        applyClearRegion()
+    }
+
+    private func applyClearRegion() {
+        guard clearBelowY > 0 else {
+            effect?.frame = bounds
+            tint?.frame = bounds
+            sheen?.frame = bounds
+            return
+        }
+        let top = NSRect(x: 0, y: clearBelowY, width: bounds.width,
+                         height: max(bounds.height - clearBelowY, 0))
+        effect?.frame = top
+        tint?.frame = top
+        sheen?.frame = tint?.bounds ?? .zero
+        // 朴素调试模式下也不许铺不透明底色，否则透明区会被盖住
+        layer?.backgroundColor = NSColor.clear.cgColor
     }
 
     private func build() {
