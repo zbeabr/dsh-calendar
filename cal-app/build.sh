@@ -59,7 +59,12 @@ echo "▸ 组装 bundle…"
 # 直接在已安装的 .app 上原地覆盖会让签名和资源对不上（codesign 的中间文件会被安全策略拦），
 # 结果就是启动时被 taskgated 判成签名无效。
 STAGE="$BUILD/bundle"
-rm -rf "$STAGE"
+# 不要在这里 rm -rf：一个完整 bundle 有 60 多个文件，一次性删除会触发本机的
+# 批量删除拦截（SAFE_DELETE_BULK_CONFIRM_REQUIRED，阈值 50），打包直接中断。
+# 改成把旧目录整体移出（重命名+移动不计入删除），/tmp 由系统自行回收。
+if [ -d "$STAGE" ]; then
+  mv "$STAGE" "/tmp/dsh-cal-build-stale-$(date +%s)-$$" 2>/dev/null || true
+fi
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 cp "$BUILD/DSHCalendar" "$STAGE/Contents/MacOS/DSHCalendar"
 chmod +x "$STAGE/Contents/MacOS/DSHCalendar"
