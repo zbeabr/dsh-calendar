@@ -2226,12 +2226,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         guard appearanceStyle == .lightSkeuo, !Motion.reduced, !plankViews.isEmpty else { return }
         for (index, plank) in plankViews.enumerated() {
             guard let layer = plank.layer else { continue }
-            let angle = CGFloat(index % 2 == 0 ? 1 : -1) * 0.024
-            let swing = CABasicAnimation(keyPath: "transform.rotation.z")
-            swing.fromValue = angle
-            swing.toValue = 0
-            swing.duration = 0.42
+            // 一串挂在同一根绳上的木牌：方向交替、幅度递减、越靠下衰减越慢、逐块错开相位
+            let dir = Double(index % 2 == 0 ? 1 : -1)
+            let amplitude = dir * (0.022 + Double(min(index, 5)) * 0.003)
+            let swing = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+            swing.values = [amplitude, -amplitude * 0.62, amplitude * 0.34, -amplitude * 0.15, 0.0]
+            swing.keyTimes = [0, 0.28, 0.52, 0.76, 1]
+            swing.duration = 0.52 + Double(min(index, 5)) * 0.06
             swing.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            swing.beginTime = CACurrentMediaTime() + Double(index) * 0.025
             layer.add(swing, forKey: "plankSwing")
         }
     }
@@ -2257,12 +2260,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             y += 40
         } else {
             let ropeTop = y
-            for item in agenda {
-                let plank = PlankView(item: item, tint: color(for: item.calendar), width: width - 24)
-                plank.frame = NSRect(x: 12, y: y, width: width - 24, height: 50)
+            for (index, item) in agenda.enumerated() {
+                // 木板与窗口等宽：左右不再各缩 12pt，边缘和金属外壳对齐
+                let plank = PlankView(item: item, tint: color(for: item.calendar), width: width,
+                                      seed: UInt32(truncatingIfNeeded: index &* 2654435761 &+ 7))
+                plank.frame = NSRect(x: 0, y: y, width: width, height: 54)
+                // 拟物模式补齐删除 / 顺延：和玻璃模式走同一套后端动作
+                plank.onDelete = { [weak self] in self?.deleteItem(item) }
+                plank.onShift = { [weak self] seconds in self?.shiftItem(item, by: seconds) }
                 container.addSubview(plank)
                 plankViews.append(plank)
-                y += 50 + 26
+                y += 54 + 26
             }
             // 绳子从列表容器顶部（也就是输入框下沿）垂到最后一块木板；放在最底层。
             let rope = RopeView(frame: NSRect(x: 0, y: ropeTop, width: width, height: y - ropeTop))
@@ -2914,87 +2922,294 @@ enum AppearanceStyle: String {
     case lightSkeuo
 }
 
-/// 两根绳：从输入框下方的列表顶部垂到底，木板两端穿孔串在上面。
+/// 两根麻绳：从输入框下方的列表顶部垂到底，木板两端穿孔串在上面。
+/// 画成多股捻线（阴影 / 主股 / 高光 / 斜向捻纹），不是两根直线。
 /// 不画背景、不吃点击，绳子之外的地方保持透明。
 final class RopeView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        ctx.setStrokeColor(NSColor(calibratedRed: 0.62, green: 0.53, blue: 0.40, alpha: 0.85).cgColor)
-        ctx.setLineWidth(1.5)
-        for x in [CGFloat(40), bounds.width - 40] {
-            ctx.move(to: CGPoint(x: x, y: 0))
-            ctx.addLine(to: CGPoint(x: x, y: bounds.height))
-            ctx.strokePath()
+        for x in [CGFloat(36), bounds.width - 36] {
+            let path = NSBezierPath()
+            path.move(to: CGPoint(x: x, y: 0))
+            path.line(to: CGPoint(x: x, y: bounds.height))
+
+            // 落在后面窗口上的投影
+            ctx.saveGState()
+            ctx.translateBy(x: 2, y: -2)
+            NSColor(calibratedRed: 0.12, green: 0.07, blue: 0.03, alpha: 0.30).setStroke()
+            path.lineWidth = 6
+            path.stroke()
+            ctx.restoreGState()
+
+            NSColor(calibratedRed: 0.54, green: 0.41, blue: 0.24, alpha: 1).setStroke()
+            path.lineWidth = 5
+            path.stroke()
+
+            NSColor(calibratedRed: 0.82, green: 0.68, blue: 0.45, alpha: 0.85).setStroke()
+            ctx.saveGState()
+            ctx.translateBy(x: -1.3, y: 0)
+            path.lineWidth = 1.3
+            path.stroke()
+            ctx.restoreGState()
+
+            // 斜向捻纹：沿绳长每隔几像素一道短斜线
+            ctx.setStrokeColor(NSColor(calibratedRed: 0.30, green: 0.20, blue: 0.09, alpha: 0.45).cgColor)
+            ctx.setLineWidth(0.9)
+            var y: CGFloat = 1
+            while y < bounds.height {
+                ctx.move(to: CGPoint(x: x - 2.4, y: y))
+                ctx.addLine(to: CGPoint(x: x + 2.4, y: y + 3.1))
+                ctx.strokePath()
+                y += 4.2
+            }
         }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// 一条日程 = 一块薄木板。轻拟物只做材质暗示：浅木色、顶部高光、底部厚边、两端绳孔。
+/// 一条日程 = 一块深实木板。木纹是程序化画的（确定性伪随机，每块种子不同），
+/// 不是纯色块：底色渐变 + 低频色斑 + 各向异性细纹 + 导管孔 + 结疤 + 端面厚度 + 黄铜穿孔。
 final class PlankView: NSView {
     private let item: AgendaItem
     private let tint: NSColor
+    private let seedValue: UInt32
     private let timeLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
+    private let deleteButton = NSButton()
+    private var trackingArea: NSTrackingArea?
 
-    init(item: AgendaItem, tint: NSColor, width: CGFloat) {
+    /// 与玻璃模式同一套动作，只是载体换成木板
+    var onDelete: (() -> Void)?
+    var onShift: ((TimeInterval) -> Void)?
+
+    init(item: AgendaItem, tint: NSColor, width: CGFloat, seed: UInt32 = 1) {
         self.item = item
         self.tint = tint
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 50))
+        self.seedValue = seed
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 54))
         wantsLayer = true
 
+        // 阴刻填浅漆：深木头上才读得清
         timeLabel.stringValue = item.allDay ? "全天" : Format.time(item.start)
-        timeLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        timeLabel.textColor = NSColor(calibratedRed: 0.36, green: 0.27, blue: 0.17, alpha: 1)
+        timeLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        timeLabel.textColor = NSColor(calibratedRed: 0.94, green: 0.86, blue: 0.69, alpha: 1)
         timeLabel.backgroundColor = .clear
         timeLabel.isBezeled = false
-        timeLabel.frame = NSRect(x: 44, y: 9, width: 62, height: 17)
+        timeLabel.frame = NSRect(x: 58, y: 10, width: 74, height: 17)
         addSubview(timeLabel)
 
         titleLabel.stringValue = item.title
-        titleLabel.font = NSFont.systemFont(ofSize: 13.5, weight: .medium)
-        titleLabel.textColor = NSColor(calibratedRed: 0.25, green: 0.18, blue: 0.11, alpha: 1)
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = NSColor(calibratedRed: 0.98, green: 0.93, blue: 0.81, alpha: 1)
         titleLabel.backgroundColor = .clear
         titleLabel.isBezeled = false
         titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.frame = NSRect(x: 110, y: 9, width: max(width - 160, 80), height: 19)
+        titleLabel.frame = NSRect(x: 138, y: 10, width: max(width - 218, 80), height: 19)
         addSubview(titleLabel)
+
+        // 黄铜小圆钮：悬停才浮出来，不破坏木板的整体感
+        deleteButton.title = "×"
+        deleteButton.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        deleteButton.isBordered = false
+        deleteButton.wantsLayer = true
+        deleteButton.layer?.backgroundColor = NSColor(calibratedRed: 0.79, green: 0.62, blue: 0.28, alpha: 1).cgColor
+        deleteButton.layer?.cornerRadius = 8
+        deleteButton.contentTintColor = NSColor(calibratedRed: 0.22, green: 0.13, blue: 0.03, alpha: 1)
+        deleteButton.target = self
+        deleteButton.action = #selector(removeSelf)
+        deleteButton.toolTip = "摘下这条日程"
+        deleteButton.frame = NSRect(x: width - 62, y: 19, width: 16, height: 16)
+        deleteButton.alphaValue = 0
+        addSubview(deleteButton)
     }
 
     required init?(coder: NSCoder) { fatalError("PlankView 不支持从 nib 初始化") }
 
+    /// 线性同余伪随机：同一个 seed 每次重绘都得到同一块木头，不会闪
+    private func rnd(_ state: inout UInt32) -> CGFloat {
+        state = state &* 1664525 &+ 1013904223
+        return CGFloat(state) / CGFloat(UInt32.max)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let body = NSRect(x: 3, y: 3, width: bounds.width - 6, height: bounds.height - 9)
-        let radius: CGFloat = 8
+        let w = bounds.width
+        let body = NSRect(x: 0, y: 7, width: w, height: bounds.height - 10)
 
-        // 底部厚边：纯色叠一层，不用阴影或渐变
-        let edge = NSRect(x: body.minX, y: body.minY - 3, width: body.width, height: body.height)
-        ctx.setFillColor(NSColor(calibratedRed: 0.78, green: 0.68, blue: 0.55, alpha: 1).cgColor)
-        NSBezierPath(roundedRect: edge, xRadius: radius, yRadius: radius).fill()
+        // 1) 底部外露的端面：比正面更深，带一点横切面的细纹
+        let edge = NSRect(x: 2, y: 3, width: w - 4, height: 8)
+        NSColor(calibratedRed: 0.22, green: 0.12, blue: 0.05, alpha: 1).setFill()
+        NSBezierPath(roundedRect: edge, xRadius: 2, yRadius: 2).fill()
+        var es = seedValue &+ 77
+        ctx.setStrokeColor(NSColor(calibratedRed: 0.55, green: 0.35, blue: 0.17, alpha: 0.28).cgColor)
+        ctx.setLineWidth(0.6)
+        for _ in 0..<28 {
+            let x = body.minX + rnd(&es) * body.width
+            ctx.move(to: CGPoint(x: x, y: edge.minY + 1))
+            ctx.addLine(to: CGPoint(x: x + 1.5, y: edge.maxY - 1))
+            ctx.strokePath()
+        }
 
-        // 木板主体
-        ctx.setFillColor(NSColor(calibratedRed: 0.97, green: 0.92, blue: 0.83, alpha: 1).cgColor)
-        NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius).fill()
+        // 2) 底色：纵向光照渐变（顶亮底暗），不是一层平板纯色
+        ctx.saveGState()
+        ctx.clip(to: body)
+        let woodColors = [
+            NSColor(calibratedRed: 0.62, green: 0.39, blue: 0.19, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.55, green: 0.33, blue: 0.15, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.49, green: 0.29, blue: 0.13, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.32, green: 0.18, blue: 0.07, alpha: 1).cgColor,
+        ] as CFArray
+        if let woodGrad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                     colors: woodColors, locations: [0, 0.18, 0.72, 1]) {
+            ctx.drawLinearGradient(woodGrad,
+                                   start: CGPoint(x: 0, y: body.maxY),
+                                   end: CGPoint(x: 0, y: body.minY), options: [])
+        }
 
-        // 顶部一道高光细条
-        ctx.setFillColor(NSColor.white.withAlphaComponent(0.55).cgColor)
-        ctx.fill(NSRect(x: body.minX + radius, y: body.maxY - 2, width: body.width - radius * 2, height: 1.5))
+        // 3) 低频色斑：木材天然的深浅色差
+        var bs = seedValue &+ 911
+        for _ in 0..<26 {
+            let cx = body.minX + rnd(&bs) * body.width
+            let cy = body.minY + rnd(&bs) * body.height
+            let rw = 24 + rnd(&bs) * 90
+            let rh = 3 + rnd(&bs) * 9
+            let dark = rnd(&bs) > 0.42
+            ctx.setFillColor((dark
+                ? NSColor(calibratedRed: 0.16, green: 0.08, blue: 0.03, alpha: 0.10)
+                : NSColor(calibratedRed: 0.75, green: 0.52, blue: 0.28, alpha: 0.09)).cgColor)
+            ctx.fillEllipse(in: NSRect(x: cx - rw / 2, y: cy - rh / 2, width: rw, height: rh))
+        }
 
-        // 左侧色条：日历颜色照旧用得上
+        // 4) 各向异性木纹：大量带轻微起伏的水平细线
+        var gs = seedValue
+        for _ in 0..<110 {
+            let y = body.minY + rnd(&gs) * body.height
+            let amp = 0.6 + rnd(&gs) * 3.4
+            let dark = rnd(&gs) > 0.38
+            let alpha = 0.05 + rnd(&gs) * 0.22
+            ctx.setStrokeColor((dark
+                ? NSColor(calibratedRed: 0.20, green: 0.10, blue: 0.04, alpha: alpha)
+                : NSColor(calibratedRed: 0.84, green: 0.62, blue: 0.36, alpha: alpha * 0.7)).cgColor)
+            ctx.setLineWidth(0.35 + rnd(&gs) * 1.1)
+            let wob = (rnd(&gs) - 0.5) * 2.2
+            ctx.move(to: CGPoint(x: body.minX, y: y))
+            ctx.addCurve(to: CGPoint(x: body.maxX, y: y + wob),
+                         control1: CGPoint(x: body.minX + body.width * 0.28, y: y - amp),
+                         control2: CGPoint(x: body.minX + body.width * 0.70, y: y + amp))
+            ctx.strokePath()
+        }
+
+        // 5) 导管孔：细短的竖向划痕
+        for _ in 0..<80 {
+            let x = body.minX + rnd(&gs) * body.width
+            let y = body.minY + rnd(&gs) * (body.height - 6)
+            ctx.setStrokeColor(NSColor(calibratedRed: 0.14, green: 0.07, blue: 0.02, alpha: 0.10 + rnd(&gs) * 0.14).cgColor)
+            ctx.setLineWidth(0.5)
+            ctx.move(to: CGPoint(x: x, y: y))
+            ctx.addLine(to: CGPoint(x: x, y: y + 1.5 + rnd(&gs) * 4))
+            ctx.strokePath()
+        }
+
+        // 6) 结疤：同心椭圆 + 周围木纹被顶开的绕流线
+        let kx = body.minX + body.width * (0.28 + rnd(&bs) * 0.44)
+        let ky = body.midY + (rnd(&bs) - 0.5) * 10
+        for k in stride(from: 5, through: 1, by: -1) {
+            let rx = CGFloat(k) * 4.2, ry = CGFloat(k) * 1.8
+            ctx.setStrokeColor(NSColor(calibratedRed: 0.15, green: 0.07, blue: 0.02, alpha: 0.16 + CGFloat(5 - k) * 0.07).cgColor)
+            ctx.setLineWidth(k == 1 ? 1.4 : 0.8)
+            ctx.strokeEllipse(in: NSRect(x: kx - rx, y: ky - ry, width: rx * 2, height: ry * 2))
+        }
+        for k in -3...3 where k != 0 {
+            let y = ky + CGFloat(k) * 5
+            let lift = CGFloat(3 - abs(k)) * 2
+            ctx.setStrokeColor(NSColor(calibratedRed: 0.18, green: 0.09, blue: 0.03, alpha: 0.20).cgColor)
+            ctx.setLineWidth(0.8)
+            ctx.move(to: CGPoint(x: kx - 42, y: y))
+            ctx.addQuadCurve(to: CGPoint(x: kx + 42, y: y), control: CGPoint(x: kx, y: y - lift))
+            ctx.strokePath()
+        }
+        ctx.restoreGState()
+
+        // 7) 倒角：顶缘高光、底缘暗边、左右压暗
+        ctx.setFillColor(NSColor(calibratedRed: 1.0, green: 0.86, blue: 0.64, alpha: 0.30).cgColor)
+        ctx.fill(NSRect(x: 2, y: body.maxY - 1.5, width: w - 4, height: 1.5))
+        ctx.setFillColor(NSColor(calibratedRed: 0.12, green: 0.06, blue: 0.02, alpha: 0.55).cgColor)
+        ctx.fill(NSRect(x: 2, y: body.minY, width: w - 4, height: 2))
+        for side in [CGFloat(0), w - 3] {
+            ctx.setFillColor(NSColor(calibratedRed: 0.14, green: 0.07, blue: 0.02, alpha: 0.28).cgColor)
+            ctx.fill(NSRect(x: side, y: body.minY, width: 3, height: body.height))
+        }
+
+        // 8) 左侧色条：日历颜色照旧用得上，做成嵌进木头的一小段铜边
+        ctx.setFillColor(NSColor(calibratedRed: 0.10, green: 0.05, blue: 0.02, alpha: 0.55).cgColor)
+        ctx.fill(NSRect(x: 48, y: body.minY + 10, width: 4, height: body.height - 20))
         ctx.setFillColor(tint.cgColor)
-        ctx.fill(NSRect(x: body.minX + 8, y: body.minY + 9, width: 3, height: body.height - 18))
+        ctx.fill(NSRect(x: 48.5, y: body.minY + 10.5, width: 3, height: body.height - 21))
 
-        // 两端绳孔：绳子从这两个点穿过
-        for x in [CGFloat(28), bounds.width - 28] {
-            let hole = NSRect(x: x - 4, y: body.midY - 4, width: 8, height: 8)
-            ctx.setFillColor(NSColor(calibratedRed: 0.55, green: 0.46, blue: 0.35, alpha: 1).cgColor)
-            ctx.fillEllipse(in: hole)
-            ctx.setFillColor(NSColor(calibratedRed: 0.97, green: 0.92, blue: 0.83, alpha: 1).cgColor)
-            ctx.fillEllipse(in: hole.insetBy(dx: 1.5, dy: 1.5))
+        // 9) 黄铜穿孔：径向高光 + 内孔阴影，绳子从这两点穿过
+        for x in [CGFloat(36), w - 36] {
+            let y = body.midY, r: CGFloat = 7.5
+            ctx.setFillColor(NSColor(calibratedRed: 0.10, green: 0.05, blue: 0.02, alpha: 0.7).cgColor)
+            ctx.fillEllipse(in: NSRect(x: x - r - 1, y: y - r - 1, width: r * 2 + 2, height: r * 2 + 2))
+            ctx.saveGState()
+            ctx.addEllipse(in: NSRect(x: x - r, y: y - r, width: r * 2, height: r * 2))
+            ctx.clip()
+            let colors = [
+                NSColor(calibratedRed: 0.98, green: 0.91, blue: 0.71, alpha: 1).cgColor,
+                NSColor(calibratedRed: 0.79, green: 0.62, blue: 0.28, alpha: 1).cgColor,
+                NSColor(calibratedRed: 0.30, green: 0.19, blue: 0.05, alpha: 1).cgColor,
+            ] as CFArray
+            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors,
+                                     locations: [0, 0.45, 1]) {
+                ctx.drawRadialGradient(grad,
+                                       startCenter: CGPoint(x: x - 2.4, y: y + 2.4), startRadius: 0,
+                                       endCenter: CGPoint(x: x, y: y), endRadius: r,
+                                       options: [])
+            }
+            ctx.restoreGState()
+            ctx.setFillColor(NSColor(calibratedRed: 0.10, green: 0.05, blue: 0.02, alpha: 1).cgColor)
+            ctx.fillEllipse(in: NSRect(x: x - 3.1, y: y - 3.1, width: 6.2, height: 6.2))
         }
     }
+
+    // MARK: 悬停 / 右键动作（补齐清单里「拟物模式没有删除 / 顺延」这一项）
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let old = trackingArea { removeTrackingArea(old) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { deleteButton.animator().alphaValue = 1 }
+    override func mouseExited(with event: NSEvent) { deleteButton.animator().alphaValue = 0 }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        for (title, action) in [
+            ("推迟 30 分钟", #selector(shift30)),
+            ("推迟 1 小时", #selector(shift60)),
+            ("改到明天同一时间", #selector(shiftDay)),
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let remove = NSMenuItem(title: "删除这条日程", action: #selector(removeSelf), keyEquivalent: "")
+        remove.target = self
+        menu.addItem(remove)
+        return menu
+    }
+
+    @objc private func removeSelf() { onDelete?() }
+    @objc private func shift30() { onShift?(1800) }
+    @objc private func shift60() { onShift?(3600) }
+    @objc private func shiftDay() { onShift?(86400) }
 }
 
 // MARK: - 自绘容器
