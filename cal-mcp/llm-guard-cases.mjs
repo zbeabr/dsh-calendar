@@ -154,6 +154,44 @@ check('干净的一句话不再因为缺地点而白白触发模型', () => {
   }
 });
 
+// ── 8. 深度分析补漏：上一轮修复引入的四个边界问题 ──────────────────
+check('「这个的/整个的」是所有格，不是残渣，不该触发模型', () => {
+  expect(needsRefine('明天下午三点看这个的设计稿', { title: '看这个的设计稿', location: undefined }), false, 'needsRefine');
+});
+
+await checkAsync('模型给的所有格标题要被采纳，不能被残渣判据误拒', async () => {
+  const text = '明天下午三点在图书馆看这个的设计稿';
+  const result = await withModelAnswer({ title: '看这个的设计稿', location: '图书馆' }, () =>
+    refineWithModel(text, { title: '在图书馆看这个的设计稿', location: undefined, local: '11/08周日 15:00–16:00' }, { force: true }));
+  expect(result?.title, '看这个的设计稿', '修好后的标题');
+  expect(result?.location, '图书馆', '地点');
+});
+
+await checkAsync('规则已有地点时，模型只截短标题也要整条拒绝', async () => {
+  const text = '明天下午三点在星巴克跟老王聊一下那个项目的事情';
+  const result = await withModelAnswer({ title: '跟老王', location: null }, () =>
+    refineWithModel(text, { title: '跟老王聊一下那个项目的事情', location: '星巴克', local: '11/08周日 15:00–16:00' }, { force: true }));
+  expect(result, undefined, '兜底结果');
+});
+
+await checkAsync('无介词的真实地点「校医院」，模型补出来要采纳', async () => {
+  const text = '明天上午十点体检 校医院';
+  const result = await withModelAnswer({ title: '体检', location: '校医院' }, () =>
+    refineWithModel(text, { title: '体检校医院', location: undefined, local: '11/08周日 10:00–11:00' }, { force: true }));
+  expect(result?.location, '校医院', '地点');
+});
+
+await checkAsync('无介词的真实地点「食堂」，模型补出来要采纳', async () => {
+  const text = '明天 食堂 聚餐';
+  const result = await withModelAnswer({ title: '聚餐', location: '食堂' }, () =>
+    refineWithModel(text, { title: '食堂聚餐', location: undefined, local: '11/08周日 00:00–00:00' }, { force: true }));
+  expect(result?.location, '食堂', '地点');
+});
+
+check('「14:00 到 16:00」是时间区间，不是介词短语', () => {
+  expect(needsRefine('下周三 14:00 到 16:00 培训', { title: '培训', location: undefined }), false, 'needsRefine');
+});
+
 // ── 汇总 ─────────────────────────────────────────────────────────
 if (failures.length === 0) {
   console.log(`✓ ${pass} 条模型兜底用例全部通过`);

@@ -559,7 +559,9 @@ function cleanTitle(text) {
   }
   // 「日程/会议/安排」一般是噪声前缀（「帮我安排个…」），但整句就剩它一个词时
   // （「3:00 会议」），它就是标题本身，剥掉会得到空标题。
-  const noise = /^(?:帮我|请|麻烦)?\s*(?:日程|会议|安排)/u.exec(title);
+  // 必须独立成词（后面是空白或句尾）才剥：「会议室」里的「会议」不是噪声，
+  // 否则「周五下午两点 会议室 周会」会被削成「室周会」。
+  const noise = /^(?:帮我|请|麻烦)?\s*(?:日程|会议|安排)(?=\s|$)/u.exec(title);
   if (noise && title.slice(noise[0].length).replace(LEADING, '').trim()) {
     title = title.slice(noise[0].length);
   }

@@ -160,8 +160,13 @@ const TIME_WORD = /(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|�
  * 规则标题与模型标题共用同一把尺子：前者决定要不要问模型，后者决定能不能采纳。
  */
 const DEBRIS_TAIL = /(?:[个了过趟杯碗回遍份]的|[吃喝买点做逛看玩打约聊谈见取送拿办找学考洗剪寄借还换练读背写画刷修][个了过趟杯碗回遍]{1,2})$/u;
-/** 残渣也可能夹在动词和宾语中间：「吃个的张亮麻辣烫」。 */
-const DEBRIS_INFIX = /[个了过趟杯碗回遍份]的/u;
+/**
+ * 残渣也可能夹在动词和宾语中间：「吃个的张亮麻辣烫」。
+ * 但「这个的 / 整个的 / 那份的」是正常所有格，前面是指示代词就不算残渣。
+ * 这把尺子只用于「要不要问模型」；模型给的标题不能用它验收，否则
+ * 「看这个的设计稿」这种正确答案会被一并否掉。
+ */
+const DEBRIS_INFIX = /(?<![这那整每某哪])[个了过趟杯碗回遍份]的/u;
 
 /** 地点可能带括号等正则元字符，拼进正则前先转义。 */
 function escapeRegExp(value) {
@@ -194,7 +199,8 @@ function verifyTitle(title, fallback, text) {
   if (/^(?:null|无|未知)$/iu.test(value)) return undefined;
   if (TIME_WORD.test(value)) return undefined;          // 不该再有时间
   if (DEBRIS_TAIL.test(value)) return undefined;        // 「吃个的」不是标题，是残渣
-  if (DEBRIS_INFIX.test(value)) return undefined;       // 残渣夹在动词和宾语之间也不行
+  // 中间出现「量词 + 的」不再一律作废：那可能是「看这个的设计稿」这种正常所有格。
+  // 真正的残渣由触发侧判；验收只认读不通的尾巴，别把模型的正确答案一起否掉。
   // 介词残渣：「跟导师在 吃个饭」这种把地点挖掉后留下孤零零的「在」
   if (/在[\s，,、；;]/u.test(value) || /[\s，,、；;]在$/u.test(value)) return undefined;
   if (!isSubsequence(value, String(text ?? ''))) return undefined; // 只删不改
@@ -202,7 +208,8 @@ function verifyTitle(title, fallback, text) {
 }
 
 /** 规则结果里这些痕迹说明它没吃干净，值得让模型再看一眼。 */
-const WEAK_TITLE = /(?:^[在到去于]|^[楼上下里外对旁]|我想要|我想|我要|帮我|麻烦|那个|这个|一下$|[，,、；;。])/u;
+/** 「这个的 / 那个的」是所有格（看这个的设计稿），不是口头禅噪声，别据此白调模型。 */
+const WEAK_TITLE = /(?:^[在到去于]|^[楼上下里外对旁]|我想要|我想|我要|帮我|麻烦|(?:那个|这个)(?!的)|一下$|[，,、；;。])/u;
 
 /**
  * 标题本身有没有问题（不考虑缺地点）。
@@ -233,7 +240,7 @@ export function needsRefine(text, ruleResult = {}) {
   const title = String(ruleResult.title ?? '');
   if (titleNeedsWork(title)) return true;
   // 句子里有介词结构，却没解析出地点。「到」后跟钟点（三点到四点）不算介词。
-  if (!ruleResult.location && /(?:在|去)|到(?![一二两三四五六七八九十\d])/u.test(String(text ?? ''))) return true;
+  if (!ruleResult.location && /(?:在|去)|到(?![一二两三四五六七八九十0-9 ]*[0-9])/u.test(String(text ?? ''))) return true;
   return false;
 }
 
@@ -283,9 +290,15 @@ export async function refineWithModel(text, ruleResult, options = {}) {
     // 现在看原句结构：模型给的地点出现在规则标题里、原句里它前面又没有
     // 任何地点标记（在/去/到/@/地点：），那就是宾语，整条放弃模型结果。
     // 宁可少采纳一次补地点，也不能把店名写成地点、把标题削成「吃个的」。
+    // 无介词的真地点：「明天上午十点体检 校医院」「明天 食堂 聚餐」。
+    // 它在原句里前面是空格/句首/介词，本身又是地点名词，不该被当成动词宾语。
+    const PLACE_SUFFIX = /(?:室|厅|楼|馆|院|店|场|站|校|园|区|堂|铺|中心|超市|医院|银行|食堂|教室|报告厅|实验室|图书馆|会议室)$/u;
+    const placeBoundary = new RegExp(`(?:^| |[在到去@]|地点[:：])${escapeRegExp(location)}`, 'u');
+    const looksLikePlace = PLACE_SUFFIX.test(location ?? '') && placeBoundary.test(String(text ?? ''));
     const objectAsLocation = Boolean(location)
       && !ruleResult.location
       && base.includes(location)
+      && !looksLikePlace
       && !new RegExp(`(?:在|去|到|@|地点[:：])\\s*${escapeRegExp(location)}`, 'u').test(String(text ?? ''));
     if (objectAsLocation) {
       remember(`模型把「${location}」当地点，其实是动词宾语，已忽略`);
@@ -315,12 +328,14 @@ export async function refineWithModel(text, ruleResult, options = {}) {
         .replace(/^[在到去]\s*/u, '')
         .replace(/\s{2,}/gu, ' ')
         .trim();
-      if (cleaned && cleaned !== base && !DEBRIS_TAIL.test(cleaned) && !DEBRIS_INFIX.test(cleaned)) title = cleaned;
+      if (cleaned && cleaned !== base && !DEBRIS_TAIL.test(cleaned)) title = cleaned;
     }
 
-    // 质量闸：模型只把标题截短、又没补出任何新地点，不是「更懂」，是信息损失。
-    // 旧逻辑「合法即采纳」会把「跟老王聊一下那个项目的事情」削成「跟老王」。
-    if (!location && title && base.startsWith(title) && title.length < base.length) {
+    // 质量闸：模型没带来新地点、却只把标题截短，不是「更懂」，是信息损失。
+    // 判「有没有新地点」要和规则原本的地点比，不能只看 location 是否为真：
+    // 规则已有地点时旧逻辑会漏拦，把「跟老王聊一下那个项目的事情」削成「跟老王」。
+    const gainedLocation = Boolean(location) && location !== ruleResult.location;
+    if (!gainedLocation && title && base.startsWith(title) && title.length < base.length) {
       remember('模型只把标题截短、没补出新地点，已忽略');
       return undefined;
     }
