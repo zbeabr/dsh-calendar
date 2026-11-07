@@ -1,5 +1,6 @@
 import AppKit
 import Network
+import WebKit
 
 // MARK: - 后端自举
 //
@@ -660,6 +661,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var didLayoutMain = false
     /// 列表里显示的日程
     private var agenda: [AgendaItem] = []
+
+    // MARK: 全拟物外观（用 WebView 承载参考稿；玻璃模式代码与数据完全独立）
+    /// env `DSH_CAL_SKEUO=1/0` 只给自检快照用，日常走 UserDefaults。
+    private lazy var skeuoMode: Bool = {
+        if let forced = ProcessInfo.processInfo.environment["DSH_CAL_SKEUO"] { return forced == "1" }
+        return UserDefaults.standard.string(forKey: "appearanceStyle") == "skeuo"
+    }()
+    private var skeuoContainer: NSView?
+    private var skeuoWebView: WKWebView?
+    private var skeuoSyncTimer: Timer?
+    private var skeuoLastPayload = ""
+    private var appearanceMenuItem: NSMenuItem?
     /// 日历名 → 颜色，给每条日程配左侧色条
     private var calendarColors: [String: NSColor] = [:]
     /// 刚写入的那条：列表刷新时闪一下，告诉用户「它真的进去了」
@@ -705,6 +718,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         window.isReleasedWhenClosed = false
         window.center()
         makeShell()
+        applyAppearance()
 
         // 先把占位文字装好再让窗口露面，第一帧就是完整画面（不再整窗淡入）
         showMessage("正在读取日历…")
@@ -924,6 +938,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "前置全部窗口", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        let appearance = windowMenu.addItem(withTitle: "切换到全拟物外观", action: #selector(toggleAppearance), keyEquivalent: "")
+        appearance.target = self
+        appearanceMenuItem = appearance
 
         // ── 帮助
         let helpItem = NSMenuItem(title: "帮助", action: nil, keyEquivalent: "")
@@ -2412,8 +2430,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             : (demo["DSH_CAL_DEMO_TEXT"]?.isEmpty == false ? 3.0 : 0.6)
         let delay = demo["DSH_CAL_SNAPSHOT_DELAY"].flatMap(Double.init) ?? base
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            self.renderSnapshot(to: path)
-            NSApp.terminate(nil)
+            if self.skeuoMode {
+                // WKWebView 不参与 AppKit 的离屏绘制，得用它自己的快照 API
+                self.renderSkeuoSnapshot(to: path) { NSApp.terminate(nil) }
+            } else {
+                self.renderSnapshot(to: path)
+                NSApp.terminate(nil)
+            }
         }
     }
 
@@ -4253,6 +4276,201 @@ extension NSColor {
             blue: CGFloat(value & 0xff) / 255,
             alpha: 1
         )
+    }
+}
+
+// MARK: - 全拟物外观：直接用 WebView 承载参考稿
+//
+// 参考稿是 HTML/CSS/SVG 渲染的；以前用 AppKit CGContext 照着逐笔重画，
+// 两套引擎的噪声与渐变永远对不上。这里把同一份 HTML 装进 WKWebView，
+// 材质一模一样。玻璃界面仍留在 shell.slot 里继续跑，只是不挂在窗口上：
+// 切外观只换 contentView，不重建控件、不碰数据、不改任何产品逻辑。
+
+/// 标题栏拖动层：避开左侧自绘红绿灯和右侧状态灯，其余区域拖真窗口。
+final class SkeuoDragView: NSView {
+    var onDrag: (() -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if point.x > 100 && point.x < bounds.width - 160 { return self }
+        return nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onDrag?()
+        window?.performDrag(with: event)
+    }
+}
+
+extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
+
+    @objc func toggleAppearance() {
+        skeuoMode.toggle()
+        UserDefaults.standard.set(skeuoMode ? "skeuo" : "glass", forKey: "appearanceStyle")
+        applyAppearance()
+    }
+
+    func applyAppearance() {
+        appearanceMenuItem?.title = skeuoMode ? "切换到 Liquid Glass 外观" : "切换到全拟物外观"
+        // 拟物模式把系统红绿灯收起来，HTML 里那组旧版立体灯是唯一的一组
+        for kind: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            window?.standardWindowButton(kind)?.isHidden = skeuoMode
+        }
+        if skeuoMode {
+            window?.contentView = ensureSkeuoContainer()
+            startSkeuoSync()
+        } else {
+            skeuoSyncTimer?.invalidate()
+            skeuoSyncTimer = nil
+            window?.contentView = shell
+        }
+    }
+
+    private func ensureSkeuoContainer() -> NSView {
+        if let existing = skeuoContainer { return existing }
+        let bounds = window?.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 760, height: 720)
+
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(self, name: "dsh")
+        let web = WKWebView(frame: bounds, configuration: config)
+        web.autoresizingMask = [.width, .height]
+        web.navigationDelegate = self
+        web.allowsBackForwardNavigationGestures = false
+
+        let container = NSView(frame: bounds)
+        container.wantsLayer = true
+        container.addSubview(web)
+
+        let barHeight: CGFloat = 34
+        let drag = SkeuoDragView(frame: NSRect(x: 0, y: bounds.height - barHeight,
+                                               width: bounds.width, height: barHeight))
+        drag.autoresizingMask = [.width, .minYMargin]
+        drag.onDrag = { [weak self] in
+            self?.skeuoWebView?.evaluateJavaScript("window.dshSwing()") { _, _ in }
+        }
+        container.addSubview(drag)
+
+        skeuoWebView = web
+        skeuoContainer = container
+        loadSkeuoHTML(into: web)
+        return container
+    }
+
+    private func loadSkeuoHTML(into web: WKWebView) {
+        var url = Bundle.main.resourceURL?.appendingPathComponent("skeuo.html")
+        if let candidate = url, !FileManager.default.fileExists(atPath: candidate.path) { url = nil }
+        if url == nil {
+            // 源码直跑（没打包成 .app）时，从编译时的源码目录取同一份文件
+            let dev = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .appendingPathComponent("web/skeuo.html")
+            if FileManager.default.fileExists(atPath: dev.path) { url = dev }
+        }
+        guard let file = url else { return }
+        web.loadFileURL(file, allowingReadAccessTo: file.deletingLastPathComponent())
+    }
+
+    /// 只读既有控件和既有数据，推给 WebView。不修改任何产品逻辑。
+    private func startSkeuoSync() {
+        skeuoSyncTimer?.invalidate()
+        skeuoLastPayload = ""
+        skeuoSyncTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            self?.pushSkeuoState()
+        }
+        pushSkeuoState()
+    }
+
+    private func pushSkeuoState() {
+        guard skeuoMode, let web = skeuoWebView else { return }
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "zh_CN")
+        day.dateFormat = "M/d EEE"
+        let clock = DateFormatter()
+        clock.locale = Locale(identifier: "zh_CN")
+        clock.dateFormat = "HH:mm"
+
+        let events: [[String: String]] = agenda.map { item in
+            let detail = item.allDay ? "全天" : clock.string(from: item.start)
+            return [
+                "uid": item.uid,
+                "when": day.string(from: item.start),
+                "what": item.title + " · " + detail,
+                "tag": item.calendar,
+            ]
+        }
+        let candidates = [agendaNote, statusLabel?.stringValue, hintLabel?.stringValue]
+        let sys = candidates.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+            ?? (agenda.isEmpty ? "正在读取日历…" : "日程已读取")
+        // 断网 / 模型未接入时，WebView 里对应那颗 LED 会亮红灯（文案也跟着变）。
+        // DSH_CAL_SNAP_OFFLINE=1 只给 --snapshot 自检红灯用，不改变任何产品状态。
+        let forceOffline = ProcessInfo.processInfo.environment["DSH_CAL_SNAP_OFFLINE"] == "1"
+        let modelOnline = !forceOffline && (modelEnabled || LocalModel.shared.phase == .ready)
+
+        let state: [String: Any] = [
+            "events": events,
+            "sys": sys,
+            "status": ["online": !offline && !forceOffline, "modelOnline": modelOnline],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: state, options: []),
+              let json = String(data: data, encoding: .utf8),
+              json != skeuoLastPayload else { return }
+        skeuoLastPayload = json
+        web.evaluateJavaScript("window.dshRender(\(json))") { [weak self] _, error in
+            if error != nil { self?.skeuoLastPayload = "" }   // 页面还没加载好，下一轮重推
+        }
+    }
+
+    // MARK: JS → 原生：全部映射到既有动作
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+        switch type {
+        case "submit":
+            let text = (body["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !text.isEmpty else { return }
+            if let field = input {
+                // 复用玻璃模式那套解析/写入/冲突检查：把话放进既有输入框再走既有 addEvent
+                field.string = text
+                addEvent()
+            } else {
+                skeuoWebView?.evaluateJavaScript("window.dshSys('正在读取日历，稍等一下再试')") { _, _ in }
+            }
+        case "delete":
+            guard let uid = body["uid"] as? String,
+                  let item = agenda.first(where: { $0.uid == uid }) else { return }
+            deleteItem(item)
+        case "shift":
+            guard let uid = body["uid"] as? String,
+                  let seconds = (body["seconds"] as? NSNumber)?.doubleValue,
+                  let item = agenda.first(where: { $0.uid == uid }) else { return }
+            shiftItem(item, by: seconds)
+        case "window":
+            switch body["action"] as? String ?? "" {
+            case "close": window?.performClose(nil)
+            case "mini": window?.miniaturize(nil)
+            case "zoom": window?.zoom(nil)
+            default: break
+            }
+        default:
+            break
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        skeuoLastPayload = ""
+        pushSkeuoState()
+    }
+
+    /// 自检：WKWebView 的内容不在 AppKit 的离屏位图里，得单独导出
+    func renderSkeuoSnapshot(to path: String, done: @escaping () -> Void) {
+        guard let web = skeuoWebView else { done(); return }
+        web.takeSnapshot(with: nil) { image, _ in
+            defer { done() }
+            guard let image,
+                  let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let data = rep.representation(using: .png, properties: [:]) else { return }
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
     }
 }
 

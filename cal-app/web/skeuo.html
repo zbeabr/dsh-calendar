@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH 日历 · 全拟物外观</title>
+<style>
+:root{
+  --w: 560px;                 /* 窗口宽度：标题栏 / 输入区 / 木板三者严格共用 */
+  --wood-hi:#b07b45;
+  --wood-mid:#8a5527;
+  --wood-lo:#4a2b12;
+  --brass-hi:#f7e3a8;
+  --brass-mid:#c9a24e;
+  --brass-lo:#6b4715;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+  background:#d6d2c9;
+  color:#2b2822;
+  -webkit-font-smoothing:antialiased;
+  overflow:auto;
+}
+/* ---------- 桌面 ---------- */
+.menubar{
+  position:fixed;top:0;left:0;right:0;height:24px;z-index:30;
+  background:linear-gradient(180deg,#f3f1ec 0%,#e6e3dc 100%);
+  border-bottom:1px solid #b9b5ac;
+  box-shadow:0 1px 3px rgba(0,0,0,.10);
+  display:flex;align-items:center;gap:20px;padding:0 14px;
+  font-size:11.5px;color:#3b3832;
+}
+.menubar b{font-weight:600}
+.menubar .right{margin-left:auto;color:#6b675f}
+.desktop{
+  position:relative;min-height:100vh;padding:52px 0 70px;
+  background:
+    radial-gradient(120% 90% at 50% 0%,rgba(255,255,255,.5),transparent 60%),
+    repeating-linear-gradient(92deg,rgba(120,105,85,.035) 0 1px,transparent 1px 5px),
+    linear-gradient(180deg,#dedad2,#cbc6bc);
+  display:flex;flex-direction:column;align-items:center;
+}
+/* 后面的窗口：用来验证木板间隙是不是被高斯模糊虚化了 */
+.back-window{
+  position:absolute;top:150px;left:50%;margin-left:-150px;
+  width:440px;height:400px;border-radius:7px;
+  background:linear-gradient(180deg,#fbfaf6,#ece9e1);
+  border:1px solid #9d9a93;
+  box-shadow:0 18px 40px rgba(0,0,0,.18);
+  filter:blur(.3px);
+}
+.back-window .bw-bar{
+  height:30px;border-radius:6px 6px 0 0;
+  background:linear-gradient(180deg,#8f8f8f,#616161);
+  border-bottom:1px solid #3d3d3d;
+  display:flex;align-items:center;padding:0 12px;gap:7px;
+}
+.back-window .bw-dot{width:9px;height:9px;border-radius:50%;background:#d9d6cf;opacity:.55}
+.back-window .bw-title{font-size:11px;color:#f0efec;margin-left:8px}
+.back-window .bw-line{height:8px;border-radius:2px;background:#d6d2c8;margin:16px 22px}
+.back-window .bw-line.blue{background:#a9c9e8}
+/* ---------- 窗口：一体式金属上半部 + 全透明列表区 ---------- */
+.app-window{
+  position:relative;width:var(--w);z-index:10;
+  filter:drop-shadow(0 22px 34px rgba(28,20,10,.34));
+}
+/* chrome = 标题栏 + 输入区，共用同一块拉丝金属，没有悬浮卡片 */
+.chrome{
+  position:relative;width:100%;
+  border-radius:9px 9px 0 0;
+  border:1px solid #4a4a4a;border-bottom:none;
+  background:
+    linear-gradient(180deg,rgba(255,255,255,.20) 0 1px,transparent 1px),
+    linear-gradient(180deg,#9b9b9b 0%,#828282 10%,#6f6f6f 48%,#5b5b5b 88%,#494949 100%);
+  overflow:hidden;
+}
+.chrome::before{ /* 拉丝金属：高频水平噪声 */
+  content:"";position:absolute;inset:0;pointer-events:none;
+  filter:url(#brushed);opacity:.78;mix-blend-mode:overlay;
+}
+.chrome::after{ /* 顶部高光 + 底部暗边 */
+  content:"";position:absolute;inset:0;pointer-events:none;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 -2px 3px rgba(0,0,0,.42);
+}
+.titlebar{height:34px;display:flex;align-items:center;padding:0 12px;position:relative;z-index:2}
+.lamps{display:flex;gap:8px;align-items:center}
+/* 早期 macOS 的立体糖果灯：金属凹座 + 玻璃凸面 + 白色高光点 */
+.lamp{
+  width:13px;height:13px;border-radius:50%;position:relative;
+  background:#2a2a2a;
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.9),0 1px 0 rgba(255,255,255,.35);
+  padding:1.5px;
+}
+.lamp i{
+  display:block;width:100%;height:100%;border-radius:50%;position:relative;
+  box-shadow:inset 0 -1px 2px rgba(0,0,0,.45),inset 0 1px 1px rgba(255,255,255,.35);
+}
+.lamp i::after{
+  content:"";position:absolute;left:18%;top:12%;width:42%;height:30%;border-radius:50%;
+  background:rgba(255,255,255,.72);filter:blur(.4px);
+}
+.lamp.r i{background:radial-gradient(circle at 34% 26%,#ffb49b,#e2543b 42%,#a62c19 82%,#6a160b)}
+.lamp.y i{background:radial-gradient(circle at 34% 26%,#fff0bf,#e9b43c 42%,#9c6a10 82%,#5c3a05)}
+.lamp.g i{background:radial-gradient(circle at 34% 26%,#cbf2a8,#66ba46 42%,#2c781f 82%,#14430d)}
+/* 早期 Macintosh 的铭牌字：Apple Garamond 一路的衬线斜体，直接蚀刻在金属上。
+   不加牌子、不加框、不加铆钉 —— 只在字体与压印质感上做手脚。 */
+.titlebar .name{
+  position:absolute;left:0;right:0;text-align:center;pointer-events:none;
+  font-family:"Apple Garamond","Hoefler Text",Georgia,"Times New Roman","Songti SC",serif;
+  font-size:19px;font-weight:600;font-style:italic;letter-spacing:1.6px;
+  color:#f2eee1;
+  -webkit-text-stroke:.25px rgba(20,18,14,.35);
+  text-shadow:
+    0 -1px 0 rgba(18,17,15,.92),
+    0 1px 0 rgba(255,255,255,.58),
+    0 2px 3px rgba(0,0,0,.42),
+    0 0 1px rgba(0,0,0,.55);
+}
+/* 右上角：玻璃模式那套状态指示灯和文字，拟物版照样留着。
+   轻/重拟物切换不再占这个位置（区别不大，收进设置/窗口菜单）。 */
+.status-lamps{
+  margin-left:auto;position:relative;z-index:3;display:flex;align-items:center;gap:6px;
+  padding:3px 8px;border-radius:5px;
+  background:linear-gradient(180deg,#3d3d3d,#2b2b2b);
+  box-shadow:inset 0 1px 3px rgba(0,0,0,.75),0 1px 0 rgba(255,255,255,.3);
+}
+/* 真实 LED：黄铜座 + 玻璃凸面 + 会呼吸的通电辉光。
+   节奏对齐 App 里 StatusDot 的 2.6s 呼吸；两颗错开相位，不像一起闪。 */
+.led{
+  --halo:rgba(70,255,120,.78);
+  --halo2:rgba(60,240,110,.36);
+  width:9px;height:9px;border-radius:50%;position:relative;padding:1.5px;
+  background:radial-gradient(circle at 34% 28%,#d8c79a,#8a6a2c 60%,#3d2a0c);
+  box-shadow:0 1px 0 rgba(255,255,255,.25),inset 0 1px 2px rgba(0,0,0,.8);
+}
+.led.a{--halo:rgba(255,190,70,.75);--halo2:rgba(255,170,50,.32)}
+/* 灯座外面扩散的一圈光晕：像 App 里那两道错相位的 breathe ring */
+.led::before{
+  content:"";position:absolute;inset:-5px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,var(--halo2) 0%,transparent 68%);
+  animation:ledHalo 2.6s ease-in-out infinite;
+}
+.led.a::before{animation-delay:-1.3s}
+.led i{
+  display:block;width:100%;height:100%;border-radius:50%;position:relative;
+  animation:ledBreathe 2.6s ease-in-out infinite;
+}
+.led.a i{animation-delay:-1.3s}
+.led i::after{
+  content:"";position:absolute;left:20%;top:14%;width:38%;height:28%;border-radius:50%;
+  background:rgba(255,255,255,.8);
+}
+.led.g i{background:radial-gradient(circle at 36% 28%,#c6ffb0,#4fd666 45%,#12772c 85%)}
+.led.a i{background:radial-gradient(circle at 36% 28%,#ffe9ac,#f4b73c 45%,#9a5a0c 85%)}
+@keyframes ledBreathe{
+  0%,100%{filter:brightness(.58) saturate(.86);
+    box-shadow:0 0 2px var(--halo),0 0 4px var(--halo2)}
+  50%{filter:brightness(1.32) saturate(1.12);
+    box-shadow:0 0 7px var(--halo),0 0 15px var(--halo2),0 0 24px var(--halo2)}
+}
+@keyframes ledHalo{
+  0%,100%{opacity:.10;transform:scale(.82)}
+  50%{opacity:.72;transform:scale(1.34)}
+}
+.st-txt{
+  font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  font-size:9.5px;letter-spacing:.3px;color:#b9e8c4;
+  text-shadow:0 0 5px rgba(90,255,140,.35);
+  animation:textBreathe 2.6s ease-in-out infinite;
+}
+.led.a + .st-txt{animation-delay:-1.3s}
+@keyframes textBreathe{
+  0%,100%{opacity:.60;text-shadow:none}
+  50%{opacity:1;text-shadow:0 0 6px rgba(90,255,140,.55)}
+}
+.status-lamps .sep{width:1px;height:11px;background:rgba(255,255,255,.16);margin:0 2px}
+/* 系统「减少动态效果」开启时全部静止，跟 App 的 Motion.reduced 一致 */
+@media (prefers-reduced-motion: reduce){
+  .led i,.led::before,.st-txt,.lcd-strip .cursor{animation:none}
+  .led i{box-shadow:0 0 5px var(--halo),0 0 10px var(--halo2)}
+  .led::before{opacity:.35}
+  .st-txt{opacity:1}
+}
+/* 输入区：凿进同一块金属板的凹槽，不是浮在上面的独立圆角面板 */
+.compose{position:relative;z-index:2;padding:10px 14px 0}
+.compose-label{
+  font-size:10.5px;letter-spacing:.6px;color:#f0efeb;
+  text-shadow:0 1px 1px rgba(0,0,0,.55);margin-bottom:7px;
+}
+.compose-row{display:flex;gap:10px;align-items:stretch}
+/* 老式电脑终端屏：仍是凿进同一块金属板的凹槽，只是里面换成墨绿磷光屏 */
+.well{
+  flex:1;position:relative;border-radius:4px;padding:14px 14px 13px;min-height:54px;
+  background:
+    radial-gradient(130% 150% at 50% -25%,rgba(80,220,130,.14),transparent 62%),
+    linear-gradient(180deg,#07160d 0%,#0a1d11 55%,#06120a 100%);
+  border:1px solid #22392a;
+  box-shadow:
+    inset 0 6px 14px rgba(0,0,0,.92),
+    inset 0 0 26px rgba(45,200,100,.10),
+    inset 1px 0 3px rgba(0,0,0,.5),
+    inset -1px 0 3px rgba(0,0,0,.5),
+    inset 0 -1px 0 rgba(120,220,150,.12),
+    0 1px 0 rgba(255,255,255,.42);
+}
+.well::before{ /* 凿口上沿的暗边，强调是挖进去的槽而不是贴上去的卡片 */
+  content:"";position:absolute;left:2px;right:2px;top:0;height:2px;
+  background:rgba(0,0,0,.55);border-radius:0 0 3px 3px;pointer-events:none;z-index:2;
+}
+.well::after{ /* CRT 扫描线 + 屏幕玻璃的一道斜反光 */
+  content:"";position:absolute;inset:0;border-radius:3px;pointer-events:none;z-index:2;
+  background:
+    repeating-linear-gradient(180deg,rgba(0,0,0,.20) 0 1px,transparent 1px 3px),
+    linear-gradient(105deg,rgba(255,255,255,.055) 0%,transparent 28%,transparent 72%,rgba(255,255,255,.025) 100%);
+}
+.well input{
+  position:relative;z-index:1;
+  width:100%;border:0;background:transparent;outline:none;
+  font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Courier New",monospace;
+  font-size:13px;letter-spacing:.6px;
+  color:#8dffab;caret-color:#8dffab;
+  text-shadow:
+    0 0 4px rgba(90,255,140,.85),
+    0 0 11px rgba(60,255,120,.45),
+    0 0 22px rgba(40,230,100,.20);
+}
+.well input::placeholder{color:#3c7a52;text-shadow:none}
+.add-btn{
+  width:66px;border-radius:6px;border:1px solid #565656;cursor:pointer;
+  font:inherit;font-size:12px;font-weight:600;color:#333;
+  background:linear-gradient(180deg,#fafafa,#d2d2d2 55%,#adadad);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.95),0 2px 3px rgba(0,0,0,.35);
+  text-shadow:0 1px 0 rgba(255,255,255,.7);
+}
+.add-btn:active{background:linear-gradient(180deg,#bdbdbd,#e2e2e2);box-shadow:inset 0 2px 4px rgba(0,0,0,.3)}
+/* 第二块屏：细长的小液晶条，专门放系统提示 / 解析结果，跟主屏分开 */
+.lcd-strip{
+  position:relative;z-index:2;display:flex;align-items:center;
+  height:22px;margin-top:9px;padding:0 9px;gap:9px;border-radius:3px;
+  background:linear-gradient(180deg,#06140c,#081a0f 60%,#050f09);
+  border:1px solid #24402d;
+  box-shadow:
+    inset 0 2px 5px rgba(0,0,0,.9),
+    inset 0 0 14px rgba(45,200,100,.08),
+    0 1px 0 rgba(255,255,255,.3);
+}
+.lcd-strip::after{
+  content:"";position:absolute;inset:0;border-radius:2px;pointer-events:none;
+  background:repeating-linear-gradient(180deg,rgba(0,0,0,.18) 0 1px,transparent 1px 3px);
+}
+.lcd-strip .tag{
+  flex:none;position:relative;z-index:1;
+  font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:.8px;
+  color:#3f8a58;padding-right:8px;border-right:1px solid rgba(90,220,130,.25);
+}
+.lcd-strip .msg{
+  flex:1;min-width:0;position:relative;z-index:1;
+  font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  font-size:10.5px;letter-spacing:.4px;color:#79e89a;
+  text-shadow:0 0 4px rgba(80,255,130,.7),0 0 10px rgba(60,230,110,.3);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.lcd-strip .cursor{
+  flex:none;width:6px;height:11px;position:relative;z-index:1;
+  background:#79e89a;opacity:.8;box-shadow:0 0 5px rgba(80,255,130,.8);
+  animation:blink 1.1s steps(1) infinite;
+}
+@keyframes blink{50%{opacity:0}}
+/* 黄铜挂杆：与窗口等宽，铆在金属板下沿 */
+.rail{
+  position:relative;z-index:3;height:14px;margin-top:12px;
+  background:
+    linear-gradient(180deg,rgba(255,255,255,.75) 0 1px,transparent 1px),
+    linear-gradient(180deg,#f0d48c 0%,#c9a24e 26%,#9a732c 62%,#6b4715 100%);
+  border-top:1px solid #4a3410;border-bottom:2px solid #3a2709;
+  box-shadow:0 3px 5px rgba(0,0,0,.35),inset 0 -1px 1px rgba(255,240,190,.5);
+}
+.rail::before{ /* 黄铜拉丝 + 氧化斑 */
+  content:"";position:absolute;inset:0;filter:url(#brassGrain);opacity:.5;mix-blend-mode:multiply;
+}
+.rail .rivet{
+  position:absolute;top:2px;width:9px;height:9px;border-radius:50%;
+  background:radial-gradient(circle at 33% 27%,#fff0bf,#cda752 45%,#79541c 85%);
+  box-shadow:0 1px 1px rgba(0,0,0,.55),inset 0 -1px 1px rgba(70,40,5,.7);
+}
+.rail .rivet.l{left:26px}.rail .rivet.r{right:26px}
+/* ---------- 列表区：木板间隙是后方窗口的高斯模糊，不再是硬透明 ---------- */
+/* 后方文字如果被原样透上来会抢木板刻字的注意力，所以先虚化再压一层暖灰 */
+.plank-area{
+  position:relative;width:100%;padding-top:16px;
+  backdrop-filter:blur(20px) saturate(.82);
+  -webkit-backdrop-filter:blur(20px) saturate(.82);
+  background:linear-gradient(180deg,rgba(58,55,51,.38) 0%,rgba(40,38,35,.58) 100%);
+}
+.ropes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.slot{position:relative;height:82px;z-index:1}   /* 54 板 + 28 透明间隙 */
+.plank{
+  position:absolute;left:0;top:0;width:100%;height:54px;
+  border-radius:3px;
+  transform-origin:50% 0;
+  transition:transform .5s cubic-bezier(.22,.8,.3,1);
+  box-shadow:0 9px 16px rgba(24,14,5,.42),0 2px 3px rgba(0,0,0,.3);
+}
+.plank .base{
+  position:absolute;inset:0;border-radius:3px;
+  background:
+    linear-gradient(180deg,
+      rgba(255,225,180,.34) 0%,rgba(255,220,170,.10) 7%,
+      transparent 22%,transparent 70%,rgba(38,18,5,.28) 100%),
+    linear-gradient(90deg,#7b4a21 0%,#965f2c 12%,#8a5527 45%,#965f2c 78%,#74441e 100%);
+}
+.plank .noise{
+  position:absolute;inset:0;width:100%;height:100%;
+  mix-blend-mode:multiply;opacity:.72;border-radius:3px;
+}
+.plank .blotch{
+  position:absolute;inset:0;width:100%;height:100%;
+  mix-blend-mode:multiply;opacity:.55;border-radius:3px;
+}
+.plank .rings{
+  position:absolute;inset:0;width:100%;height:100%;
+  mix-blend-mode:multiply;opacity:.75;border-radius:3px;
+}
+.plank .knot{position:absolute;inset:0;width:100%;height:100%;mix-blend-mode:multiply;opacity:.8}
+.plank .bevel{
+  position:absolute;inset:0;border-radius:3px;pointer-events:none;
+  box-shadow:
+    inset 0 1px 0 rgba(255,222,175,.55),
+    inset 0 2px 2px rgba(255,215,160,.18),
+    inset 0 -2px 0 rgba(40,20,6,.62),
+    inset 2px 0 3px rgba(45,22,6,.35),
+    inset -2px 0 3px rgba(45,22,6,.35);
+}
+/* 木板厚度：底部外露的端面 */
+.plank .edge{
+  position:absolute;left:2px;right:2px;bottom:-7px;height:8px;border-radius:0 0 3px 3px;
+  background:linear-gradient(180deg,#5c3415,#3a1f0b 60%,#281405);
+  box-shadow:0 2px 3px rgba(0,0,0,.4);
+}
+.plank .edge::after{
+  content:"";position:absolute;inset:0;border-radius:0 0 3px 3px;
+  background:repeating-linear-gradient(90deg,rgba(255,205,145,.10) 0 1px,transparent 1px 4px);
+}
+/* 黄铜穿孔 + 麻绳垫圈 */
+.grommet{
+  position:absolute;top:50%;width:15px;height:15px;margin-top:-7.5px;border-radius:50%;
+  background:radial-gradient(circle at 34% 28%,#fbe9b4,#c9a24e 42%,#8a6320 72%,#4a310e 100%);
+  box-shadow:0 1px 2px rgba(0,0,0,.6),inset 0 -1px 2px rgba(60,38,6,.8),inset 0 1px 1px rgba(255,245,205,.9);
+}
+.grommet::after{
+  content:"";position:absolute;inset:4px;border-radius:50%;
+  background:radial-gradient(circle at 60% 65%,#5a3a18,#1a0d04 70%);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.9);
+}
+.grommet.l{left:28px}.grommet.r{right:28px}
+/* 右侧留出「标签 + 删除钮 + 黄铜孔」三段空间，标签和叉叉不再叠在一起 */
+.plank .txt{position:absolute;inset:0;display:flex;align-items:center;padding:0 100px 0 58px;gap:0}
+/* 凿进木头的刻痕，不是浮在表面的亮字：
+   光从上方来 → 凹槽上缘背光发暗、下缘被照亮，字色是被刻开的浅木芯色，
+   外圈再带一点烙焦。这几条判读线索叠起来才有「刻进去」的体积感。 */
+.plank .when,.plank .what,.plank .tag{
+  -webkit-text-stroke:.3px rgba(30,13,4,.55);
+  text-shadow:
+    0 -1px 0 rgba(22,9,2,.95),
+    0 1px 0 rgba(255,222,170,.48),
+    0 2px 2px rgba(18,8,2,.55),
+    0 0 1px rgba(60,26,8,.9);
+}
+.plank .when{
+  width:86px;flex:none;font-size:10.5px;font-weight:600;letter-spacing:.3px;
+  color:#d9bd8c;
+}
+.plank .what{
+  flex:1;font-size:13px;font-weight:600;color:#e7cfa4;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.plank .tag{
+  flex:none;font-size:10.5px;color:#c9ac7d;
+  margin-right:6px;opacity:.95;
+}
+.plank .del{
+  position:absolute;right:62px;top:50%;margin-top:-8px;width:16px;height:16px;
+  border:0;border-radius:50%;cursor:pointer;opacity:0;transition:opacity .18s;
+  background:radial-gradient(circle at 34% 28%,#f6d79a,#a97c2c 60%,#5a3d10);
+  color:#3a2409;font-size:11px;line-height:14px;text-align:center;padding:0;
+  box-shadow:0 1px 2px rgba(0,0,0,.5);
+}
+.plank:hover .del{opacity:1}
+.plank.new{animation:hang .6s cubic-bezier(.2,1.4,.4,1)}
+@keyframes hang{0%{transform:translateY(-26px) rotate(-3deg);opacity:0}60%{transform:rotate(1.4deg);opacity:1}100%{transform:rotate(0)}}
+/* 轻拟物对照：纯色木板，用来直接对比材质差别 */
+.light-mode .plank .noise,
+.light-mode .plank .blotch,
+.light-mode .plank .rings,
+.light-mode .plank .knot{display:none}
+.light-mode .plank .base{
+  background:linear-gradient(180deg,#f6efe2,#e9ddc9);
+}
+.light-mode .plank .when,
+.light-mode .plank .what,
+.light-mode .plank .tag{color:#4a3a26;text-shadow:none}
+.light-mode .plank .edge{background:linear-gradient(180deg,#c9b699,#a8916f)}
+.light-mode .grommet{background:radial-gradient(circle at 34% 28%,#e7dcc4,#b9a785 60%,#7c6a4b)}
+/* ---------- 说明 ---------- */
+.spec{
+  position:relative;z-index:10;width:var(--w);margin-top:26px;
+  font-size:11.5px;line-height:1.9;color:#4b463d;
+  background:rgba(255,255,255,.55);border:1px solid rgba(120,110,95,.28);
+  border-radius:7px;padding:12px 16px;
+}
+.spec b{color:#2b2822}
+.spec .k{font-variant-numeric:tabular-nums;color:#7a5a2c;font-weight:600}
+.spec h3{margin:0 0 6px;font-size:12.5px}
+.hint{margin-top:10px;font-size:11px;color:#7c766b}
+
+/* ===== 内嵌版覆盖：整页就是这台机器，演示用桌面/说明不进 App ===== */
+.menubar,.spec{display:none!important}
+.desktop{padding:0!important;min-height:100vh!important;justify-content:flex-start!important;
+  background:linear-gradient(180deg,#3a3733,#2b2926)!important}
+.desktop{align-items:stretch!important}
+.app-window{width:100%!important;height:100vh!important;display:flex!important;flex-direction:column!important}
+.back-window{position:fixed!important;top:118px!important;left:5%!important;margin-left:0!important;
+  width:90%!important;height:82%!important;filter:blur(6px)!important;opacity:.6!important}
+/* 滚动时不实时做整区高斯模糊 —— 那是卡顿的主因；后窗本身已预模糊，
+   这里只盖一层静态暖灰，视觉仍是柔光，滚动时不再逐帧重算 */
+.plank-area{flex:1!important;min-height:0!important;overflow-y:auto!important;overflow-x:hidden!important;
+  backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
+  background:linear-gradient(180deg,rgba(58,55,51,.55) 0%,rgba(40,38,35,.78) 100%)!important;
+  scrollbar-width:none!important}
+.plank-area::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}
+/* 每块木板独立合成层：滚动只移动图层，不重绘 feTurbulence 纹理 */
+.slot{will-change:transform;transform:translateZ(0)}
+.plank{will-change:transform;backface-visibility:hidden}
+.chrome{flex:none!important}
+/* 列表底部雾层：被滚动区裁出的半块木板淡出，不留硬边 */
+.app-window::after{content:"";position:absolute;left:0;right:0;bottom:0;height:58px;z-index:5;
+  pointer-events:none;background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.97))}
+
+/* 右侧日历标签：深木纹上最容易被吃掉的一档字，单独放大提亮并压暗底衬 */
+.plank .tag{font-size:12px!important;font-weight:600!important;color:#f5dcab!important;
+  opacity:1!important;letter-spacing:.3px!important;padding:3px 8px!important;border-radius:3px!important;
+  -webkit-text-stroke:.4px rgba(26,11,3,.75)!important;
+  text-shadow:0 -1px 0 rgba(16,6,2,.98),0 1px 0 rgba(255,230,178,.72),
+              0 2px 3px rgba(14,6,2,.8),0 0 2px rgba(38,15,3,.9)!important;
+  background:linear-gradient(90deg,rgba(34,16,5,0),rgba(34,16,5,.46) 18%,
+             rgba(34,16,5,.46) 82%,rgba(34,16,5,0))!important}
+
+/* 木纹改成预烘焙贴图：滚动时不再逐帧算 feTurbulence，这是卡顿的根治 */
+.plank{background-repeat:no-repeat;background-size:100% 216px}
+.plank .base,.plank .noise,.plank .blotch,.plank .rings,.plank .knot{display:none!important}
+/* 断网 / 模型未接入：亮红灯，仍按 2.6s 呼吸 */
+.led.red{--halo:rgba(255,84,64,.86);--halo2:rgba(235,45,32,.4)}
+.led.red i{background:radial-gradient(circle at 36% 28%,#ffd2c6,#f4543c 45%,#8c1c10 85%)}
+.led.red + .st-txt{color:#ffc7bd;animation:textBreatheRed 2.6s ease-in-out infinite}
+@keyframes textBreatheRed{
+  0%,100%{opacity:.62;text-shadow:none}
+  50%{opacity:1;text-shadow:0 0 6px rgba(255,90,70,.68)}
+}
+/* 早期 macOS：鼠标移上去，糖果灯里才浮出 × − + */
+.lamps .lamp{cursor:pointer}
+.lamps .lamp i::before{content:"";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font:700 9px/1 -apple-system,Helvetica,sans-serif;color:rgba(58,18,8,.9);opacity:0;
+  transition:opacity .12s;text-shadow:0 1px 0 rgba(255,255,255,.4)}
+.lamps:hover .lamp i::before{opacity:1}
+.lamps .lamp.r i::before{content:"×"}
+.lamps .lamp.y i::before{content:"−"}
+.lamps .lamp.g i::before{content:"+"}
+.lamp:hover{box-shadow:inset 0 1px 2px rgba(0,0,0,.9),0 0 0 2px rgba(255,255,255,.3)}
+/* 木板右键：顺延 */
+.ctx{position:fixed;z-index:99;display:none;min-width:158px;padding:5px;border-radius:7px;
+  background:linear-gradient(180deg,#f8f6f0,#e3dfd5);border:1px solid #8d887d;
+  box-shadow:0 10px 24px rgba(0,0,0,.5);font-size:12px;color:#2b2822}
+.ctx div{padding:5px 10px;border-radius:4px;cursor:pointer}
+.ctx div:hover{background:#3d6fb5;color:#fff}
+
+</style>
+</head>
+<body>
+
+<!-- 材质滤镜：真实木纹 / 拉丝金属 / 黄铜氧化 -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<defs>
+  <!-- 木纹：各向异性噪声 + 低频位移让纹理自然弯曲，而不是笔直的线 -->
+  <filter id="wood0" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.004 0.20" numOctaves="5" seed="11" stitchTiles="stitch" result="n"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.006 0.022" numOctaves="2" seed="4" result="warp"/>
+    <feDisplacementMap in="n" in2="warp" scale="16" xChannelSelector="R" yChannelSelector="G" result="d"/>
+    <feColorMatrix in="d" type="matrix" values="0 0 0 0 0.29  0 0 0 0 0.15  0 0 0 0 0.055  0 0 0 1.1 -0.12"/>
+  </filter>
+  <filter id="wood1" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.005 0.24" numOctaves="5" seed="29" stitchTiles="stitch" result="n"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.007 0.026" numOctaves="2" seed="17" result="warp"/>
+    <feDisplacementMap in="n" in2="warp" scale="19" xChannelSelector="R" yChannelSelector="G" result="d"/>
+    <feColorMatrix in="d" type="matrix" values="0 0 0 0 0.31  0 0 0 0 0.16  0 0 0 0 0.06  0 0 0 1.05 -0.10"/>
+  </filter>
+  <filter id="wood2" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.0035 0.17" numOctaves="5" seed="43" stitchTiles="stitch" result="n"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.005 0.019" numOctaves="2" seed="8" result="warp"/>
+    <feDisplacementMap in="n" in2="warp" scale="21" xChannelSelector="R" yChannelSelector="G" result="d"/>
+    <feColorMatrix in="d" type="matrix" values="0 0 0 0 0.26  0 0 0 0 0.13  0 0 0 0 0.045  0 0 0 1.15 -0.13"/>
+  </filter>
+  <filter id="wood3" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.006 0.21" numOctaves="5" seed="61" stitchTiles="stitch" result="n"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.008 0.030" numOctaves="2" seed="23" result="warp"/>
+    <feDisplacementMap in="n" in2="warp" scale="14" xChannelSelector="R" yChannelSelector="G" result="d"/>
+    <feColorMatrix in="d" type="matrix" values="0 0 0 0 0.33  0 0 0 0 0.18  0 0 0 0 0.07  0 0 0 1.0 -0.09"/>
+  </filter>
+  <!-- 低频色斑：木材天然的深浅色差，避免木纹看起来像规则的拉丝条纹 -->
+  <filter id="woodBlotch" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.011 0.033" numOctaves="3" seed="88" result="n"/>
+    <feColorMatrix in="n" type="matrix" values="0 0 0 0 0.20  0 0 0 0 0.10  0 0 0 0 0.03  0 0 0 0.9 -0.30"/>
+  </filter>
+  <!-- 拉丝金属：水平向高频细纹，灰度 -->
+  <filter id="brushed" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.002 1.35" numOctaves="3" seed="7" result="n"/>
+    <feColorMatrix in="n" type="saturate" values="0"/>
+    <feComponentTransfer><feFuncA type="linear" slope="0.85" intercept="0"/></feComponentTransfer>
+  </filter>
+  <!-- 黄铜氧化斑 -->
+  <filter id="brassGrain" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.09 0.5" numOctaves="3" seed="19" result="n"/>
+    <feColorMatrix in="n" type="matrix" values="0 0 0 0 0.32  0 0 0 0 0.22  0 0 0 0 0.06  0 0 0 0.5 -0.08"/>
+  </filter>
+</defs>
+</svg>
+
+<div class="menubar">
+  <b>DSH 日历</b><span>文件　编辑　显示　窗口　帮助</span>
+  <span class="right">11月7日 周六 21:03</span>
+</div>
+
+<div class="desktop">
+  <!-- 后面的窗口：木板间隙里看到的是它被高斯模糊后的柔光 -->
+  <div class="back-window">
+    <div class="bw-bar"><span class="bw-dot"></span><span class="bw-dot"></span><span class="bw-dot"></span><span class="bw-title">周计划 · 文本编辑</span></div>
+    <div class="bw-line" style="width:72%"></div>
+    <div class="bw-line" style="width:58%"></div>
+    <div class="bw-line blue" style="width:66%"></div>
+    <div class="bw-line" style="width:80%"></div>
+    <div class="bw-line" style="width:48%"></div>
+    <div class="bw-line blue" style="width:70%"></div>
+    <div class="bw-line" style="width:63%"></div>
+    <div class="bw-line" style="width:77%"></div>
+    <div class="bw-line blue" style="width:55%"></div>
+  </div>
+
+  <div class="app-window" id="win">
+    <div class="chrome" id="chrome">
+      <div class="titlebar">
+        <div class="lamps"><span class="lamp r"><i></i></span><span class="lamp y"><i></i></span><span class="lamp g"><i></i></span></div>
+        <div class="name">DSH 日历</div>
+        <!-- 玻璃模式原有的状态指示灯与「已连接 / 模型已接入」文字，拟物版照样留着。
+             轻/重拟物切换不再占右上角：两者差别不大，切换收进窗口菜单/设置。 -->
+        <div class="status-lamps">
+          <span class="led g"><i></i></span><span class="st-txt">已连接</span>
+          <span class="sep"></span>
+          <span class="led a"><i></i></span><span class="st-txt">模型已接入</span>
+        </div>
+      </div>
+
+      <!-- 输入区与标题栏是同一块金属板；主屏是凿进去的老式终端磷光屏 -->
+      <div class="compose">
+        <div class="compose-label">新建日程</div>
+        <div class="compose-row">
+          <div class="well">
+            <input id="phrase" value="" placeholder="> 用一句话写日程，例如：明天下午三点在图书馆开会半小时" autocomplete="off" spellcheck="false">
+          </div>
+          <button class="add-btn" id="add">挂上</button>
+        </div>
+        <!-- 系统提示单独放一块细长的小液晶屏，不挤在主屏里 -->
+        <div class="lcd-strip">
+          <span class="tag">SYS</span>
+          <span class="msg" id="sysline">正在读取日历…</span>
+          <span class="cursor"></span>
+        </div>
+      </div>
+      <!-- 与窗口等宽的黄铜挂杆 -->
+      <div class="rail"><span class="rivet l"></span><span class="rivet r"></span></div>
+    </div>
+
+    <!-- 列表区没有任何背景 -->
+    <div class="plank-area" id="planks">
+      <svg class="ropes" id="ropes" preserveAspectRatio="none"></svg>
+    </div>
+  </div>
+
+  <div class="spec">
+    <h3>beta 3 · 按这轮反馈改的</h3>
+    <div>1. <b>修掉重叠</b>：木板右侧的日历标签、黄铜删除钮、穿孔现在分占三段，互不压住。</div>
+    <div>2. <b>主屏换成老式终端屏</b>：墨绿磷光底、等宽字体、荧光绿「液晶管」辉光、CRT 扫描线与玻璃斜反光；<b>「挂上」按钮原样保留</b>。</div>
+    <div>3. <b>系统提示另起一块细长小液晶屏</b>：输入框下方独立的 SYS 条，带闪烁光标，不再挤在主屏里。</div>
+    <div>4. <b>状态指示都留着，而且会呼吸</b>：右上角两颗真实 LED + 「已连接」「模型已接入」，灯芯明暗、外圈光晕、文字辉光都以 2.6 秒周期缓慢起伏，两颗错开相位（跟 App 里 StatusDot 同一节奏）；系统开启「减少动态效果」时全部静止。<b>去掉轻/重拟物切换按钮</b>（区别不大，切换收进窗口菜单／设置）。</div>
+    <div>5. 标题栏 / 输入区 / 黄铜挂杆 / 木板 <b>仍全部严格等宽</b>：<span class="k" id="wLabel"></span>；木板是深实木，间隙是后方窗口的高斯模糊（真 App 同款），避免抢刻字的注意力。</div>
+    <div>6. <b>木板上的字改成凿刻痕</b>：凹槽上缘背光发暗、下缘受光亮、字色是刻开的浅木芯，边缘带烙焦，不再像浮在表面的亮字。</div>
+    <div>7. <b>标题只动字体</b>：换成早期 Macintosh 那路衬线斜体（Hoefler Text / Apple Garamond），放大、拉字距、压印蚀刻在金属上；不加铭牌、不加框、不加铆钉。</div>
+    <div class="hint">回车 / 点「挂上」会挂一块新木板；悬停木板出现黄铜删除钮；拖动窗口木板轻摆。玻璃 ↔ 全拟物的无损切换仍在 App 的窗口菜单里，两个外观都保留。木板之间的空隙看到的是后面那个文本编辑窗口被高斯模糊后的柔光。</div>
+  </div>
+</div>
+
+<div class="ctx" id="ctx"></div>
+
+<script>
+let W = 560; const PH = 54, GAP = 28;
+function measureW(){
+  W = Math.max(320, Math.round(document.getElementById('win').getBoundingClientRect().width));
+}
+measureW();
+window.addEventListener('resize', function(){ measureW(); render(-1); });
+
+const bridged = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.dsh);
+function post(o){ if (bridged) window.webkit.messageHandlers.dsh.postMessage(o); }
+function esc(t){
+  return String(t == null ? '' : t).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+/* 年轮 + 导管孔：大量不规则细线，而不是几条平滑曲线 */
+function ringsSVG(i){
+  const s = 900 + i * 137;
+  let r = s;
+  function R(){ r = (r * 1664525 + 1013904223) >>> 0; return r / 4294967296; }
+  let out = '';
+  for (let n = 0; n < 110; n++){
+    const y = R() * PH;
+    const a = (0.5 + R() * 3.6);          // 起伏幅度
+    const dark = R() > 0.38;
+    const op = (0.05 + R() * 0.26).toFixed(3);
+    const sw = (0.35 + R() * 1.15).toFixed(2);
+    const c1 = 120 + R() * 90, c2 = 340 + R() * 110;
+    const wob = (R() - 0.5) * 2 * a;
+    out += '<path d="M0 ' + y.toFixed(1) + ' C' + c1.toFixed(0) + ' ' + (y - a).toFixed(1) +
+           ' ' + c2.toFixed(0) + ' ' + (y + a).toFixed(1) + ' ' + W + ' ' + (y + wob).toFixed(1) +
+           '" fill="none" stroke="' + (dark ? '#3a1c08' : '#d9a666') +
+           '" stroke-width="' + sw + '" opacity="' + op + '"/>';
+  }
+  // 导管孔：细短的竖向划痕
+  for (let n = 0; n < 90; n++){
+    const x = R() * W, y = R() * PH, len = 1.5 + R() * 5;
+    out += '<path d="M' + x.toFixed(1) + ' ' + y.toFixed(1) + ' l0 ' + len.toFixed(1) +
+           '" stroke="#2c1506" stroke-width=".5" opacity="' + (0.08 + R() * 0.18).toFixed(2) + '"/>';
+  }
+  return '<svg class="rings" viewBox="0 0 ' + W + ' ' + PH + '" preserveAspectRatio="none">' + out + '</svg>';
+}
+
+/* 结疤：同心不规则椭圆 + 周围纹理绕流 */
+function knotSVG(i){
+  const cx = 120 + (i * 149) % 330, cy = 14 + (i * 13) % 26;
+  let out = '<g transform="translate(' + cx + ' ' + cy + ')">';
+  for (let k = 5; k >= 1; k--){
+    out += '<ellipse rx="' + (k * 4.4) + '" ry="' + (k * 1.85) + '" fill="none" stroke="#2c1507" stroke-width="' +
+           (k === 1 ? 1.5 : 0.9) + '" opacity="' + (0.16 + (5 - k) * 0.07).toFixed(2) + '" transform="rotate(' + ((i % 2 ? 8 : -7)) + ')"/>';
+  }
+  out += '<ellipse rx="3.1" ry="1.4" fill="#2b1507" opacity=".7"/></g>';
+  // 绕流线：结疤上下方的木纹被顶开
+  for (let k = -3; k <= 3; k++){
+    if (!k) continue;
+    const y = cy + k * 5.5, lift = (3 - Math.abs(k)) * 2.1;
+    out += '<path d="M' + (cx - 46) + ' ' + y + ' Q' + cx + ' ' + (y - lift) + ' ' + (cx + 46) + ' ' + y +
+           '" fill="none" stroke="#351a08" stroke-width=".8" opacity=".22"/>';
+  }
+  return '<svg class="knot" viewBox="0 0 ' + W + ' ' + PH + '" preserveAspectRatio="none">' + out + '</svg>';
+}
+
+/* 麻绳：多股捻线，只在木板间隙里露出来 */
+function drawRopes(n){
+  const total = n * (PH + GAP) + 16;
+  const svg = document.getElementById('ropes');
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + total);
+  let out = '';
+  [36, W - 36].forEach(function(x){
+    out += '<path d="M' + x + ' 0 L' + x + ' ' + total + '" stroke="#3a2510" stroke-width="6" opacity=".28" transform="translate(2 3)"/>';
+    out += '<path d="M' + x + ' 0 L' + x + ' ' + total + '" stroke="#8a6a3f" stroke-width="5"/>';
+    out += '<path d="M' + x + ' 0 L' + x + ' ' + total + '" stroke="#d2ae73" stroke-width="1.4" opacity=".85" transform="translate(-1.3 0)"/>';
+    out += '<path d="M' + x + ' 0 L' + x + ' ' + total + '" stroke="#4e3418" stroke-width="4.6" stroke-dasharray="1.1 2.6" opacity=".42"/>';
+  });
+  svg.innerHTML = out;
+}
+
+
+
+/* 有桥 = 真 App，用真实日程；没有桥 = 浏览器预览，用演示数据看外观 */
+let items = bridged ? [] : [
+  {uid:'demo1', when:'11/18 周三', what:'吃张亮麻辣烫 · 12:00', tag:'生活'},
+  {uid:'demo2', when:'11/19 周四', what:'组会 · 15:00–16:00', tag:'工作'},
+  {uid:'demo3', when:'11/20 周五', what:'体检 · 10:00', tag:'家庭'},
+  {uid:'demo4', when:'11/21 周六', what:'送孩子上学 · 07:30', tag:'家庭'}
+];
+
+function render(newIndex){
+  const area = document.getElementById('planks');
+  area.querySelectorAll('.slot').forEach(function(e){ e.remove(); });
+  items.forEach(function(it, i){
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.innerHTML =
+      '<div class="plank' + (i === newIndex ? ' new' : '') + '" style="transform:rotate(' + (i % 2 ? 0.35 : -0.3) + 'deg)' +
+        ';background-image:url(wood-sprite.png);background-position:0 -' + ((i % 4) * PH) + 'px">' +
+        '<div class="bevel"></div><div class="edge"></div>' +
+        '<span class="grommet l"></span><span class="grommet r"></span>' +
+        '<div class="txt"><span class="when">' + esc(it.when) + '</span><span class="what">' + esc(it.what) +
+        '</span><span class="tag">' + esc(it.tag) + '</span></div>' +
+        '<button class="del" title="摘下这块木板">×</button>' +
+      '</div>';
+    slot.querySelector('.del').addEventListener('click', function(){
+      if (bridged) { post({type:'delete', uid:it.uid}); }
+      else { items.splice(i, 1); render(-1); }
+    });
+    slot.addEventListener('contextmenu', function(e){
+      e.preventDefault();
+      if (bridged) showCtx(e.clientX, e.clientY, it.uid);
+    });
+    area.appendChild(slot);
+  });
+  drawRopes(items.length);
+}
+
+/* 右键顺延：与玻璃模式同一套后端动作 */
+const ctx = document.getElementById('ctx');
+const shifts = [['推迟 30 分钟', 1800], ['推迟 1 小时', 3600], ['改到明天同一时间', 86400]];
+function showCtx(x, y, uid){
+  ctx.innerHTML = '';
+  shifts.forEach(function(pair){
+    const row = document.createElement('div');
+    row.textContent = pair[0];
+    row.addEventListener('click', function(){
+      post({type:'shift', uid:uid, seconds:pair[1]});
+      ctx.style.display = 'none';
+    });
+    ctx.appendChild(row);
+  });
+  ctx.style.left = Math.min(x, window.innerWidth - 170) + 'px';
+  ctx.style.top = Math.min(y, window.innerHeight - 110) + 'px';
+  ctx.style.display = 'block';
+}
+document.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+document.addEventListener('click', function(){ ctx.style.display = 'none'; });
+
+function setSys(text){ document.getElementById('sysline').textContent = text; }
+
+function submit(){
+  const el = document.getElementById('phrase');
+  const text = el.value.trim();
+  if (!text) return;
+  if (bridged){
+    post({type:'submit', text:text});
+    el.value = '';
+    setSys('… 正在写入日历');
+  } else {
+    const d = new Date(); d.setDate(d.getDate() + 1);
+    items.unshift({uid:'demo' + Date.now(),
+      when:(d.getMonth()+1) + '/' + d.getDate() + ' 周' + '日一二三四五六'[d.getDay()],
+      what:text.length > 26 ? text.slice(0,26) + '…' : text, tag:'新建'});
+    setSys('OK  已挂上 · ' + text);
+    el.value = '';
+    render(0);
+  }
+}
+document.getElementById('add').addEventListener('click', submit);
+document.getElementById('phrase').addEventListener('keydown', function(e){ if (e.key === 'Enter') submit(); });
+
+/* 旧版立体红绿灯：悬停有符号反馈，点击真的关/最小化/缩放 */
+document.querySelectorAll('.lamps .lamp').forEach(function(el, i){
+  el.addEventListener('click', function(){
+    post({type:'window', action:['close','mini','zoom'][i]});
+  });
+});
+
+/* Swift → WebView：真实日程、系统提示、连接/模型状态 */
+let lastEventKey = '';
+window.dshRender = function(state){
+  /* 状态文案每 0.6 秒就可能变，但日程没变时绝不能重建木板：
+     重建会丢滚动位置并重画全部 feTurbulence，滚动就会一顿一顿 */
+  if (state.events){
+    const key = state.events.map(function(e){
+      return e.uid + '|' + e.when + '|' + e.what + '|' + e.tag;
+    }).join('\n');
+    if (key !== lastEventKey){
+      lastEventKey = key;
+      const area = document.getElementById('planks');
+      const top = area.scrollTop;
+      items = state.events.map(function(e){
+        return {uid:e.uid, when:e.when, what:e.what, tag:e.tag};
+      });
+      render(-1);
+      area.scrollTop = top;
+    }
+  }
+  if (state.sys != null) setSys(state.sys);
+  if (state.status){
+    const online = !!state.status.online;
+    const modelOnline = !!state.status.modelOnline;
+    const txt = document.querySelectorAll('.status-lamps .st-txt');
+    const leds = document.querySelectorAll('.status-lamps .led');
+    if (txt[0]) txt[0].textContent = online ? '已连接' : '离线';
+    if (txt[1]){ txt[1].textContent = modelOnline ? '模型已接入' : '模型未接入';
+                 txt[1].style.animationDelay = '-1.3s'; }
+    if (leds[0]) leds[0].className = 'led ' + (online ? 'g' : 'red');
+    if (leds[1]) leds[1].className = 'led ' + (modelOnline ? 'a' : 'red');
+  }
+};
+window.dshSys = setSys;
+
+/* 原生窗口拖动时让木板轻摆一下 */
+window.dshSwing = function(){
+  document.querySelectorAll('.plank').forEach(function(p, i){
+    p.style.transform = 'rotate(' + ((i % 2 ? 1 : -1) * 1.1).toFixed(2) + 'deg)';
+    setTimeout(function(){ p.style.transform = 'rotate(' + (i % 2 ? 0.35 : -0.3) + 'deg)'; }, 430);
+  });
+};
+
+render(-1);
+</script>
+</body>
+</html>
