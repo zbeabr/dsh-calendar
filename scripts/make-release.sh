@@ -79,14 +79,15 @@ cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/README.md" "$ROOT/README.en.md
 chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh"
 # 后端：只要运行时需要的，测试用例和文档不进包
 mkdir -p "$STAGE/cal-mcp/src"
-cp "$ROOT/cal-mcp/cli.mjs" "$ROOT/cal-mcp/mcp-server.mjs" \
-   "$ROOT/cal-mcp/package.json" "$STAGE/cal-mcp/"
+cp "$ROOT/cal-mcp/cli.mjs" "$ROOT/cal-mcp/mcp-server.mjs" "$STAGE/cal-mcp/"
 cp "$ROOT/cal-mcp/src/"*.mjs "$STAGE/cal-mcp/src/"
+# 测试脚本不进包；用共用脚本生成，保证与 App 内嵌 engine 那份完全一致
+node "$ROOT/scripts/release-package-json.mjs" "$ROOT/cal-mcp/package.json" "$STAGE/cal-mcp/package.json"
 
 echo "▸ 校验包内后端是不是当前源码"
 # P0-3 的根因就在这里：包和源码不一致而脚本不报错。逐文件比对 sha256，
 # 少一个文件、多一个字节都直接失败，不要只看退出码。
-for f in cli.mjs mcp-server.mjs package.json src/caldav.mjs src/tools.mjs src/nlp.mjs src/store.mjs src/llm.mjs; do
+for f in cli.mjs mcp-server.mjs src/caldav.mjs src/tools.mjs src/nlp.mjs src/store.mjs src/llm.mjs; do
   A="$(shasum -a 256 "$STAGE/cal-mcp/$f" 2>/dev/null | cut -d' ' -f1)"
   B="$(shasum -a 256 "$ROOT/cal-mcp/$f" 2>/dev/null | cut -d' ' -f1)"
   if [ -z "$A" ] || [ "$A" != "$B" ]; then
@@ -94,7 +95,25 @@ for f in cli.mjs mcp-server.mjs package.json src/caldav.mjs src/tools.mjs src/nl
     exit 1
   fi
 done
-echo "  8 个文件逐字节一致"
+# package.json 是唯一例外：它故意去掉了 test* 脚本。仍然逐字节校验，
+# 只是期望值由同一个生成脚本算出，避免「顺手改坏包内脚本」蒙混过关。
+EXPECTED_PKG="$(mktemp)"
+node "$ROOT/scripts/release-package-json.mjs" "$ROOT/cal-mcp/package.json" "$EXPECTED_PKG"
+A="$(shasum -a 256 "$STAGE/cal-mcp/package.json" 2>/dev/null | cut -d' ' -f1)"
+B="$(shasum -a 256 "$EXPECTED_PKG" | cut -d' ' -f1)"
+if [ -z "$A" ] || [ "$A" != "$B" ]; then
+  echo "✗ 包内 package.json 与期望的发行版内容不一致（包=${A:-缺失} 期望=${B}）" >&2
+  exit 1
+fi
+if ! cmp -s "$STAGE/cal-mcp/package.json" "$STAGE/$APP_NAME.app/Contents/Resources/engine/package.json"; then
+  echo "✗ 发行目录与 App 内嵌 engine 的 package.json 不一致" >&2
+  exit 1
+fi
+rm -f "$EXPECTED_PKG"
+echo "  8 个文件逐字节一致（package.json 按发行版期望值校验）"
+# 包内不再引用不存在的测试脚本：实跑一次，别只靠肉眼
+( cd "$STAGE/cal-mcp" && npm test >/dev/null ) || { echo "✗ 包内 npm test 仍然跑不通" >&2; exit 1; }
+echo "  包内 npm test 通过"
 
 cat > "$STAGE/安装说明.txt" <<NOTE
 DSH 日历 · 安装说明

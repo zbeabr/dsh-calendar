@@ -20,6 +20,22 @@ jobs:
         working-directory: cal-mcp
         run: npm test
 
+  release-package-json:
+    name: 发行包脚本自检
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 按发行包的文件清单复刻一份，确认包内 npm test 不崩
+        run: |
+          mkdir -p /tmp/release-pkg/src
+          node scripts/release-package-json.mjs cal-mcp/package.json /tmp/release-pkg/package.json
+          cp cal-mcp/cli.mjs cal-mcp/mcp-server.mjs /tmp/release-pkg/
+          cp cal-mcp/src/*.mjs /tmp/release-pkg/src/
+          cd /tmp/release-pkg && npm test
+
   build-app:
     name: 编译 App（macOS 14 / 双架构）
     runs-on: macos-latest

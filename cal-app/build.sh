@@ -74,7 +74,9 @@ ENGINE_DST="$STAGE/Contents/Resources/engine"
 if [ -f "$ENGINE/cli.mjs" ]; then
   echo "▸ 打包后端…"
   mkdir -p "$ENGINE_DST/src"
-  cp "$ENGINE/cli.mjs" "$ENGINE/mcp-server.mjs" "$ENGINE/package.json" "$ENGINE_DST/"
+  cp "$ENGINE/cli.mjs" "$ENGINE/mcp-server.mjs" "$ENGINE_DST/"
+  # 测试脚本不进包，package.json 里的 test* 入口也要跟着摘掉，否则包内 npm test 会找不到模块
+  node "$HERE/../scripts/release-package-json.mjs" "$ENGINE/package.json" "$ENGINE_DST/package.json"
   cp "$ENGINE"/src/*.mjs "$ENGINE_DST/src/"
   /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$HERE/Info.plist" > "$ENGINE_DST/VERSION"
 else
