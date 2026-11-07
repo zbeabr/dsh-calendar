@@ -3315,6 +3315,39 @@ final class SkeuoTrafficLights: NSView {
         NSColor(calibratedRed: 0.98, green: 0.72, blue: 0.13, alpha: 1),
         NSColor(calibratedRed: 0.35, green: 0.78, blue: 0.30, alpha: 1),
     ]
+    private let symbols = ["×", "−", "+"]
+    private var hovering = false { didSet { needsDisplay = true } }
+    private var hotIndex = -1 { didSet { needsDisplay = true } }
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect],
+            owner: self, userInfo: nil
+        )
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        updateHot(event)
+    }
+
+    override func mouseMoved(with event: NSEvent) { updateHot(event) }
+
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        hotIndex = -1
+    }
+
+    private func updateHot(_ event: NSEvent) {
+        let x = convert(event.locationInWindow, from: nil).x
+        hotIndex = x < 23 ? 0 : (x < 46 ? 1 : 2)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
@@ -3348,6 +3381,30 @@ final class SkeuoTrafficLights: NSView {
             // 玻璃凸面的一点反光
             ctx.setFillColor(NSColor.white.withAlphaComponent(0.72).cgColor)
             ctx.fillEllipse(in: NSRect(x: glass.minX + 2.2, y: glass.maxY - 4.4, width: 4.2, height: 2.4))
+        }
+
+        // 旧版 macOS：鼠标移到这一组灯上，三个符号一起浮出来，底下的那颗最实。
+        // DSH_CAL_SNAP_HOVER=1 是给 --snapshot 自检用的，强制画出 hover 态。
+        let snapHover = ProcessInfo.processInfo.environment["DSH_CAL_SNAP_HOVER"] == "1"
+        if hovering || snapHover {
+            for index in 0..<3 {
+                let cx = 11 + CGFloat(index) * 23
+                let cy = bounds.midY
+                let hot = hotIndex == index || snapHover
+                if hot {
+                    ctx.setFillColor(NSColor.white.withAlphaComponent(0.22).cgColor)
+                    ctx.fillEllipse(in: NSRect(x: cx - 7, y: cy - 7, width: 14, height: 14))
+                }
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 9.5, weight: .bold),
+                    .foregroundColor: NSColor(calibratedRed: 0.20, green: 0.11, blue: 0.04,
+                                              alpha: hot ? 0.95 : 0.62),
+                ]
+                let text = symbols[index] as NSString
+                let size = text.size(withAttributes: attrs)
+                text.draw(at: NSPoint(x: cx - size.width / 2, y: cy - size.height / 2 - 0.5),
+                          withAttributes: attrs)
+            }
         }
     }
 
