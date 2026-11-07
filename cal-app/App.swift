@@ -667,6 +667,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     }()
     private var appearanceMenuItem: NSMenuItem?
     private var plankViews: [PlankView] = []
+    /// 全拟物：凿进输入卡的磷光屏背景（文字仍由 ComposeTextView 画）
+    private var lcdPanel: LCDScreenView?
+    /// 全拟物：输入区下方那块细长的小液晶屏，显示系统提示 / 解析摘要
+    private var lcdStrip: LCDScreenView?
+    /// 全拟物：顶部那行早期 Macintosh 风格的衬线斜体压印字（纯字体，不加牌子）
+    private var brandLabel: NSTextField?
     private var windowMoveObserver: NSObjectProtocol?
     /// 列表里显示的日程
     private var agenda: [AgendaItem] = []
@@ -938,7 +944,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         windowMenu.addItem(withTitle: "前置全部窗口", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())
         let appearanceItem = NSMenuItem(
-            title: appearanceStyle == .glass ? "切换到轻拟物外观" : "切换到 Liquid Glass",
+            title: appearanceStyle == .glass ? "切换到全拟物外观" : "切换到 Liquid Glass",
             action: #selector(toggleAppearance), keyEquivalent: ""
         )
         appearanceItem.target = self
@@ -1159,6 +1165,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         root.addSubview(date)
         self.dateLabel = date
 
+        // 全拟物：顶部一行早期 Macintosh 的衬线斜体压印字。
+        // 只改字体与蚀刻质感，不加铭牌、边框或铆钉；玻璃模式隐藏。
+        let brand = NSTextField(labelWithString: "")
+        brand.isBezeled = false
+        brand.backgroundColor = .clear
+        brand.alignment = .center
+        let brandFont = NSFont(name: "HoeflerText-Italic", size: 20)
+            ?? NSFont(name: "Georgia-BoldItalic", size: 20)
+            ?? NSFont.systemFont(ofSize: 20, weight: .semibold)
+        let brandShadow = NSShadow()
+        brandShadow.shadowColor = NSColor(calibratedRed: 0.05, green: 0.05, blue: 0.05, alpha: 0.9)
+        brandShadow.shadowBlurRadius = 1.5
+        brandShadow.shadowOffset = NSSize(width: 0, height: -1)
+        brand.attributedStringValue = NSAttributedString(string: "DSH 日历", attributes: [
+            .font: brandFont,
+            .foregroundColor: NSColor(calibratedRed: 0.95, green: 0.93, blue: 0.88, alpha: 1),
+            .kern: NSNumber(value: 1.6),
+            .shadow: brandShadow,
+        ])
+        brand.frame = NSRect(x: (width - 260) / 2, y: height - 30, width: 260, height: 28)
+        brand.isHidden = true
+        root.addSubview(brand)
+        self.brandLabel = brand
+
         let dot = StatusDot(frame: NSRect(x: margin, y: 629, width: 10, height: 10))
         root.addSubview(dot)
         self.dot = dot
@@ -1190,6 +1220,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         )
         root.addSubview(card)
         self.inputCard = card
+        // 全拟物：卡片里再嵌一块磷光屏，铺在最底层，不挡文字、占位符和「添加」按钮
+        let panel = LCDScreenView(frame: card.bounds)
+        panel.autoresizingMask = [.width, .height]
+        panel.isHidden = true
+        card.addSubview(panel, positioned: .below, relativeTo: nil)
+        self.lcdPanel = panel
         // 从设置页切回来时卡片是新建的，把上一句的染色补上
         applyTint()
 
@@ -1246,6 +1282,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         let chips = NSView(frame: NSRect(x: margin, y: 476, width: contentWidth, height: 24))
         root.addSubview(chips)
         self.chipRow = chips
+
+        // 全拟物：这一行换成一条细长的小液晶屏，系统提示单独放，不挤在主屏里
+        let strip = LCDScreenView(frame: NSRect(x: margin, y: 476, width: contentWidth, height: 24))
+        strip.isStrip = true
+        strip.text = "SYS  READY  ·  等待输入"
+        strip.isHidden = true
+        root.addSubview(strip)
+        self.lcdStrip = strip
 
         // 胶囊行右端的「美化」开关：关掉就是一块素玻璃，开着才染色
         let tint = TintToggle(frame: NSRect(x: width - margin - 54, y: 476, width: 54, height: 24))
@@ -1324,6 +1368,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             statusLabel?.stringValue = note
             pendingStatusNote = nil
         }
+        // 重建主界面（连接恢复 / 从设置页切回）后，把外观相关的显隐与字体重新套一遍，
+        // 否则磷光屏、小液晶屏、压印字会退回默认隐藏状态。
+        applyAppearance()
     }
 
     /// 状态点 + 副标题：星期四 · 已连接 · 模型待命
@@ -1334,13 +1381,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         if let used = modelUsed {
             parts.append(used)
         } else if modelEnabled {
-            parts.append(LocalModel.shared.phase == .ready ? "模型待命" : "模型预热中")
+            parts.append(LocalModel.shared.phase == .ready ? "模型已接入" : "模型预热中")
         } else {
             parts.append("仅规则")
         }
 
         subtitle?.stringValue = parts.joined(separator: "  ·  ")
-        subtitle?.textColor = offline ? .systemOrange : .secondaryLabelColor
+        // 全拟物上副标题也走磷光绿，跟两颗呼吸灯和终端屏是一套；离线仍用橙色提醒
+        subtitle?.textColor = offline ? .systemOrange
+            : (appearanceStyle == .lightSkeuo ? LCDScreenView.phosphorDim : .secondaryLabelColor)
 
         var tip = offline ? "现在连不上 iCloud。日程先存本地，正在自动重试；网络一恢复就立刻补发。" : "已连上 iCloud，日程直接写进日历。"
         if pending > 0 { tip += "（本地队列里还有 \(pending) 条）" }
@@ -1909,6 +1958,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 chips.append(("提前 \(alarm) 分钟", "alarm"))
             }
             renderChips(chips)
+            // 全拟物：同一份解析结果也送到下面那块细长小液晶屏
+            let sysParts = [when, title].filter { !$0.isEmpty }
+            lcdStrip?.text = sysParts.isEmpty ? "SYS  READY" : "SYS  " + sysParts.joined(separator: "  ·  ")
             // 渐变的颜色和顺序，就是这排胶囊的颜色和顺序
             updateTint(chips.map { $0.kind })
 
@@ -1935,6 +1987,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         previewEnd = nil
         hintLabel?.stringValue = message
         hintLabel?.textColor = isError ? .systemRed : .secondaryLabelColor
+        lcdStrip?.text = message.isEmpty ? "SYS  READY  ·  等待输入" : "SYS  " + message
     }
 
     // MARK: 美化（把输入卡染成胶囊同色的渐变）
@@ -1995,31 +2048,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
         let length = storage.length
         let selected = textView.selectedRange()
+        // 全拟物：整块磷光屏统一荧光绿等宽字，像老式终端；玻璃模式维持原来的彩色片段高亮
+        let lcd = appearanceStyle == .lightSkeuo
+        let baseFont: NSFont = lcd ? LCDScreenView.fontMain : NSFont.systemFont(ofSize: 16)
+        let baseInk: NSColor = lcd ? LCDScreenView.phosphor : NSColor.labelColor
         isHighlighting = true
         storage.beginEditing()
-        storage.addAttribute(.font, value: NSFont.systemFont(ofSize: 16), range: NSRange(location: 0, length: length))
-        storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: length))
+        storage.addAttribute(.font, value: baseFont, range: NSRange(location: 0, length: length))
+        storage.addAttribute(.foregroundColor, value: baseInk, range: NSRange(location: 0, length: length))
         storage.addAttribute(.backgroundColor, value: NSColor.clear, range: NSRange(location: 0, length: length))
 
         // 用 ink 而不是原色：卡片染成同一套颜色之后，同色叠同色就糊了。
         // 深浅色下「往哪边偏」是反的，所以按文本框当前外观定一档。
         let appearance = textView.effectiveAppearance
         let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        appearance.performAsCurrentDrawingAppearance {
-            for span in currentSpans {
-                guard span.end <= length else { continue }
-                let range = NSRange(location: span.start, length: span.end - span.start)
-                let color = Theme.ink(for: span.kind, dark: dark)
-                storage.addAttribute(.foregroundColor, value: color, range: range)
-                storage.addAttribute(.backgroundColor, value: color.withAlphaComponent(0.14), range: range)
+        if !lcd {
+            appearance.performAsCurrentDrawingAppearance {
+                for span in currentSpans {
+                    guard span.end <= length else { continue }
+                    let range = NSRange(location: span.start, length: span.end - span.start)
+                    let color = Theme.ink(for: span.kind, dark: dark)
+                    storage.addAttribute(.foregroundColor, value: color, range: range)
+                    storage.addAttribute(.backgroundColor, value: color.withAlphaComponent(0.14), range: range)
+                }
             }
         }
         storage.endEditing()
         isHighlighting = false
 
         textView.typingAttributes = [
-            .font: NSFont.systemFont(ofSize: 16),
-            .foregroundColor: NSColor.labelColor,
+            .font: baseFont,
+            .foregroundColor: baseInk,
         ]
         if NSMaxRange(selected) <= storage.length { textView.selectedRange = selected }
     }
@@ -2202,6 +2261,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         shell?.needsDisplay = true
         listScroll?.drawsBackground = false
         listScroll?.backgroundColor = .clear
+
+        // 只换渲染层：输入卡里那块磷光屏、下面的细长系统屏、胶囊行三者互斥显隐。
+        // 状态灯（StatusDot）和副标题不重建，所以「已连接 / 模型已接入」和呼吸动画都照旧。
+        lcdPanel?.isHidden = !skeuo
+        lcdStrip?.isHidden = !skeuo
+        brandLabel?.isHidden = !skeuo
+        chipRow?.isHidden = skeuo
+        tintToggle?.isHidden = skeuo
+        subtitle?.font = skeuo ? LCDScreenView.fontSmall : NSFont.systemFont(ofSize: 12)
+        updateSubtitle()
+        // 输入文字按当前外观重刷一遍字体与颜色（等宽荧光绿 ↔ 系统标签色）
+        applyHighlight()
     }
 
     @objc private func toggleAppearance() {
@@ -2210,7 +2281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         applyAppearance()
         renderAgenda()
         appearanceMenuItem?.title = appearanceStyle == .glass
-            ? "切换到轻拟物外观" : "切换到 Liquid Glass"
+            ? "切换到全拟物外观" : "切换到 Liquid Glass"
     }
 
     /// 拖动窗口时木板轻轻摆一下：取通知即可，不做完整刚体模拟。
@@ -2914,9 +2985,80 @@ enum Theme {
     }
 }
 
-// MARK: - 轻拟物外观的资源
+// MARK: - 全拟物外观的资源
+
+/// 老式终端磷光屏：墨绿玻璃 + CRT 扫描线 + 内凹凿口边框。
+/// 铺在输入卡里时只当背景用（文字仍由 ComposeTextView 画，保证输入法、高亮、草稿都不变）；
+/// 当作细长系统条时自己画一行荧光绿等宽小字。
+final class LCDScreenView: NSView {
+    static let phosphor = NSColor(calibratedRed: 0.55, green: 1.0, blue: 0.67, alpha: 1)
+    static let phosphorDim = NSColor(calibratedRed: 0.44, green: 0.84, blue: 0.56, alpha: 1)
+    static let fontMain = NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
+    static let fontSmall = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+
+    /// 只有细长条会画这行字；主屏留空，交给 ComposeTextView
+    var text: String = "" { didSet { needsDisplay = true } }
+    var isStrip = false
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let radius: CGFloat = isStrip ? 3 : 5
+        let path = NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius)
+
+        ctx.saveGState()
+        path.addClip()
+        // 屏底：上沿暗、中间略亮的墨绿，不是一块死黑
+        let colors = [
+            NSColor(calibratedRed: 0.02, green: 0.075, blue: 0.042, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.038, green: 0.125, blue: 0.068, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.018, green: 0.065, blue: 0.037, alpha: 1).cgColor,
+        ] as CFArray
+        if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors,
+                              locations: [0, 0.5, 1]) {
+            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: r.maxY),
+                                   end: CGPoint(x: 0, y: r.minY), options: [])
+        }
+        // 上部一点磷光扩散
+        ctx.setFillColor(NSColor(calibratedRed: 0.20, green: 0.75, blue: 0.35, alpha: 0.07).cgColor)
+        ctx.fillEllipse(in: NSRect(x: r.minX, y: r.maxY - r.height, width: r.width, height: r.height * 1.2))
+        // CRT 扫描线
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.16).cgColor)
+        var y = r.minY
+        while y < r.maxY {
+            ctx.fill(NSRect(x: r.minX, y: y, width: r.width, height: 0.8))
+            y += 2.6
+        }
+        // 玻璃的一道斜反光
+        ctx.setFillColor(NSColor.white.withAlphaComponent(0.035).cgColor)
+        ctx.fill(NSRect(x: r.minX, y: r.minY, width: r.width * 0.20, height: r.height))
+        ctx.restoreGState()
+
+        // 凿口边框：外圈暗、内圈一道细高光
+        ctx.setStrokeColor(NSColor(calibratedRed: 0.09, green: 0.20, blue: 0.13, alpha: 1).cgColor)
+        ctx.setLineWidth(1)
+        path.stroke()
+        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.10).cgColor)
+        ctx.stroke(NSRect(x: r.minX + 1, y: r.minY + 1, width: r.width - 2, height: r.height - 2))
+
+        guard isStrip, !text.isEmpty else { return }
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor(calibratedRed: 0.20, green: 0.90, blue: 0.40, alpha: 0.75)
+        shadow.shadowBlurRadius = 4
+        shadow.shadowOffset = .zero
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular),
+            .foregroundColor: LCDScreenView.phosphorDim,
+            .shadow: shadow,
+        ]
+        (text as NSString).draw(in: NSRect(x: r.minX + 10, y: r.midY - 8,
+                                           width: max(r.width - 20, 10), height: 16),
+                                withAttributes: attrs)
+    }
+}
 
 /// 外观风格。切换只换渲染层，数据模型、解析、写入、草稿都共用同一套。
+/// rawValue 保留 `lightSkeuo` 是为了兼容已经写进 UserDefaults 的偏好，不再单列「轻/重」两档。
 enum AppearanceStyle: String {
     case glass
     case lightSkeuo
@@ -2974,8 +3116,6 @@ final class PlankView: NSView {
     private let item: AgendaItem
     private let tint: NSColor
     private let seedValue: UInt32
-    private let timeLabel = NSTextField(labelWithString: "")
-    private let titleLabel = NSTextField(labelWithString: "")
     private let deleteButton = NSButton()
     private var trackingArea: NSTrackingArea?
 
@@ -2990,24 +3130,7 @@ final class PlankView: NSView {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 54))
         wantsLayer = true
 
-        // 阴刻填浅漆：深木头上才读得清
-        timeLabel.stringValue = item.allDay ? "全天" : Format.time(item.start)
-        timeLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        timeLabel.textColor = NSColor(calibratedRed: 0.94, green: 0.86, blue: 0.69, alpha: 1)
-        timeLabel.backgroundColor = .clear
-        timeLabel.isBezeled = false
-        timeLabel.frame = NSRect(x: 58, y: 10, width: 74, height: 17)
-        addSubview(timeLabel)
-
-        titleLabel.stringValue = item.title
-        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        titleLabel.textColor = NSColor(calibratedRed: 0.98, green: 0.93, blue: 0.81, alpha: 1)
-        titleLabel.backgroundColor = .clear
-        titleLabel.isBezeled = false
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.frame = NSRect(x: 138, y: 10, width: max(width - 218, 80), height: 19)
-        addSubview(titleLabel)
-
+        // 文字不再用 NSTextField：draw 里分三层画成凿进木头的刻痕
         // 黄铜小圆钮：悬停才浮出来，不破坏木板的整体感
         deleteButton.title = "×"
         deleteButton.font = NSFont.systemFont(ofSize: 11, weight: .bold)
@@ -3171,6 +3294,55 @@ final class PlankView: NSView {
             ctx.setFillColor(NSColor(calibratedRed: 0.10, green: 0.05, blue: 0.02, alpha: 1).cgColor)
             ctx.fillEllipse(in: NSRect(x: x - 3.1, y: y - 3.1, width: 6.2, height: 6.2))
         }
+
+        // 10) 刻字：三层叠加，像真正凿进木头的凹槽，而不是浮在表面的亮字
+        let timeText = item.allDay ? "全天" : Format.time(item.start)
+        drawCarved(timeText, in: NSRect(x: 58, y: 12, width: 76, height: 18),
+                   size: 11, weight: .medium)
+        drawCarved(item.title, in: NSRect(x: 138, y: 12, width: max(w - 240, 80), height: 20),
+                   size: 13, weight: .semibold)
+        drawCarved(item.calendar, in: NSRect(x: w - 152, y: 13, width: 54, height: 17),
+                   size: 10.5, weight: .regular, align: .right)
+    }
+
+    /// 阴刻：凹槽上缘背光发暗、下缘被照亮，中间是被刻开的浅木芯色。
+    /// 三层各错开 1pt，加上一点烙焦描边，才有「刻进去」的体积感。
+    private func drawCarved(_ text: String, in rect: NSRect,
+                            size: CGFloat, weight: NSFont.Weight,
+                            align: NSTextAlignment = .left) {
+        guard !text.isEmpty else { return }
+        let font = NSFont.systemFont(ofSize: size, weight: weight)
+        let para = NSMutableParagraphStyle()
+        para.lineBreakMode = .byTruncatingTail
+        para.alignment = align
+        let shown = clipped(text, to: rect.width, font: font)
+
+        func attrs(_ color: NSColor) -> [NSAttributedString.Key: Any] {
+            [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: para,
+                .strokeColor: NSColor(calibratedRed: 0.12, green: 0.05, blue: 0.02, alpha: 0.45),
+                .strokeWidth: NSNumber(value: -0.5),
+            ]
+        }
+        // 暗层往上 1pt（上沿背光），亮层往下 1pt（下沿受光），主体压在中间
+        (shown as NSString).draw(in: rect.offsetBy(dx: 0, dy: 1),
+                                 withAttributes: attrs(NSColor(calibratedRed: 0.09, green: 0.035, blue: 0.01, alpha: 0.95)))
+        (shown as NSString).draw(in: rect.offsetBy(dx: 0, dy: -1),
+                                 withAttributes: attrs(NSColor(calibratedRed: 1.0, green: 0.87, blue: 0.65, alpha: 0.45)))
+        (shown as NSString).draw(in: rect,
+                                 withAttributes: attrs(NSColor(calibratedRed: 0.90, green: 0.79, blue: 0.60, alpha: 1)))
+    }
+
+    private func clipped(_ text: String, to width: CGFloat, font: NSFont) -> String {
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        if (text as NSString).size(withAttributes: attrs).width <= width { return text }
+        var s = text
+        while s.count > 1, (s as NSString).size(withAttributes: attrs).width > width {
+            s = String(s.dropLast())
+        }
+        return s.isEmpty ? "" : String(s.dropLast()) + "…"
     }
 
     // MARK: 悬停 / 右键动作（补齐清单里「拟物模式没有删除 / 顺延」这一项）
