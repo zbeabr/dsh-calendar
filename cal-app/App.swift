@@ -623,8 +623,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var isAdding = false
     private var placeholderLabel: NSTextField?
     private var inputCard: CardView?
-    /// 输入卡里的文本滚动区：切到全拟物时卡片要撑到与窗口等宽，内部控件得跟着重排
-    private var inputScroll: NSScrollView?
     private var chipRow: NSView?
     /// 「美化」开关：把输入卡染成跟胶囊同色的渐变
     private var tintEnabled: Bool = {
@@ -660,33 +658,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var modelLabel: NSTextField?
     /// 第一次布局才把窗口居中，之后重建（比如重新检查连接）保持原位
     private var didLayoutMain = false
-
-    /// 外观：玻璃 / 轻拟物。偏好持久化；切换只重绘背景与列表，不重建窗口，草稿不丢。
-    private var appearanceStyle: AppearanceStyle = {
-        if let raw = UserDefaults.standard.string(forKey: "appearanceStyle"),
-           let style = AppearanceStyle(rawValue: raw) { return style }
-        return .glass
-    }()
-    private var appearanceMenuItem: NSMenuItem?
-    private var plankViews: [PlankView] = []
-    /// 全拟物：凿进输入卡的磷光屏背景（文字仍由 ComposeTextView 画）
-    private var lcdPanel: LCDScreenView?
-    /// 全拟物：输入区下方那块细长的小液晶屏，显示系统提示 / 解析摘要
-    private var lcdStrip: LCDScreenView?
-    /// 全拟物：顶部那行早期 Macintosh 风格的衬线斜体压印字（纯字体，不加牌子）
-    private var brandLabel: NSTextField?
-    /// 全拟物：金属面板上的丝印小标签「新建日程 · NEW EVENT」
-    private var composeLabel: NSTextField?
-    /// 全拟物机身部件：黄铜挂杆、旧版立体红绿灯、右上角两颗呼吸灯状态面板
-    private var brassRail: BrassRailView?
-    private var trafficLights: SkeuoTrafficLights?
-    private var statusStrip: SkeuoStatusStrip?
-    /// 玻璃模式专属控件：全拟物下必须整套收起，否则就是白窗口上贴拟物贴纸
-    private var separatorView: NSView?
-    private var clearButton: NSButton?
-    /// 列表底部的雾层：吞掉被裁出的半块空木板
-    private var plankFade: PlankFadeView?
-    private var windowMoveObserver: NSObjectProtocol?
     /// 列表里显示的日程
     private var agenda: [AgendaItem] = []
     /// 日历名 → 颜色，给每条日程配左侧色条
@@ -734,8 +705,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         window.isReleasedWhenClosed = false
         window.center()
         makeShell()
-        applyAppearance()
-        observeWindowMove()
 
         // 先把占位文字装好再让窗口露面，第一帧就是完整画面（不再整窗淡入）
         showMessage("正在读取日历…")
@@ -955,14 +924,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "前置全部窗口", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
-        windowMenu.addItem(.separator())
-        let appearanceItem = NSMenuItem(
-            title: appearanceStyle == .glass ? "切换到全拟物外观" : "切换到 Liquid Glass",
-            action: #selector(toggleAppearance), keyEquivalent: ""
-        )
-        appearanceItem.target = self
-        windowMenu.addItem(appearanceItem)
-        self.appearanceMenuItem = appearanceItem
 
         // ── 帮助
         let helpItem = NSMenuItem(title: "帮助", action: nil, keyEquivalent: "")
@@ -1178,48 +1139,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         root.addSubview(date)
         self.dateLabel = date
 
-        // 全拟物：顶部一行早期 Macintosh 的衬线斜体压印字。
-        // 只改字体与蚀刻质感，不加铭牌、边框或铆钉；玻璃模式隐藏。
-        let brand = NSTextField(labelWithString: "")
-        brand.isBezeled = false
-        brand.backgroundColor = .clear
-        brand.alignment = .center
-        let brandFont = NSFont(name: "HoeflerText-Italic", size: 27)
-            ?? NSFont(name: "Georgia-BoldItalic", size: 27)
-            ?? NSFont.systemFont(ofSize: 27, weight: .semibold)
-        // 压印在亮铝上：字是凹进去的深灰，下沿一道白色受光边
-        let brandShadow = NSShadow()
-        brandShadow.shadowColor = NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.11, alpha: 0.85)
-        brandShadow.shadowBlurRadius = 1.2
-        brandShadow.shadowOffset = NSSize(width: 0, height: -1.6)
-        brand.attributedStringValue = NSAttributedString(string: "DSH 日历", attributes: [
-            .font: brandFont,
-            .foregroundColor: NSColor(calibratedRed: 0.93, green: 0.94, blue: 0.95, alpha: 1),
-            .kern: NSNumber(value: 2.4),
-            .strokeColor: NSColor(calibratedRed: 0.34, green: 0.35, blue: 0.37, alpha: 0.85),
-            .strokeWidth: NSNumber(value: -0.9),
-            .shadow: brandShadow,
-        ])
-        brand.frame = NSRect(x: (width - 320) / 2, y: height - 40, width: 320, height: 38)
-        brand.isHidden = true
-        root.addSubview(brand)
-        self.brandLabel = brand
-
         let dot = StatusDot(frame: NSRect(x: margin, y: 629, width: 10, height: 10))
         root.addSubview(dot)
         self.dot = dot
-
-        // 全拟物：系统那三个扁平圆点换成旧版立体糖果灯
-        let lights = SkeuoTrafficLights(frame: NSRect(x: 18, y: height - 34, width: 78, height: 22))
-        lights.isHidden = true
-        root.addSubview(lights)
-        self.trafficLights = lights
-
-        // 全拟物：右上角的粉色日历下拉换成两颗呼吸 LED + 已连接 / 模型已接入
-        let statusPanel = SkeuoStatusStrip(frame: NSRect(x: width - margin - 216, y: 644, width: 216, height: 26))
-        statusPanel.isHidden = true
-        root.addSubview(statusPanel)
-        self.statusStrip = statusPanel
 
         let subtitle = NSTextField(labelWithString: "")
         subtitle.font = NSFont.systemFont(ofSize: 12)
@@ -1241,25 +1163,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         root.addSubview(picker)
         self.picker = picker
 
-        // 全拟物：金属机壳上的丝印铭文，压印深灰字 + 下沿一道受光
-        let compose = NSTextField(labelWithString: "")
-        compose.isBezeled = false
-        compose.backgroundColor = .clear
-        let printShadow = NSShadow()
-        printShadow.shadowColor = NSColor.white.withAlphaComponent(0.8)
-        printShadow.shadowBlurRadius = 0.5
-        printShadow.shadowOffset = NSSize(width: 0, height: -1)
-        compose.attributedStringValue = NSAttributedString(string: "新建日程   ·   NEW EVENT", attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
-            .foregroundColor: NSColor(calibratedRed: 0.30, green: 0.31, blue: 0.32, alpha: 1),
-            .kern: NSNumber(value: 1.2),
-            .shadow: printShadow,
-        ])
-        compose.frame = NSRect(x: margin, y: 612, width: 340, height: 18)
-        compose.isHidden = true
-        root.addSubview(compose)
-        self.composeLabel = compose
-
         // ── 输入卡：一层独立的玻璃，跟窗口底板拉开层次
         let card = CardView(
             frame: NSRect(x: margin, y: 510, width: contentWidth, height: 96),
@@ -1267,12 +1170,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         )
         root.addSubview(card)
         self.inputCard = card
-        // 全拟物：卡片里再嵌一块磷光屏，铺在最底层，不挡文字、占位符和「添加」按钮
-        let panel = LCDScreenView(frame: card.bounds)
-        panel.autoresizingMask = [.width, .height]
-        panel.isHidden = true
-        card.addSubview(panel, positioned: .below, relativeTo: nil)
-        self.lcdPanel = panel
         // 从设置页切回来时卡片是新建的，把上一句的染色补上
         applyTint()
 
@@ -1304,7 +1201,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         textView.textContainer?.lineFragmentPadding = 0
         scroll.documentView = textView
         card.addSubview(scroll)
-        self.inputScroll = scroll
         self.input = textView
         // 程序化地放回草稿不会走 delegate 的编辑通知，解析在 buildMain 末尾补一次
         if !savedDraft.isEmpty { textView.string = savedDraft }
@@ -1331,14 +1227,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         root.addSubview(chips)
         self.chipRow = chips
 
-        // 全拟物：这一行换成一条细长的小液晶屏，系统提示单独放，不挤在主屏里
-        let strip = LCDScreenView(frame: NSRect(x: margin, y: 476, width: contentWidth, height: 24))
-        strip.isStrip = true
-        strip.text = "SYS  READY  ·  等待输入"
-        strip.isHidden = true
-        root.addSubview(strip)
-        self.lcdStrip = strip
-
         // 胶囊行右端的「美化」开关：关掉就是一块素玻璃，开着才染色
         let tint = TintToggle(frame: NSRect(x: width - margin - 54, y: 476, width: 54, height: 24))
         tint.on = tintEnabled
@@ -1362,14 +1250,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         separator.wantsLayer = true
         separator.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.10).cgColor
         root.addSubview(separator)
-        self.separatorView = separator
-
-        // 全拟物：横贯窗口等宽的黄铜挂杆，木板就从这根杆上垂下来。
-        // 它正好压在金属机身下沿和木板区上沿之间，把两截材质接成一个整体。
-        let rail = BrassRailView(frame: NSRect(x: 0, y: 430, width: width, height: 16))
-        rail.isHidden = true
-        root.addSubview(rail)
-        self.brassRail = rail
 
         // ── 日程列表
         let listScroll = NSScrollView(frame: NSRect(x: margin, y: 64, width: contentWidth, height: 362))
@@ -1384,12 +1264,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         root.addSubview(listScroll)
         self.listScroll = listScroll
         self.listContainer = container
-
-        // 底部雾层：盖在滚动区最下面 30pt，被裁出的半块木板会自然沉进雾里
-        let fade = PlankFadeView(frame: NSRect(x: 0, y: 0, width: width, height: 26))
-        fade.isHidden = true
-        root.addSubview(fade)
-        self.plankFade = fade
 
         // ── 底栏
         let status = NSTextField(labelWithString: "")
@@ -1407,7 +1281,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         clear.font = NSFont.systemFont(ofSize: 12)
         clear.contentTintColor = .secondaryLabelColor
         root.addSubview(clear)
-        self.clearButton = clear
 
         // 先定尺寸再装内容，否则从「设置」切回主界面时内容会用旧尺寸排一次
         window.setContentSize(NSSize(width: width, height: height))
@@ -1429,12 +1302,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         if let note = pendingStatusNote {
             statusLabel?.textColor = .secondaryLabelColor
             statusLabel?.stringValue = note
-            sysNote(note)
             pendingStatusNote = nil
         }
-        // 重建主界面（连接恢复 / 从设置页切回）后，把外观相关的显隐与字体重新套一遍，
-        // 否则磷光屏、小液晶屏、压印字会退回默认隐藏状态。
-        applyAppearance()
     }
 
     /// 状态点 + 副标题：星期四 · 已连接 · 模型待命
@@ -1445,20 +1314,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         if let used = modelUsed {
             parts.append(used)
         } else if modelEnabled {
-            parts.append(LocalModel.shared.phase == .ready ? "模型已接入" : "模型预热中")
+            parts.append(LocalModel.shared.phase == .ready ? "模型待命" : "模型预热中")
         } else {
             parts.append("仅规则")
         }
 
         subtitle?.stringValue = parts.joined(separator: "  ·  ")
-        // 全拟物上副标题也走磷光绿，跟两颗呼吸灯和终端屏是一套；离线仍用橙色提醒
-        subtitle?.textColor = offline ? .systemOrange
-            : (appearanceStyle == .lightSkeuo ? LCDScreenView.phosphorDim : .secondaryLabelColor)
+        subtitle?.textColor = offline ? .systemOrange : .secondaryLabelColor
 
         var tip = offline ? "现在连不上 iCloud。日程先存本地，正在自动重试；网络一恢复就立刻补发。" : "已连上 iCloud，日程直接写进日历。"
         if pending > 0 { tip += "（本地队列里还有 \(pending) 条）" }
         subtitle?.toolTip = tip
-        updateStatusStrip()
     }
 
     /// 状态灯 + 副标题：在线绿灯，离线橙灯
@@ -1481,7 +1347,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 self.offline = false
                 self.statusLabel?.textColor = .secondaryLabelColor
                 self.statusLabel?.stringValue = "已补发 \(synced) 条离线日程。"
-                self.sysNote("已补发 \(synced) 条离线日程。")
             }
             // 队列空的时候 sync 根本不会碰网络，所以「补发成功」不能当作在线的证据；
             // 反过来，补发时撞上网络错误才是真的还断着。
@@ -1567,7 +1432,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         }
         statusLabel?.textColor = .secondaryLabelColor
         statusLabel?.stringValue = "已重新连上 iCloud。"
-        sysNote("已重新连上 iCloud。")
         refreshAgenda()
         syncPending()
     }
@@ -2025,9 +1889,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 chips.append(("提前 \(alarm) 分钟", "alarm"))
             }
             renderChips(chips)
-            // 全拟物：同一份解析结果也送到下面那块细长小液晶屏
-            let sysParts = [when, title].filter { !$0.isEmpty }
-            lcdStrip?.text = sysParts.isEmpty ? "SYS  READY" : "SYS  " + sysParts.joined(separator: "  ·  ")
             // 渐变的颜色和顺序，就是这排胶囊的颜色和顺序
             updateTint(chips.map { $0.kind })
 
@@ -2053,9 +1914,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         previewStart = nil
         previewEnd = nil
         hintLabel?.stringValue = message
-        sysNote(message)
         hintLabel?.textColor = isError ? .systemRed : .secondaryLabelColor
-        lcdStrip?.text = message.isEmpty ? "SYS  READY  ·  等待输入" : "SYS  " + message
     }
 
     // MARK: 美化（把输入卡染成胶囊同色的渐变）
@@ -2116,37 +1975,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
         let length = storage.length
         let selected = textView.selectedRange()
-        // 全拟物：整块磷光屏统一荧光绿等宽字，像老式终端；玻璃模式维持原来的彩色片段高亮
-        let lcd = appearanceStyle == .lightSkeuo
-        let baseFont: NSFont = lcd ? LCDScreenView.fontMain : NSFont.systemFont(ofSize: 16)
-        let baseInk: NSColor = lcd ? LCDScreenView.phosphor : NSColor.labelColor
         isHighlighting = true
         storage.beginEditing()
-        storage.addAttribute(.font, value: baseFont, range: NSRange(location: 0, length: length))
-        storage.addAttribute(.foregroundColor, value: baseInk, range: NSRange(location: 0, length: length))
+        storage.addAttribute(.font, value: NSFont.systemFont(ofSize: 16), range: NSRange(location: 0, length: length))
+        storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: length))
         storage.addAttribute(.backgroundColor, value: NSColor.clear, range: NSRange(location: 0, length: length))
 
         // 用 ink 而不是原色：卡片染成同一套颜色之后，同色叠同色就糊了。
         // 深浅色下「往哪边偏」是反的，所以按文本框当前外观定一档。
         let appearance = textView.effectiveAppearance
         let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        if !lcd {
-            appearance.performAsCurrentDrawingAppearance {
-                for span in currentSpans {
-                    guard span.end <= length else { continue }
-                    let range = NSRange(location: span.start, length: span.end - span.start)
-                    let color = Theme.ink(for: span.kind, dark: dark)
-                    storage.addAttribute(.foregroundColor, value: color, range: range)
-                    storage.addAttribute(.backgroundColor, value: color.withAlphaComponent(0.14), range: range)
-                }
+        appearance.performAsCurrentDrawingAppearance {
+            for span in currentSpans {
+                guard span.end <= length else { continue }
+                let range = NSRange(location: span.start, length: span.end - span.start)
+                let color = Theme.ink(for: span.kind, dark: dark)
+                storage.addAttribute(.foregroundColor, value: color, range: range)
+                storage.addAttribute(.backgroundColor, value: color.withAlphaComponent(0.14), range: range)
             }
         }
         storage.endEditing()
         isHighlighting = false
 
         textView.typingAttributes = [
-            .font: baseFont,
-            .foregroundColor: baseInk,
+            .font: NSFont.systemFont(ofSize: 16),
+            .foregroundColor: NSColor.labelColor,
         ]
         if NSMaxRange(selected) <= storage.length { textView.selectedRange = selected }
     }
@@ -2183,7 +2036,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         if let first = hits.first {
             let extra = hits.count > 1 ? " 等 \(hits.count) 条" : ""
             hintLabel?.stringValue = "这个时间和「\(first.title)」重叠\(extra)"
-            sysNote("这个时间和「\(first.title)」重叠\(extra)")
             hintLabel?.textColor = .systemOrange
             return
         }
@@ -2214,7 +2066,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             guard let first = found.first else { return }
             let extra = found.count > 1 ? " 等 \(found.count) 条" : ""
             self.hintLabel?.stringValue = "这个时间和「\(first.title)」重叠\(extra)"
-            self.sysNote("这个时间和「\(first.title)」重叠\(extra)")
             self.hintLabel?.textColor = .systemOrange
         }
     }
@@ -2259,12 +2110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private func renderAgenda() {
         guard let container = listContainer else { return }
         container.subviews.forEach { $0.removeFromSuperview() }
-        plankViews.removeAll()
         let width = max(container.bounds.width, 400)
-        if appearanceStyle == .lightSkeuo {
-            renderPlankAgenda(in: container, width: width)
-            return
-        }
         var y: CGFloat = 4
         var lastDay = ""
         var order = 0
@@ -2319,217 +2165,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         container.frame = NSRect(x: 0, y: 0, width: width, height: max(y, 44))
     }
 
-    // MARK: - 轻拟物外观
-
-    /// 只改渲染层：玻璃外壳的上半部保留材质，列表区完全不画背景。
-    /// 不重建窗口、不动输入框，所以切换时草稿、滚动位置、预览胶囊都还在。
-    private func applyAppearance() {
-        let skeuo = appearanceStyle == .lightSkeuo
-
-        // 机身材质整套换掉：玻璃 → 拉丝铝壳 + 木板间隙高斯模糊。
-        // 以前只在白玻璃上叠几块拟物控件，所以真机看起来跟视觉稿完全不是一回事。
-        shell?.clearBelowY = 0
-        shell?.skeuoMode = skeuo
-        shell?.needsLayout = true
-        shell?.needsDisplay = true
-
-        // 系统那三个扁平圆点换成自绘的旧版立体糖果灯
-        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            window.standardWindowButton(type)?.isHidden = skeuo
-        }
-
-        // Liquid Glass 专属控件：全拟物下必须整套收起
-        dateLabel?.isHidden = skeuo
-        picker?.isHidden = skeuo
-        hintLabel?.isHidden = skeuo
-        separatorView?.isHidden = skeuo
-        statusLabel?.isHidden = skeuo
-        clearButton?.isHidden = skeuo
-        chipRow?.isHidden = skeuo
-        tintToggle?.isHidden = skeuo
-        dot?.isHidden = skeuo
-        subtitle?.isHidden = skeuo
-
-        // 全拟物专属部件
-        lcdPanel?.isHidden = !skeuo
-        lcdStrip?.isHidden = !skeuo
-        brandLabel?.isHidden = !skeuo
-        brassRail?.isHidden = !skeuo
-        trafficLights?.isHidden = !skeuo
-        statusStrip?.isHidden = !skeuo
-
-        // 输入卡与按钮的玻璃装饰也要关，否则粉玻璃会从磷光屏底下透出来
-        inputCard?.skeuoMode = skeuo
-        (addButton as? GlassButton)?.skeuoMode = skeuo
-        (addButton as? GlassButton)?.title = skeuo ? "挂上" : "添加"
-        // 灰色占位字压在墨绿屏上几乎看不见，换成磷光绿等宽字
-        // 占位字直接用带阴影的富文本，确保是发光的荧光绿而不是系统灰
-        let placeholderText = placeholderLabel?.stringValue ?? ""
-        if skeuo {
-            let glow = NSShadow()
-            glow.shadowColor = NSColor(calibratedRed: 0.25, green: 1.0, blue: 0.45, alpha: 0.95)
-            glow.shadowBlurRadius = 5
-            glow.shadowOffset = .zero
-            placeholderLabel?.attributedStringValue = NSAttributedString(string: placeholderText, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular),
-                .foregroundColor: LCDScreenView.phosphor,
-                .shadow: glow,
-            ])
-        } else {
-            placeholderLabel?.attributedStringValue = NSAttributedString(string: placeholderText, attributes: [
-                .font: NSFont.systemFont(ofSize: 15),
-                .foregroundColor: NSColor.tertiaryLabelColor,
-            ])
-        }
-
-        listScroll?.drawsBackground = false
-        listScroll?.backgroundColor = .clear
-
-        composeLabel?.isHidden = !skeuo
-        subtitle?.font = skeuo ? LCDScreenView.fontSmall : NSFont.systemFont(ofSize: 12)
-        updateSubtitle()
-        updateStatusStrip()
-        // 输入文字按当前外观重刷一遍字体与颜色（等宽荧光绿 ↔ 系统标签色）
-        applyHighlight()
-
-        // 等宽：全拟物下标题栏 / 输入屏 / 挂杆 / 木板都是 760，左右零缩进。
-        // 以前只把木板自身撑满了，外层 28pt 页边距还在，所以看起来总比挂杆窄一圈。
-        let fullWidth: CGFloat = 760
-        let cardWidth: CGFloat = skeuo ? fullWidth : 704
-        let cardX: CGFloat = skeuo ? 0 : 28
-        // SYS 屏紧贴黄铜挂杆，中间不再留一大截空白金属
-        let stripY: CGFloat = skeuo ? 452 : 476
-        inputCard?.frame = NSRect(x: cardX, y: 510, width: cardWidth, height: 96)
-        lcdStrip?.frame = NSRect(x: cardX, y: stripY, width: cardWidth, height: 24)
-        let textWidth = cardWidth - 118
-        inputScroll?.frame = NSRect(x: 14, y: 14, width: textWidth, height: 68)
-        input?.frame = NSRect(x: 0, y: 0, width: textWidth, height: 68)
-        placeholderLabel?.frame = NSRect(x: 16, y: 54, width: max(textWidth - 20, 20), height: 20)
-        // 磷光屏只占左侧，右侧让给一块独立的银色立体按钮 —— 参考稿里两者是分开的
-        lcdPanel?.frame = skeuo
-            ? NSRect(x: 0, y: 0, width: cardWidth - 104, height: 96)
-            : (inputCard?.bounds ?? .zero)
-        addButton?.frame = skeuo
-            ? NSRect(x: cardWidth - 96, y: 20, width: 84, height: 56)
-            : NSRect(x: cardWidth - 88, y: 29, width: 74, height: 34)
-        composeLabel?.frame = NSRect(x: skeuo ? 14 : 28, y: 612, width: 340, height: 18)
-
-        if let scroll = listScroll {
-            let listWidth: CGFloat = skeuo ? fullWidth : 704
-            // 全拟物下木板区一直铺到窗口底沿，不再在木板下面留一大块空白
-            scroll.frame = skeuo
-                ? NSRect(x: 0, y: 0, width: listWidth, height: 426)
-                : NSRect(x: 28, y: 64, width: listWidth, height: 362)
-            listContainer?.setFrameSize(NSSize(width: listWidth,
-                                              height: listContainer?.frame.height ?? 1))
-            scroll.layer?.mask = nil
-        }
-        plankFade?.frame = NSRect(x: 0, y: 0, width: fullWidth, height: 26)
-        plankFade?.isHidden = !skeuo
-        plankFade?.needsDisplay = true
-        // 宽度变了要按新宽度重排木板，否则还沿用上一次的 704
-        renderAgenda()
-    }
-
-    /// 全拟物下 hintLabel / statusLabel 是隐藏的，所有系统提示改走细长小液晶屏。
-    /// 玻璃模式不干预；换行压成空格，免得两行字挤在 24pt 高的条里。
-    private func sysNote(_ text: String) {
-        guard appearanceStyle == .lightSkeuo else { return }
-        let clean = text.replacingOccurrences(of: "\n", with: " ")
-        lcdStrip?.text = clean.isEmpty ? "SYS  READY  ·  等待输入" : "SYS  " + clean
-    }
-
-    /// 右上角两颗呼吸 LED 的文字与颜色，跟状态行用同一份数据
-    private func updateStatusStrip() {
-        let modelText: String
-        let modelOn: Bool
-        if let used = modelUsed {
-            modelText = used
-            modelOn = true
-        } else if modelEnabled {
-            modelOn = LocalModel.shared.phase == .ready
-            modelText = modelOn ? "模型已接入" : "模型预热中"
-        } else {
-            modelOn = false
-            modelText = "仅规则"
-        }
-        statusStrip?.update(connected: !offline, modelOn: modelOn, modelLabel: modelText)
-    }
-
-    @objc private func toggleAppearance() {
-        appearanceStyle = appearanceStyle == .glass ? .lightSkeuo : .glass
-        UserDefaults.standard.set(appearanceStyle.rawValue, forKey: "appearanceStyle")
-        applyAppearance()
-        renderAgenda()
-        appearanceMenuItem?.title = appearanceStyle == .glass
-            ? "切换到全拟物外观" : "切换到 Liquid Glass"
-    }
-
-    /// 拖动窗口时木板轻轻摆一下：取通知即可，不做完整刚体模拟。
-    /// 「减少动态效果」开着时完全不动。
-    private func observeWindowMove() {
-        if let old = windowMoveObserver { NotificationCenter.default.removeObserver(old) }
-        windowMoveObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didMoveNotification, object: window, queue: .main
-        ) { [weak self] _ in self?.swingPlanks() }
-    }
-
-    private func swingPlanks() {
-        guard appearanceStyle == .lightSkeuo, !Motion.reduced, !plankViews.isEmpty else { return }
-        for (index, plank) in plankViews.enumerated() {
-            guard let layer = plank.layer else { continue }
-            // 一串挂在同一根绳上的木牌：方向交替、幅度递减、越靠下衰减越慢、逐块错开相位
-            let dir = Double(index % 2 == 0 ? 1 : -1)
-            let amplitude = dir * (0.022 + Double(min(index, 5)) * 0.003)
-            let swing = CAKeyframeAnimation(keyPath: "transform.rotation.z")
-            swing.values = [amplitude, -amplitude * 0.62, amplitude * 0.34, -amplitude * 0.15, 0.0]
-            swing.keyTimes = [0, 0.28, 0.52, 0.76, 1]
-            swing.duration = 0.52 + Double(min(index, 5)) * 0.06
-            swing.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            swing.beginTime = CACurrentMediaTime() + Double(index) * 0.025
-            layer.add(swing, forKey: "plankSwing")
-        }
-    }
-
-    /// 一条日程 = 一块木板。木板之间不画任何东西，缝里能看见后面的窗口。
-    private func renderPlankAgenda(in container: FlippedView, width: CGFloat) {
-        var y: CGFloat = 4
-        if let note = agendaNote {
-            // 不再是一行飘在木板上面的橙色系统字：告警也是机器上的一块小液晶屏
-            let alert = LCDScreenView(frame: NSRect(x: 12, y: y, width: width - 24, height: 22))
-            alert.isStrip = true
-            alert.text = "SYS  " + note
-            alert.textTint = NSColor(calibratedRed: 1.0, green: 0.78, blue: 0.36, alpha: 1)
-            container.addSubview(alert)
-            y += 28
-        }
-        if agenda.isEmpty {
-            let empty = LCDScreenView(frame: NSRect(x: 12, y: y, width: width - 24, height: 24))
-            empty.isStrip = true
-            empty.text = "SYS  " + (agendaNote == nil ? "接下来几天没有安排" : "暂时没有可显示的日程")
-            container.addSubview(empty)
-            y += 40
-        } else {
-            let ropeTop = y
-            for (index, item) in agenda.enumerated() {
-                // 木板与窗口等宽：左右不再各缩 12pt，边缘和金属外壳对齐
-                let plank = PlankView(item: item, tint: color(for: item.calendar), width: width,
-                                      seed: UInt32(truncatingIfNeeded: index &* 2654435761 &+ 7))
-                plank.frame = NSRect(x: 0, y: y, width: width, height: 76)
-                // 拟物模式补齐删除 / 顺延：和玻璃模式走同一套后端动作
-                plank.onDelete = { [weak self] in self?.deleteItem(item) }
-                plank.onShift = { [weak self] seconds in self?.shiftItem(item, by: seconds) }
-                container.addSubview(plank)
-                plankViews.append(plank)
-                y += 76 + 22
-            }
-            // 绳子从列表容器顶部（也就是输入框下沿）垂到最后一块木板；放在最底层。
-            let rope = RopeView(frame: NSRect(x: 0, y: ropeTop, width: width, height: y - ropeTop))
-            container.addSubview(rope, positioned: .below, relativeTo: nil)
-        }
-        container.frame = NSRect(x: 0, y: 0, width: width, height: max(y, 44))
-    }
-
     private func deleteItem(_ item: AgendaItem) {
         Engine.call(["rm", item.uid, "--json"]) { [weak self] result in
             guard let self else { return }
@@ -2537,12 +2172,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             case .success(let payload) where (payload["ok"] as? Bool) == true:
                 self.hintLabel?.textColor = .secondaryLabelColor
                 self.hintLabel?.stringValue = "已删除「\(item.title)」"
-                self.sysNote("已删除「\(item.title)」")
                 self.refreshAgenda()
             default:
                 self.hintLabel?.textColor = .systemRed
                 self.hintLabel?.stringValue = "删除失败，可能已经不在日历里了"
-                self.sysNote("删除失败，可能已经不在日历里了")
             }
         }
     }
@@ -2563,12 +2196,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             if case .success(let payload) = result, (payload["ok"] as? Bool) == true {
                 self.hintLabel?.textColor = .secondaryLabelColor
                 self.hintLabel?.stringValue = "已把「\(item.title)」挪到 \(Format.dayTitle(start)) \(Format.time(start))"
-                self.sysNote("已把「\(item.title)」挪到 \(Format.dayTitle(start)) \(Format.time(start))")
                 self.refreshAgenda()
             } else {
                 self.hintLabel?.textColor = .systemRed
                 self.hintLabel?.stringValue = "改期失败，检查一下网络"
-                self.sysNote("改期失败，检查一下网络")
             }
         }
     }
@@ -2602,21 +2233,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     @objc private func recheckNow() {
         statusLabel?.textColor = .secondaryLabelColor
         statusLabel?.stringValue = "正在检查连接…"
-        sysNote("正在检查连接…")
         refreshConfig()
     }
 
     @objc private func syncNowAction() {
         statusLabel?.textColor = .secondaryLabelColor
         statusLabel?.stringValue = "正在补发离线日程…"
-        sysNote("正在补发离线日程…")
         syncPending()
     }
 
     @objc private func reloadModel() {
         statusLabel?.textColor = .secondaryLabelColor
         statusLabel?.stringValue = "正在重新加载本地模型…"
-        sysNote("正在重新加载本地模型…")
         LocalModel.shared.reload()
     }
 
@@ -2632,7 +2260,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         addButton?.isEnabled = false
         statusLabel?.textColor = .secondaryLabelColor
         statusLabel?.stringValue = "正在写入…"
-        sysNote("正在写入…")
 
         // 提交前再解析一次：用户可能打完字立刻回车，防抖里的那次解析还没回来。
         // 这样句子里写的 #标签 一定生效，同时手动选过的标签优先级更高。
@@ -2671,23 +2298,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                     self.markOffline()
                     self.statusLabel?.textColor = .systemOrange
                     self.statusLabel?.stringValue = "离线，已暂存本地：\(title)\n联网后自动补发到「\(calendar)」。"
-                    self.sysNote("离线，已暂存本地：\(title)\n联网后自动补发到「\(calendar)」。")
                 } else {
                     self.offline = false
                     self.updateBadge()
                     self.stopReconnectWatch()
                     self.statusLabel?.textColor = .secondaryLabelColor
                     self.statusLabel?.stringValue = "已添加到「\(calendar)」：\(title)"
-                    self.sysNote("已添加到「\(calendar)」：\(title)")
                 }
             case .success(let payload):
                 self.statusLabel?.textColor = .systemRed
                 self.statusLabel?.stringValue = payload["error"] as? String ?? "写入失败"
-                self.sysNote(payload["error"] as? String ?? "写入失败")
             case .failure(let error):
                 self.statusLabel?.textColor = .systemRed
                 self.statusLabel?.stringValue = error.localizedDescription
-                self.sysNote(error.localizedDescription)
             }
         }
     }
@@ -3177,827 +2800,6 @@ enum Theme {
     }
 }
 
-// MARK: - 全拟物外观的资源
-
-/// 老式终端磷光屏：墨绿玻璃 + CRT 扫描线 + 内凹凿口边框。
-/// 铺在输入卡里时只当背景用（文字仍由 ComposeTextView 画，保证输入法、高亮、草稿都不变）；
-/// 当作细长系统条时自己画一行荧光绿等宽小字。
-// MARK: - 全拟物机身材质
-//
-// 这几块是「整台机器」本身，不是贴在某个窗口上的装饰：
-// 拉丝铝壳、黄铜挂杆、旧版立体糖果灯、木板后面那层高斯模糊的柔光背板。
-// 全都用 CGContext 程序化画，确定性伪随机，重绘不闪、不依赖图片资源。
-
-/// 确定性伪随机：同一块木/金属每次重绘纹理都一致
-private struct SkeuoRng {
-    var state: UInt32
-    mutating func next() -> CGFloat {
-        state = state &* 1664525 &+ 1013904223
-        return CGFloat(state) / CGFloat(UInt32.max)
-    }
-}
-
-/// 机身：一整块挤压拉丝铝板。高频水平细纹 + 纵向光照 + 上下机加工亮边。
-final class MetalPanelView: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let r = bounds
-        ctx.saveGState()
-
-        let base = [
-            NSColor(calibratedRed: 0.87, green: 0.88, blue: 0.89, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.79, green: 0.80, blue: 0.82, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.71, green: 0.72, blue: 0.74, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.81, green: 0.82, blue: 0.83, alpha: 1).cgColor,
-        ] as CFArray
-        if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: base,
-                              locations: [0, 0.32, 0.80, 1]) {
-            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: r.maxY),
-                                   end: CGPoint(x: 0, y: r.minY), options: [])
-        }
-
-        // 拉丝：越密越像铝型材，偶尔一道粗的是挤压痕
-        var rng = SkeuoRng(state: 0x9e3779b9)
-        var y: CGFloat = r.minY
-        while y < r.maxY {
-            let v = rng.next()
-            let ink: NSColor = v > 0.5 ? .black : .white
-            ctx.setStrokeColor(ink.withAlphaComponent(0.018 + v * 0.055).cgColor)
-            ctx.setLineWidth(v > 0.94 ? 1.1 : 0.5)
-            ctx.move(to: CGPoint(x: r.minX, y: y))
-            ctx.addLine(to: CGPoint(x: r.maxX, y: y))
-            ctx.strokePath()
-            y += 0.8 + rng.next() * 1.7
-        }
-
-        // 左右两侧当圆柱面压暗，中间微微提亮，才不是一块平板
-        let side = [
-            NSColor.black.withAlphaComponent(0.20).cgColor,
-            NSColor.black.withAlphaComponent(0.0).cgColor,
-            NSColor.white.withAlphaComponent(0.06).cgColor,
-            NSColor.black.withAlphaComponent(0.0).cgColor,
-            NSColor.black.withAlphaComponent(0.20).cgColor,
-        ] as CFArray
-        if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: side,
-                              locations: [0, 0.09, 0.5, 0.91, 1]) {
-            ctx.drawLinearGradient(g, start: CGPoint(x: r.minX, y: 0),
-                                   end: CGPoint(x: r.maxX, y: 0), options: [])
-        }
-        ctx.restoreGState()
-
-        // 上沿受光、下沿车削暗边
-        ctx.setFillColor(NSColor.white.withAlphaComponent(0.55).cgColor)
-        ctx.fill(NSRect(x: r.minX, y: r.maxY - 1.5, width: r.width, height: 1.5))
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.30).cgColor)
-        ctx.fill(NSRect(x: r.minX, y: r.minY, width: r.width, height: 2))
-        ctx.setFillColor(NSColor.white.withAlphaComponent(0.28).cgColor)
-        ctx.fill(NSRect(x: r.minX, y: r.minY + 2, width: r.width, height: 1))
-    }
-}
-
-/// 黄铜挂杆：横贯窗口等宽，铆在金属板下沿，木板就从这根杆上垂下来。
-final class BrassRailView: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let r = bounds
-        let bar = NSRect(x: r.minX, y: r.minY + 2, width: r.width, height: r.height - 5)
-
-        let brass = [
-            NSColor(calibratedRed: 0.42, green: 0.30, blue: 0.10, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.86, green: 0.70, blue: 0.33, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.98, green: 0.88, blue: 0.57, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.70, green: 0.52, blue: 0.20, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.34, green: 0.23, blue: 0.08, alpha: 1).cgColor,
-        ] as CFArray
-        if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: brass,
-                              locations: [0, 0.18, 0.42, 0.74, 1]) {
-            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: bar.maxY),
-                                   end: CGPoint(x: 0, y: bar.minY), options: [])
-        }
-        // 拉丝 + 氧化斑
-        var rng = SkeuoRng(state: 0x51ed270b)
-        var x: CGFloat = r.minX
-        while x < r.maxX {
-            let v = rng.next()
-            ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.02 + v * 0.05).cgColor)
-            ctx.setLineWidth(0.5)
-            ctx.move(to: CGPoint(x: x, y: bar.minY))
-            ctx.addLine(to: CGPoint(x: x, y: bar.maxY))
-            ctx.strokePath()
-            if v > 0.985 {
-                ctx.setFillColor(NSColor(calibratedRed: 0.24, green: 0.30, blue: 0.16, alpha: 0.24).cgColor)
-                ctx.fillEllipse(in: NSRect(x: x, y: bar.midY - 2, width: 3 + v * 4, height: 3))
-            }
-            x += 1.3 + rng.next() * 2.2
-        }
-        // 杆落在下方背景上的投影
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.34).cgColor)
-        ctx.fill(NSRect(x: r.minX, y: r.minY, width: r.width, height: 3))
-        // 两端铆钉
-        for px in [r.minX + 16, r.maxX - 16] {
-            let hole = NSRect(x: px - 5, y: bar.midY - 5, width: 10, height: 10)
-            ctx.setFillColor(NSColor(calibratedRed: 0.28, green: 0.19, blue: 0.06, alpha: 1).cgColor)
-            ctx.fillEllipse(in: hole)
-            let cap = hole.insetBy(dx: 1.6, dy: 1.6)
-            ctx.setFillColor(NSColor(calibratedRed: 0.95, green: 0.83, blue: 0.50, alpha: 1).cgColor)
-            ctx.fillEllipse(in: cap)
-            ctx.setFillColor(NSColor.white.withAlphaComponent(0.75).cgColor)
-            ctx.fillEllipse(in: NSRect(x: cap.minX + 1.2, y: cap.maxY - 3.2, width: 2.6, height: 1.7))
-        }
-    }
-}
-
-/// 旧版立体糖果红绿灯：金属座圈 + 球面玻璃 + 高光点。
-/// 系统那三个扁平圆点在全拟物模式下隐藏，由这里接管关闭/最小化/缩放。
-final class SkeuoTrafficLights: NSView {
-    private let colors: [NSColor] = [
-        NSColor(calibratedRed: 0.92, green: 0.19, blue: 0.16, alpha: 1),
-        NSColor(calibratedRed: 0.98, green: 0.72, blue: 0.13, alpha: 1),
-        NSColor(calibratedRed: 0.35, green: 0.78, blue: 0.30, alpha: 1),
-    ]
-    private let symbols = ["×", "−", "+"]
-    private var hovering = false { didSet { needsDisplay = true } }
-    private var hotIndex = -1 { didSet { needsDisplay = true } }
-    private var tracking: NSTrackingArea?
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect],
-            owner: self, userInfo: nil
-        )
-        addTrackingArea(area)
-        tracking = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        hovering = true
-        updateHot(event)
-    }
-
-    override func mouseMoved(with event: NSEvent) { updateHot(event) }
-
-    override func mouseExited(with event: NSEvent) {
-        hovering = false
-        hotIndex = -1
-    }
-
-    private func updateHot(_ event: NSEvent) {
-        let x = convert(event.locationInWindow, from: nil).x
-        hotIndex = x < 23 ? 0 : (x < 46 ? 1 : 2)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        for (index, color) in colors.enumerated() {
-            let cx = 11 + CGFloat(index) * 23
-            let cy = bounds.midY
-            let outer = NSRect(x: cx - 8, y: cy - 8, width: 16, height: 16)
-            // 车削座圈
-            ctx.setFillColor(NSColor(calibratedRed: 0.34, green: 0.34, blue: 0.35, alpha: 1).cgColor)
-            ctx.fillEllipse(in: outer)
-            ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.45).cgColor)
-            ctx.setLineWidth(0.8)
-            ctx.strokeEllipse(in: outer.insetBy(dx: 0.6, dy: 0.6))
-
-            let glass = outer.insetBy(dx: 1.7, dy: 1.7)
-            ctx.saveGState()
-            ctx.addEllipse(in: glass)
-            ctx.clip()
-            let dark = color.shadow(withLevel: 0.55) ?? color
-            let grad = [
-                color.blended(withFraction: 0.35, of: .white)?.cgColor ?? color.cgColor,
-                color.cgColor,
-                dark.cgColor,
-            ] as CFArray
-            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: grad,
-                                  locations: [0, 0.45, 1]) {
-                ctx.drawLinearGradient(g, start: CGPoint(x: glass.midX, y: glass.maxY),
-                                       end: CGPoint(x: glass.midX, y: glass.minY), options: [])
-            }
-            ctx.restoreGState()
-            // 玻璃凸面的一点反光
-            ctx.setFillColor(NSColor.white.withAlphaComponent(0.72).cgColor)
-            ctx.fillEllipse(in: NSRect(x: glass.minX + 2.2, y: glass.maxY - 4.4, width: 4.2, height: 2.4))
-        }
-
-        // 旧版 macOS：鼠标移到这一组灯上，三个符号一起浮出来，底下的那颗最实。
-        // DSH_CAL_SNAP_HOVER=1 是给 --snapshot 自检用的，强制画出 hover 态。
-        let snapHover = ProcessInfo.processInfo.environment["DSH_CAL_SNAP_HOVER"] == "1"
-        if hovering || snapHover {
-            for index in 0..<3 {
-                let cx = 11 + CGFloat(index) * 23
-                let cy = bounds.midY
-                let hot = hotIndex == index || snapHover
-                if hot {
-                    ctx.setFillColor(NSColor.white.withAlphaComponent(0.22).cgColor)
-                    ctx.fillEllipse(in: NSRect(x: cx - 7, y: cy - 7, width: 14, height: 14))
-                }
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 9.5, weight: .bold),
-                    .foregroundColor: NSColor(calibratedRed: 0.20, green: 0.11, blue: 0.04,
-                                              alpha: hot ? 0.95 : 0.62),
-                ]
-                let text = symbols[index] as NSString
-                let size = text.size(withAttributes: attrs)
-                text.draw(at: NSPoint(x: cx - size.width / 2, y: cy - size.height / 2 - 0.5),
-                          withAttributes: attrs)
-            }
-        }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let x = convert(event.locationInWindow, from: nil).x
-        switch x {
-        case ..<23:  NSApp.sendAction(#selector(NSWindow.performClose(_:)), to: window, from: self)
-        case ..<46:  window?.miniaturize(nil)
-        default:     window?.zoom(nil)
-        }
-    }
-}
-
-/// 木板间隙的柔光背板：真机上是窗口后方内容的高斯模糊（NSVisualEffectView），
-/// 再压一层暖灰，把后窗的细节对比度压下去，木板上的刻字才读得清。
-/// 离屏快照采不到 behindWindow 时，这一层暖灰 + 细噪点仍能保证间隙不刺眼。
-final class GapBlurView: NSView {
-    private let effect = NSVisualEffectView()
-    private let shade = GapShadeView()
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        effect.frame = bounds
-        effect.autoresizingMask = [.width, .height]
-        effect.material = .underWindowBackground
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        addSubview(effect)
-        shade.frame = bounds
-        shade.autoresizingMask = [.width, .height]
-        addSubview(shade)
-    }
-
-    required init?(coder: NSCoder) { fatalError("GapBlurView 不支持从 nib 初始化") }
-
-    override func layout() {
-        super.layout()
-        effect.frame = bounds
-        shade.frame = bounds
-        shade.needsDisplay = true
-    }
-}
-
-/// 压在模糊层上的暖灰：上暗 → 中间稍亮 → 下暗，加极细磨砂噪点
-final class GapShadeView: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let r = bounds
-        // 深蓝灰的柔光压层：真机上 NSVisualEffectView 会把后面的窗口高斯模糊后透上来，
-        // 这里只压色、不盖死；太薄会变成一片刺眼的浅白，太厚又成不透明灰板。
-        let tones = [
-            NSColor(calibratedRed: 0.10, green: 0.11, blue: 0.13, alpha: 0.46).cgColor,
-            NSColor(calibratedRed: 0.14, green: 0.15, blue: 0.17, alpha: 0.34).cgColor,
-            NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 0.52).cgColor,
-        ] as CFArray
-        if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: tones,
-                              locations: [0, 0.46, 1]) {
-            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: r.maxY),
-                                   end: CGPoint(x: 0, y: r.minY), options: [])
-        }
-        // 后方窗口被虚化后剩下的几条横向色带（像参考稿里那几块蓝灰矩形）。
-        // 用压扁的径向渐变画出没有硬边的柔光，既看得出「后面有东西」，又不会抢刻字。
-        func softBar(_ fx: CGFloat, _ fy: CGFloat, _ halfW: CGFloat, _ tint: NSColor) {
-            let grad = [
-                tint.withAlphaComponent(0.20).cgColor,
-                tint.withAlphaComponent(0).cgColor,
-            ] as CFArray
-            guard let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: grad,
-                                     locations: [0, 1]) else { return }
-            ctx.saveGState()
-            ctx.translateBy(x: r.minX + r.width * fx, y: r.minY + r.height * fy)
-            ctx.scaleBy(x: 1, y: 0.30)
-            ctx.drawRadialGradient(g, startCenter: .zero, startRadius: 0,
-                                   endCenter: .zero, endRadius: r.width * halfW, options: [])
-            ctx.restoreGState()
-        }
-        softBar(0.34, 0.80, 0.30, NSColor(calibratedRed: 0.42, green: 0.54, blue: 0.68, alpha: 1))
-        softBar(0.63, 0.54, 0.26, NSColor(calibratedRed: 0.40, green: 0.52, blue: 0.66, alpha: 1))
-        softBar(0.40, 0.26, 0.34, NSColor(calibratedRed: 0.52, green: 0.58, blue: 0.66, alpha: 1))
-        var rng = SkeuoRng(state: 0x2f6b1d3c)
-        var y: CGFloat = r.minY
-        while y < r.maxY {
-            var x: CGFloat = r.minX
-            while x < r.maxX {
-                let v = rng.next()
-                if v > 0.86 {
-                    ctx.setFillColor(NSColor.white.withAlphaComponent((v - 0.86) * 0.16).cgColor)
-                    ctx.fill(NSRect(x: x, y: y, width: 1, height: 1))
-                }
-                x += 2
-            }
-            y += 2
-        }
-    }
-}
-
-/// 右上角的状态面板：蚀刻凹槽里两颗会呼吸的 LED + 「已连接 / 模型已接入」。
-/// 复用 StatusDot 的呼吸动画，不另造一套；玻璃模式下这一整块隐藏。
-final class SkeuoStatusStrip: NSView {
-    private let linkLamp = StatusDot(frame: .zero)
-    private let modelLamp = StatusDot(frame: .zero)
-    private let linkText = NSTextField(labelWithString: "已连接")
-    private let modelText = NSTextField(labelWithString: "模型已接入")
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        for lamp in [linkLamp, modelLamp] {
-            lamp.online = true
-            lamp.color = .systemGreen
-            addSubview(lamp)
-        }
-        for field in [linkText, modelText] {
-            field.isBezeled = false
-            field.backgroundColor = .clear
-            field.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .medium)
-            field.textColor = LCDScreenView.phosphorDim
-            field.wantsLayer = true
-            field.layer?.shadowColor = NSColor(calibratedRed: 0.25, green: 1.0, blue: 0.45, alpha: 0.9).cgColor
-            field.layer?.shadowOpacity = 0.85
-            field.layer?.shadowRadius = 3
-            field.layer?.shadowOffset = .zero
-            addSubview(field)
-        }
-    }
-
-    required init?(coder: NSCoder) { fatalError("SkeuoStatusStrip 不支持从 nib 初始化") }
-
-    override func layout() {
-        super.layout()
-        let cy = (bounds.height - 9) / 2
-        linkLamp.frame = NSRect(x: 10, y: cy, width: 9, height: 9)
-        linkText.frame = NSRect(x: 26, y: 4, width: 56, height: 18)
-        modelLamp.frame = NSRect(x: 94, y: cy, width: 9, height: 9)
-        modelText.frame = NSRect(x: 110, y: 4, width: 100, height: 18)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let path = NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7)
-        ctx.saveGState()
-        path.addClip()
-        let well = [
-            NSColor(calibratedRed: 0.10, green: 0.14, blue: 0.12, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.16, green: 0.21, blue: 0.18, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.08, green: 0.12, blue: 0.10, alpha: 1).cgColor,
-        ] as CFArray
-        if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: well,
-                              locations: [0, 0.45, 1]) {
-            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: r.maxY),
-                                   end: CGPoint(x: 0, y: r.minY), options: [])
-        }
-        ctx.restoreGState()
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.55).cgColor)
-        ctx.fill(NSRect(x: r.minX + 7, y: r.maxY - 1.5, width: r.width - 14, height: 1.5))
-        ctx.setFillColor(NSColor.white.withAlphaComponent(0.34).cgColor)
-        ctx.fill(NSRect(x: r.minX + 7, y: r.minY + 0.5, width: r.width - 14, height: 1))
-        NSColor(calibratedRed: 0.30, green: 0.31, blue: 0.30, alpha: 1).setStroke()
-        path.lineWidth = 1
-        path.stroke()
-    }
-
-    func update(connected: Bool, modelOn: Bool, modelLabel: String) {
-        linkLamp.online = connected
-        linkLamp.color = connected ? .systemGreen : .systemOrange
-        linkText.stringValue = connected ? "已连接" : "离线"
-        modelLamp.online = modelOn
-        modelLamp.color = modelOn ? .systemGreen : .systemGray
-        modelText.stringValue = modelLabel
-    }
-}
-
-/// 列表底部的雾层：把被滚动区裁出来的那半块空木板吞掉。
-/// 用实体视图而不是 layer mask —— CAGradientLayer 在 flipped 坐标下会误淡出顶部告警条。
-final class PlankFadeView: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let r = bounds
-        let fog = [
-            NSColor(calibratedRed: 0.33, green: 0.32, blue: 0.30, alpha: 0).cgColor,
-            NSColor(calibratedRed: 0.31, green: 0.30, blue: 0.28, alpha: 0.94).cgColor,
-            NSColor(calibratedRed: 0.30, green: 0.29, blue: 0.27, alpha: 1).cgColor,
-        ] as CFArray
-        if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: fog,
-                              locations: [0, 0.60, 1]) {
-            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: r.maxY),
-                                   end: CGPoint(x: 0, y: r.minY), options: [])
-        }
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-final class LCDScreenView: NSView {
-    static let phosphor = NSColor(calibratedRed: 0.55, green: 1.0, blue: 0.67, alpha: 1)
-    static let phosphorDim = NSColor(calibratedRed: 0.44, green: 0.84, blue: 0.56, alpha: 1)
-    static let fontMain = NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
-    static let fontSmall = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-
-    /// 只有细长条会画这行字；主屏留空，交给 ComposeTextView
-    var text: String = "" { didSet { needsDisplay = true } }
-    var isStrip = false
-    /// 告警条用琥珀，其余用磷光绿
-    var textTint: NSColor? { didSet { needsDisplay = true } }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let radius: CGFloat = isStrip ? 3 : 5
-        let path = NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius)
-
-        ctx.saveGState()
-        path.addClip()
-        // 屏底：上沿暗、中间略亮的墨绿，不是一块死黑
-        let colors = [
-            NSColor(calibratedRed: 0.02, green: 0.075, blue: 0.042, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.038, green: 0.125, blue: 0.068, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.018, green: 0.065, blue: 0.037, alpha: 1).cgColor,
-        ] as CFArray
-        if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors,
-                              locations: [0, 0.5, 1]) {
-            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: r.maxY),
-                                   end: CGPoint(x: 0, y: r.minY), options: [])
-        }
-        // 上半一点磷光扩散：用铺满的淡色，不能画椭圆 —— 屏一变宽就会出现一道大弧线
-        ctx.setFillColor(NSColor(calibratedRed: 0.20, green: 0.75, blue: 0.35, alpha: 0.035).cgColor)
-        ctx.fill(NSRect(x: r.minX, y: r.maxY - r.height * 0.55, width: r.width, height: r.height * 0.55))
-        // CRT 扫描线
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.16).cgColor)
-        var y = r.minY
-        while y < r.maxY {
-            ctx.fill(NSRect(x: r.minX, y: y, width: r.width, height: 0.8))
-            y += 2.6
-        }
-        // 玻璃的一道斜反光
-        ctx.setFillColor(NSColor.white.withAlphaComponent(0.035).cgColor)
-        ctx.fill(NSRect(x: r.minX, y: r.minY, width: r.width * 0.20, height: r.height))
-        ctx.restoreGState()
-
-        // 凿口边框：外圈暗、内圈一道细高光
-        ctx.setStrokeColor(NSColor(calibratedRed: 0.09, green: 0.20, blue: 0.13, alpha: 1).cgColor)
-        ctx.setLineWidth(1)
-        path.stroke()
-        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.10).cgColor)
-        ctx.stroke(NSRect(x: r.minX + 1, y: r.minY + 1, width: r.width - 2, height: r.height - 2))
-
-        guard isStrip, !text.isEmpty else { return }
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor(calibratedRed: 0.20, green: 0.90, blue: 0.40, alpha: 0.75)
-        shadow.shadowBlurRadius = 4
-        shadow.shadowOffset = .zero
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular),
-            .foregroundColor: textTint ?? LCDScreenView.phosphorDim,
-            .shadow: shadow,
-        ]
-        (text as NSString).draw(in: NSRect(x: r.minX + 10, y: r.midY - 8,
-                                           width: max(r.width - 20, 10), height: 16),
-                                withAttributes: attrs)
-    }
-}
-
-/// 外观风格。切换只换渲染层，数据模型、解析、写入、草稿都共用同一套。
-/// rawValue 保留 `lightSkeuo` 是为了兼容已经写进 UserDefaults 的偏好，不再单列「轻/重」两档。
-enum AppearanceStyle: String {
-    case glass
-    case lightSkeuo
-}
-
-/// 两根麻绳：从输入框下方的列表顶部垂到底，木板两端穿孔串在上面。
-/// 画成多股捻线（阴影 / 主股 / 高光 / 斜向捻纹），不是两根直线。
-/// 不画背景、不吃点击，绳子之外的地方保持透明。
-final class RopeView: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        for x in [CGFloat(36), bounds.width - 36] {
-            let path = NSBezierPath()
-            path.move(to: CGPoint(x: x, y: 0))
-            path.line(to: CGPoint(x: x, y: bounds.height))
-
-            // 落在后面窗口上的投影
-            ctx.saveGState()
-            ctx.translateBy(x: 2, y: -2)
-            NSColor(calibratedRed: 0.12, green: 0.07, blue: 0.03, alpha: 0.30).setStroke()
-            path.lineWidth = 6
-            path.stroke()
-            ctx.restoreGState()
-
-            NSColor(calibratedRed: 0.54, green: 0.41, blue: 0.24, alpha: 1).setStroke()
-            path.lineWidth = 5
-            path.stroke()
-
-            NSColor(calibratedRed: 0.82, green: 0.68, blue: 0.45, alpha: 0.85).setStroke()
-            ctx.saveGState()
-            ctx.translateBy(x: -1.3, y: 0)
-            path.lineWidth = 1.3
-            path.stroke()
-            ctx.restoreGState()
-
-            // 斜向捻纹：沿绳长每隔几像素一道短斜线
-            ctx.setStrokeColor(NSColor(calibratedRed: 0.30, green: 0.20, blue: 0.09, alpha: 0.45).cgColor)
-            ctx.setLineWidth(0.9)
-            var y: CGFloat = 1
-            while y < bounds.height {
-                ctx.move(to: CGPoint(x: x - 2.4, y: y))
-                ctx.addLine(to: CGPoint(x: x + 2.4, y: y + 3.1))
-                ctx.strokePath()
-                y += 4.2
-            }
-        }
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-/// 一条日程 = 一块深实木板。木纹是程序化画的（确定性伪随机，每块种子不同），
-/// 不是纯色块：底色渐变 + 低频色斑 + 各向异性细纹 + 导管孔 + 结疤 + 端面厚度 + 黄铜穿孔。
-final class PlankView: NSView {
-    private let item: AgendaItem
-    private let tint: NSColor
-    private let seedValue: UInt32
-    private let deleteButton = NSButton()
-    private var trackingArea: NSTrackingArea?
-
-    /// 与玻璃模式同一套动作，只是载体换成木板
-    var onDelete: (() -> Void)?
-    var onShift: ((TimeInterval) -> Void)?
-
-    init(item: AgendaItem, tint: NSColor, width: CGFloat, seed: UInt32 = 1) {
-        self.item = item
-        self.tint = tint
-        self.seedValue = seed
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 76))
-        wantsLayer = true
-
-        // 文字不再用 NSTextField：draw 里分三层画成凿进木头的刻痕
-        // 黄铜小圆钮：悬停才浮出来，不破坏木板的整体感
-        deleteButton.title = "×"
-        deleteButton.font = NSFont.systemFont(ofSize: 11, weight: .bold)
-        deleteButton.isBordered = false
-        deleteButton.wantsLayer = true
-        deleteButton.layer?.backgroundColor = NSColor(calibratedRed: 0.79, green: 0.62, blue: 0.28, alpha: 1).cgColor
-        deleteButton.layer?.cornerRadius = 8
-        deleteButton.contentTintColor = NSColor(calibratedRed: 0.22, green: 0.13, blue: 0.03, alpha: 1)
-        deleteButton.target = self
-        deleteButton.action = #selector(removeSelf)
-        deleteButton.toolTip = "摘下这条日程"
-        deleteButton.frame = NSRect(x: width - 62, y: 30, width: 16, height: 16)
-        deleteButton.alphaValue = 0
-        addSubview(deleteButton)
-    }
-
-    required init?(coder: NSCoder) { fatalError("PlankView 不支持从 nib 初始化") }
-
-    /// 线性同余伪随机：同一个 seed 每次重绘都得到同一块木头，不会闪
-    private func rnd(_ state: inout UInt32) -> CGFloat {
-        state = state &* 1664525 &+ 1013904223
-        return CGFloat(state) / CGFloat(UInt32.max)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let w = bounds.width
-        let body = NSRect(x: 0, y: 7, width: w, height: bounds.height - 10)
-
-        // 1) 底部外露的端面：比正面更深，带一点横切面的细纹
-        let edge = NSRect(x: 2, y: 3, width: w - 4, height: 12)
-        NSColor(calibratedRed: 0.22, green: 0.12, blue: 0.05, alpha: 1).setFill()
-        NSBezierPath(roundedRect: edge, xRadius: 2, yRadius: 2).fill()
-        var es = seedValue &+ 77
-        ctx.setStrokeColor(NSColor(calibratedRed: 0.55, green: 0.35, blue: 0.17, alpha: 0.28).cgColor)
-        ctx.setLineWidth(0.6)
-        for _ in 0..<28 {
-            let x = body.minX + rnd(&es) * body.width
-            ctx.move(to: CGPoint(x: x, y: edge.minY + 1))
-            ctx.addLine(to: CGPoint(x: x + 1.5, y: edge.maxY - 1))
-            ctx.strokePath()
-        }
-
-        // 2) 底色：纵向光照渐变（顶亮底暗），不是一层平板纯色
-        ctx.saveGState()
-        ctx.clip(to: body)
-        // 深胡桃木：比早期那版明显压暗，刻开的浅木芯字才跳得出来
-        let woodColors = [
-            NSColor(calibratedRed: 0.46, green: 0.27, blue: 0.12, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.40, green: 0.22, blue: 0.10, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.35, green: 0.19, blue: 0.08, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.22, green: 0.11, blue: 0.04, alpha: 1).cgColor,
-        ] as CFArray
-        if let woodGrad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                     colors: woodColors, locations: [0, 0.18, 0.72, 1]) {
-            ctx.drawLinearGradient(woodGrad,
-                                   start: CGPoint(x: 0, y: body.maxY),
-                                   end: CGPoint(x: 0, y: body.minY), options: [])
-        }
-
-        // 3) 低频色斑：木材天然的深浅色差
-        var bs = seedValue &+ 911
-        for _ in 0..<26 {
-            let cx = body.minX + rnd(&bs) * body.width
-            let cy = body.minY + rnd(&bs) * body.height
-            let rw = 24 + rnd(&bs) * 90
-            let rh = 3 + rnd(&bs) * 9
-            let dark = rnd(&bs) > 0.42
-            ctx.setFillColor((dark
-                ? NSColor(calibratedRed: 0.16, green: 0.08, blue: 0.03, alpha: 0.10)
-                : NSColor(calibratedRed: 0.75, green: 0.52, blue: 0.28, alpha: 0.09)).cgColor)
-            ctx.fillEllipse(in: NSRect(x: cx - rw / 2, y: cy - rh / 2, width: rw, height: rh))
-        }
-
-        // 4) 各向异性木纹：大量带轻微起伏的水平细线
-        var gs = seedValue
-        for _ in 0..<110 {
-            let y = body.minY + rnd(&gs) * body.height
-            let amp = 0.6 + rnd(&gs) * 3.4
-            let dark = rnd(&gs) > 0.38
-            let alpha = 0.05 + rnd(&gs) * 0.22
-            ctx.setStrokeColor((dark
-                ? NSColor(calibratedRed: 0.20, green: 0.10, blue: 0.04, alpha: alpha)
-                : NSColor(calibratedRed: 0.84, green: 0.62, blue: 0.36, alpha: alpha * 0.7)).cgColor)
-            ctx.setLineWidth(0.35 + rnd(&gs) * 1.1)
-            let wob = (rnd(&gs) - 0.5) * 2.2
-            ctx.move(to: CGPoint(x: body.minX, y: y))
-            ctx.addCurve(to: CGPoint(x: body.maxX, y: y + wob),
-                         control1: CGPoint(x: body.minX + body.width * 0.28, y: y - amp),
-                         control2: CGPoint(x: body.minX + body.width * 0.70, y: y + amp))
-            ctx.strokePath()
-        }
-
-        // 5) 导管孔：细短的竖向划痕
-        for _ in 0..<80 {
-            let x = body.minX + rnd(&gs) * body.width
-            let y = body.minY + rnd(&gs) * (body.height - 6)
-            ctx.setStrokeColor(NSColor(calibratedRed: 0.14, green: 0.07, blue: 0.02, alpha: 0.10 + rnd(&gs) * 0.14).cgColor)
-            ctx.setLineWidth(0.5)
-            ctx.move(to: CGPoint(x: x, y: y))
-            ctx.addLine(to: CGPoint(x: x, y: y + 1.5 + rnd(&gs) * 4))
-            ctx.strokePath()
-        }
-
-        // 6) 结疤：同心椭圆 + 周围木纹被顶开的绕流线
-        let kx = body.minX + body.width * (0.28 + rnd(&bs) * 0.44)
-        let ky = body.midY + (rnd(&bs) - 0.5) * 10
-        for k in stride(from: 5, through: 1, by: -1) {
-            let rx = CGFloat(k) * 4.2, ry = CGFloat(k) * 1.8
-            ctx.setStrokeColor(NSColor(calibratedRed: 0.15, green: 0.07, blue: 0.02, alpha: 0.16 + CGFloat(5 - k) * 0.07).cgColor)
-            ctx.setLineWidth(k == 1 ? 1.4 : 0.8)
-            ctx.strokeEllipse(in: NSRect(x: kx - rx, y: ky - ry, width: rx * 2, height: ry * 2))
-        }
-        for k in -3...3 where k != 0 {
-            let y = ky + CGFloat(k) * 5
-            let lift = CGFloat(3 - abs(k)) * 2
-            ctx.setStrokeColor(NSColor(calibratedRed: 0.18, green: 0.09, blue: 0.03, alpha: 0.20).cgColor)
-            ctx.setLineWidth(0.8)
-            ctx.move(to: CGPoint(x: kx - 42, y: y))
-            ctx.addQuadCurve(to: CGPoint(x: kx + 42, y: y), control: CGPoint(x: kx, y: y - lift))
-            ctx.strokePath()
-        }
-        ctx.restoreGState()
-
-        // 7) 倒角：顶缘高光、底缘暗边、左右压暗
-        ctx.setFillColor(NSColor(calibratedRed: 1.0, green: 0.86, blue: 0.64, alpha: 0.30).cgColor)
-        ctx.fill(NSRect(x: 2, y: body.maxY - 1.5, width: w - 4, height: 1.5))
-        ctx.setFillColor(NSColor(calibratedRed: 0.12, green: 0.06, blue: 0.02, alpha: 0.55).cgColor)
-        ctx.fill(NSRect(x: 2, y: body.minY, width: w - 4, height: 2))
-        for side in [CGFloat(0), w - 3] {
-            ctx.setFillColor(NSColor(calibratedRed: 0.14, green: 0.07, blue: 0.02, alpha: 0.28).cgColor)
-            ctx.fill(NSRect(x: side, y: body.minY, width: 3, height: body.height))
-        }
-
-        // 8) 左侧色条：日历颜色照旧用得上，做成嵌进木头的一小段铜边
-        ctx.setFillColor(NSColor(calibratedRed: 0.10, green: 0.05, blue: 0.02, alpha: 0.55).cgColor)
-        ctx.fill(NSRect(x: 48, y: body.minY + 10, width: 4, height: body.height - 20))
-        ctx.setFillColor(tint.cgColor)
-        ctx.fill(NSRect(x: 48.5, y: body.minY + 10.5, width: 3, height: body.height - 21))
-
-        // 9) 黄铜穿孔：径向高光 + 内孔阴影，绳子从这两点穿过
-        for x in [CGFloat(36), w - 36] {
-            let y = body.midY, r: CGFloat = 7.5
-            ctx.setFillColor(NSColor(calibratedRed: 0.10, green: 0.05, blue: 0.02, alpha: 0.7).cgColor)
-            ctx.fillEllipse(in: NSRect(x: x - r - 1, y: y - r - 1, width: r * 2 + 2, height: r * 2 + 2))
-            ctx.saveGState()
-            ctx.addEllipse(in: NSRect(x: x - r, y: y - r, width: r * 2, height: r * 2))
-            ctx.clip()
-            let colors = [
-                NSColor(calibratedRed: 0.98, green: 0.91, blue: 0.71, alpha: 1).cgColor,
-                NSColor(calibratedRed: 0.79, green: 0.62, blue: 0.28, alpha: 1).cgColor,
-                NSColor(calibratedRed: 0.30, green: 0.19, blue: 0.05, alpha: 1).cgColor,
-            ] as CFArray
-            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors,
-                                     locations: [0, 0.45, 1]) {
-                ctx.drawRadialGradient(grad,
-                                       startCenter: CGPoint(x: x - 2.4, y: y + 2.4), startRadius: 0,
-                                       endCenter: CGPoint(x: x, y: y), endRadius: r,
-                                       options: [])
-            }
-            ctx.restoreGState()
-            ctx.setFillColor(NSColor(calibratedRed: 0.10, green: 0.05, blue: 0.02, alpha: 1).cgColor)
-            ctx.fillEllipse(in: NSRect(x: x - 3.1, y: y - 3.1, width: 6.2, height: 6.2))
-        }
-
-        // 10) 刻字：三层叠加，像真正凿进木头的凹槽，而不是浮在表面的亮字
-        let timeText = item.allDay ? "全天" : Format.time(item.start)
-        let textY = (bounds.height - 20) / 2
-        drawCarved(timeText, in: NSRect(x: 58, y: textY, width: 76, height: 20),
-                   size: 12, weight: .medium)
-        drawCarved(item.title, in: NSRect(x: 138, y: textY, width: max(w - 240, 80), height: 22),
-                   size: 14, weight: .semibold)
-        drawCarved(item.calendar, in: NSRect(x: w - 152, y: textY + 1, width: 54, height: 19),
-                   size: 11, weight: .regular, align: .right)
-    }
-
-    /// 阴刻：凹槽上缘背光发暗、下缘被照亮，中间是被刻开的浅木芯色。
-    /// 三层各错开 1pt，加上一点烙焦描边，才有「刻进去」的体积感。
-    private func drawCarved(_ text: String, in rect: NSRect,
-                            size: CGFloat, weight: NSFont.Weight,
-                            align: NSTextAlignment = .left) {
-        guard !text.isEmpty else { return }
-        let font = NSFont.systemFont(ofSize: size, weight: weight)
-        let para = NSMutableParagraphStyle()
-        para.lineBreakMode = .byTruncatingTail
-        para.alignment = align
-        let shown = clipped(text, to: rect.width, font: font)
-
-        func attrs(_ color: NSColor) -> [NSAttributedString.Key: Any] {
-            [
-                .font: font,
-                .foregroundColor: color,
-                .paragraphStyle: para,
-                .strokeColor: NSColor(calibratedRed: 0.12, green: 0.05, blue: 0.02, alpha: 0.45),
-                .strokeWidth: NSNumber(value: -0.5),
-            ]
-        }
-        // 暗层往上 1pt（上沿背光），亮层往下 1pt（下沿受光），主体压在中间
-        (shown as NSString).draw(in: rect.offsetBy(dx: 0, dy: 1),
-                                 withAttributes: attrs(NSColor(calibratedRed: 0.09, green: 0.035, blue: 0.01, alpha: 0.95)))
-        (shown as NSString).draw(in: rect.offsetBy(dx: 0, dy: -1),
-                                 withAttributes: attrs(NSColor(calibratedRed: 1.0, green: 0.87, blue: 0.65, alpha: 0.45)))
-        (shown as NSString).draw(in: rect,
-                                 withAttributes: attrs(NSColor(calibratedRed: 0.90, green: 0.79, blue: 0.60, alpha: 1)))
-    }
-
-    private func clipped(_ text: String, to width: CGFloat, font: NSFont) -> String {
-        let attrs: [NSAttributedString.Key: Any] = [.font: font]
-        if (text as NSString).size(withAttributes: attrs).width <= width { return text }
-        var s = text
-        while s.count > 1, (s as NSString).size(withAttributes: attrs).width > width {
-            s = String(s.dropLast())
-        }
-        return s.isEmpty ? "" : String(s.dropLast()) + "…"
-    }
-
-    // MARK: 悬停 / 右键动作（补齐清单里「拟物模式没有删除 / 顺延」这一项）
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let old = trackingArea { removeTrackingArea(old) }
-        let area = NSTrackingArea(rect: bounds,
-                                  options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
-                                  owner: self, userInfo: nil)
-        addTrackingArea(area)
-        trackingArea = area
-    }
-
-    override func mouseEntered(with event: NSEvent) { deleteButton.animator().alphaValue = 1 }
-    override func mouseExited(with event: NSEvent) { deleteButton.animator().alphaValue = 0 }
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let menu = NSMenu()
-        for (title, action) in [
-            ("推迟 30 分钟", #selector(shift30)),
-            ("推迟 1 小时", #selector(shift60)),
-            ("改到明天同一时间", #selector(shiftDay)),
-        ] {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            item.target = self
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-        let remove = NSMenuItem(title: "删除这条日程", action: #selector(removeSelf), keyEquivalent: "")
-        remove.target = self
-        menu.addItem(remove)
-        return menu
-    }
-
-    @objc private func removeSelf() { onDelete?() }
-    @objc private func shift30() { onShift?(1800) }
-    @objc private func shift60() { onShift?(3600) }
-    @objc private func shiftDay() { onShift?(86400) }
-}
-
 // MARK: - 自绘容器
 
 /// 从底部翻过来，让子视图按「从上往下」的顺序堆
@@ -4013,18 +2815,6 @@ final class BackdropView: NSView {
     private var effect: NSVisualEffectView?
     private var tint: NSView?
     private var sheen: CAGradientLayer?
-    private var metal: MetalPanelView?
-    private var gap: GapBlurView?
-
-    /// 全拟物：整套机身材质接管，不用系统毛玻璃。
-    /// 上半 y >= metalBottomY 是拉丝铝壳，下半是高斯模糊的柔光背板（木板间隙）。
-    var skeuoMode = false { didSet { applyClearRegion() } }
-    var metalBottomY: CGFloat = 446
-
-    /// 兼容旧的「列表区透明」开关；全拟物已改由 skeuoMode 接管，这里保留给调试用。
-    var clearBelowY: CGFloat = 0 {
-        didSet { applyClearRegion() }
-    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -4038,66 +2828,20 @@ final class BackdropView: NSView {
 
     override func layout() {
         super.layout()
-        applyClearRegion()
+        sheen?.frame = bounds
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         // 窗口尺寸变了（主界面 ↔ 设置），高光层要跟着铺满
-        applyClearRegion()
-    }
-
-    private func applyClearRegion() {
-        layer?.backgroundColor = NSColor.clear.cgColor
-        if skeuoMode {
-            // 系统玻璃整套收起来，换成一整块机身
-            effect?.isHidden = true
-            tint?.isHidden = true
-            metal?.frame = NSRect(x: 0, y: metalBottomY, width: bounds.width,
-                                  height: max(bounds.height - metalBottomY, 0))
-            gap?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: metalBottomY)
-            metal?.isHidden = false
-            gap?.isHidden = false
-            metal?.needsDisplay = true
-            gap?.needsDisplay = true
-            return
-        }
-        metal?.isHidden = true
-        gap?.isHidden = true
-        effect?.isHidden = false
-        tint?.isHidden = false
-        guard clearBelowY > 0 else {
-            effect?.frame = bounds
-            tint?.frame = bounds
-            sheen?.frame = bounds
-            return
-        }
-        let top = NSRect(x: 0, y: clearBelowY, width: bounds.width,
-                         height: max(bounds.height - clearBelowY, 0))
-        effect?.frame = top
-        tint?.frame = top
-        sheen?.frame = tint?.bounds ?? .zero
+        sheen?.frame = bounds
     }
 
     private func build() {
         wantsLayer = true
 
-        // 全拟物的机壳与柔光背板：先建好但默认隐藏，切换时只改显隐，不重建
-        let metal = MetalPanelView(frame: bounds)
-        metal.autoresizingMask = [.width, .height]
-        metal.isHidden = true
-        addSubview(metal)
-        self.metal = metal
-
-        let gap = GapBlurView(frame: bounds)
-        gap.autoresizingMask = [.width, .height]
-        gap.isHidden = true
-        addSubview(gap)
-        self.gap = gap
-
         if ProcessInfo.processInfo.environment["DSH_CAL_FLAT"] == "1" {
             update()
-            applyClearRegion()
             return
         }
 
@@ -4133,7 +2877,6 @@ final class BackdropView: NSView {
         self.sheen = sheen
 
         update()
-        applyClearRegion()
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -4170,17 +2913,6 @@ final class BackdropView: NSView {
 final class CardView: NSView {
     private let radius: CGFloat
     private let accent: NSColor?
-
-    /// 全拟物：玻璃装饰层整套收起，这块位置完全让给嵌在里面的磷光屏。
-    /// 不这么做的话，白玻璃 / 彩色光圈会从屏底下透出来，看起来就是「贴纸」。
-    var skeuoMode = false {
-        didSet {
-            guard skeuoMode != oldValue else { return }
-            for layer in [wash, shade, rim, topLine, glowHost] { layer.isHidden = skeuoMode }
-            layer?.shadowOpacity = skeuoMode ? 0 : (focused ? 0.16 : 0.10)
-            needsDisplay = true
-        }
-    }
 
     /// 正在输入时描边亮起来，一眼看得出焦点在哪
     var focused = false {
@@ -4653,9 +3385,6 @@ final class GlassButton: NSButton {
     private var pressed = false { didSet { needsDisplay = true } }
     private var tracking: NSTrackingArea?
 
-    /// 全拟物：这颗按钮换成车削黄铜件，文案由外部改成「挂上」
-    var skeuoMode = false { didSet { needsDisplay = true } }
-
     override init(frame: NSRect) {
         super.init(frame: frame)
         isBordered = false
@@ -4696,7 +3425,6 @@ final class GlassButton: NSButton {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if skeuoMode { drawBrass(dirtyRect); return }
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
         let path = NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2)
 
@@ -4727,59 +3455,6 @@ final class GlassButton: NSButton {
         let text = (title as NSString).size(withAttributes: attributes)
         (title as NSString).draw(
             at: NSPoint(x: (bounds.width - text.width) / 2, y: (bounds.height - text.height) / 2),
-            withAttributes: attributes
-        )
-    }
-
-    /// 银白阳极氧化铝按钮：厚边 + 纵向拉丝 + 顶部高光 + 深色压印字（参考稿里按钮在屏外、是独立银色件）
-    private func drawBrass(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let outer = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-        NSColor(calibratedRed: 0.32, green: 0.33, blue: 0.35, alpha: 1).setFill()
-        outer.fill()
-
-        let inner = rect.insetBy(dx: 1.3, dy: 1.3)
-        let path = NSBezierPath(roundedRect: inner, xRadius: 5, yRadius: 5)
-        ctx.saveGState()
-        path.addClip()
-        let alu = [
-            NSColor(calibratedRed: 0.70, green: 0.71, blue: 0.73, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.93, green: 0.94, blue: 0.95, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.99, green: 0.99, blue: 0.99, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.76, green: 0.77, blue: 0.79, alpha: 1).cgColor,
-        ] as CFArray
-        if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: alu,
-                              locations: [0, 0.24, 0.52, 1]) {
-            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: inner.maxY),
-                                   end: CGPoint(x: 0, y: inner.minY), options: [])
-        }
-        var rng = SkeuoRng(state: 0x7b31c4d2)
-        var x = inner.minX
-        while x < inner.maxX {
-            let v = rng.next()
-            ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.02 + v * 0.05).cgColor)
-            ctx.setLineWidth(0.5)
-            ctx.move(to: CGPoint(x: x, y: inner.minY))
-            ctx.addLine(to: CGPoint(x: x, y: inner.maxY))
-            ctx.strokePath()
-            x += 1.4 + rng.next() * 1.8
-        }
-        ctx.setFillColor(NSColor.white.withAlphaComponent(pressed ? 0.14 : 0.34).cgColor)
-        ctx.fill(NSRect(x: inner.minX + 4, y: inner.maxY - 2, width: inner.width - 8, height: 1.2))
-        ctx.restoreGState()
-
-        NSColor(calibratedRed: 0.45, green: 0.46, blue: 0.48, alpha: 1).setStroke()
-        path.lineWidth = 0.8
-        path.stroke()
-
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font ?? NSFont.systemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: NSColor(calibratedRed: 0.20, green: 0.21, blue: 0.23, alpha: 1),
-        ]
-        let text = (title as NSString).size(withAttributes: attributes)
-        (title as NSString).draw(
-            at: NSPoint(x: (bounds.width - text.width) / 2, y: (bounds.height - text.height) / 2 - 0.5),
             withAttributes: attributes
         )
     }
