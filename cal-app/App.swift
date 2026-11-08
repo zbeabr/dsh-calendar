@@ -669,6 +669,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         return UserDefaults.standard.string(forKey: "appearanceStyle") == "skeuo"
     }()
     private var skeuoContainer: NSView?
+    /// 滚轮事件监视器 + 合批缓冲，见 installScrollForwarder()
+    private var scrollMonitor: Any?
+    private var scrollAccum: CGFloat = 0
+    private var scrollTimer: Timer?
     private var skeuoWebView: WKWebView?
     private var skeuoSyncTimer: Timer?
     private var skeuoLastPayload = ""
@@ -2427,6 +2431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// `--snapshot <path>`：把窗口内容渲染成 PNG，用于自检界面（无需录屏权限）。
     private func snapshotIfRequested() {
         let args = CommandLine.arguments
+        if args.contains("--scrollprobe") { runScrollProbe(); return }
         guard let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count else { return }
         let path = args[index + 1]
         let demo = ProcessInfo.processInfo.environment
@@ -2441,6 +2446,168 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             } else {
                 self.renderSnapshot(to: path)
                 NSApp.terminate(nil)
+            }
+        }
+    }
+
+    /// 一次性滚动诊断（`--scrollprobe`）。
+    ///
+    /// 为什么要打两套数：页面说「我有 1135px 内容」，不等于 WKWebView 的滚动视图
+    /// 也这么认为。真正决定能不能滚的是**原生滚动视图**的 documentView 尺寸；
+    /// 它若始终等于视口高度，滚轮就会被判成「无处可滚」直接丢弃，
+    /// 而页面侧看起来一切正常 —— 这正是「有内容却一点都滚不动」的典型形态。
+    /// 把一个合成滚轮事件**直接**交给 WebView（不走系统事件 tap，不需要辅助功能权限）。
+    /// 用来回答一个非此即彼的问题：WebView 到底会不会处理滚动。
+    /// 坐标必须落在列表区，否则事件命中标题栏，那里本来就不该滚。
+    private func feedWheel(to web: WKWebView, delta: Int32, times: Int) {
+        var cgPoint = CGPoint.zero
+        if let window {
+            let inWindow = NSPoint(x: window.frame.width / 2, y: window.frame.height * 0.35)
+            let onScreen = window.convertPoint(toScreen: inWindow)
+            let screenH = NSScreen.screens.first?.frame.height ?? 0
+            cgPoint = CGPoint(x: onScreen.x, y: screenH - onScreen.y)
+        }
+        self.probeLog("PROBE feedPoint=\(cgPoint)")
+        for _ in 0..<times {
+            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                   wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0) else { continue }
+            cg.location = cgPoint          // 必须在转成 NSEvent 之前设好
+            guard let event = NSEvent(cgEvent: cg) else { continue }
+            web.scrollWheel(with: event)
+        }
+    }
+
+    /// 把合成滚轮事件塞进 App 的事件队列，让它走完整的分发链路
+    /// （队列 → 本地监视器 → 命中测试 → 视图）。这是唯一能模拟真实滚轮、
+    /// 又不需要辅助功能权限的做法；`web.scrollWheel(...)` 直接调用绕过了监视器，
+    /// 测不出真实链路。
+    private func postWheelEvent() {
+        var point = CGPoint(x: 400, y: 400)
+        if let window {
+            let inWindow = NSPoint(x: window.frame.width / 2, y: window.frame.height * 0.35)
+            let onScreen = window.convertPoint(toScreen: inWindow)
+            point = CGPoint(x: onScreen.x, y: (NSScreen.screens.first?.frame.height ?? 0) - onScreen.y)
+        }
+        for _ in 0..<3 {
+            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                   wheelCount: 1, wheel1: -100, wheel2: 0, wheel3: 0) else { continue }
+            cg.location = point
+            if let event = NSEvent(cgEvent: cg) { NSApp.postEvent(event, atStart: false) }
+        }
+        self.probeLog("PROBE posted 3 wheel events")
+    }
+
+    /// 递归找出视图树里的所有 NSScrollView。
+    /// 不用 `value(forKey: "scrollView")`：那会抛 Objective-C 异常，
+    /// Swift 的 do/catch 接不住，整个进程当场退出（第一次探针就是这么崩的）。
+    private static func collectScrollViews(_ view: NSView) -> [NSScrollView] {
+        var out: [NSScrollView] = []
+        if let sv = view as? NSScrollView { out.append(sv) }
+        for sub in view.subviews { out.append(contentsOf: collectScrollViews(sub)) }
+        return out
+    }
+
+    /// 诊断输出走 stderr：stdout 是块缓冲，进程被 terminate 时会把没来得及刷的内容丢掉，
+    /// 前几次「明明执行了却没有输出」就是这么来的。
+    private func probeLog(_ line: String) {
+        FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
+    }
+
+    private func runScrollProbe() {
+        let env = ProcessInfo.processInfo.environment
+        let delay = env["DSH_CAL_SNAPSHOT_DELAY"].flatMap(Double.init) ?? 7
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            defer { DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { NSApp.terminate(nil) } }
+            guard let web = self.skeuoWebView else { self.probeLog("PROBE: no skeuoWebView"); return }
+            self.probeLog("PROBE winFrame=\(self.window?.frame ?? .zero)")
+            self.probeLog("PROBE contentBounds=\(self.window?.contentView?.bounds ?? .zero)")
+            self.probeLog("PROBE webFrame=\(web.frame)")
+            let svs = Self.collectScrollViews(web)
+            self.probeLog("PROBE scrollViewCount=\(svs.count)")
+            for inner in svs {
+                self.probeLog("PROBE SV class=\(type(of: inner)) bounds=\(inner.bounds) "
+                    + "docFrame=\(inner.documentView?.frame ?? .zero) "
+                    + "contentSize=\(inner.contentSize) "
+                    + "hasV=\(inner.hasVerticalScroller) "
+                    + "elast=\(inner.verticalScrollElasticity.rawValue) "
+                    + "originY=\(inner.documentView?.bounds.origin.y ?? -1)")
+            }
+            let js = """
+            (function(){
+              var d=document.documentElement, b=document.body;
+              var se=document.scrollingElement||d;
+              var pa=document.querySelector('.plank-area');
+              var aw=document.querySelector('.app-window');
+              return JSON.stringify({
+                inner:[window.innerWidth,window.innerHeight],
+                se:[se.scrollHeight,se.clientHeight,se.scrollTop],
+                html:[d.scrollHeight,d.clientHeight,d.offsetHeight],
+                body:[b.scrollHeight,b.clientHeight,b.offsetHeight],
+                pa:pa?[pa.scrollHeight,pa.clientHeight,pa.offsetHeight]:null,
+                aw:aw?[aw.scrollHeight,aw.clientHeight,aw.offsetHeight]:null,
+                htmlOF:getComputedStyle(d).overflow,
+                bodyOF:getComputedStyle(b).overflow,
+                htmlH:getComputedStyle(d).height,
+                bodyH:getComputedStyle(b).height,
+                slots:document.querySelectorAll('.slot').length,
+                scrollTest:(function(){
+                  var v0=window.scrollY;
+                  window.scrollTo(0,300);
+                  var v1=window.scrollY;
+                  window.scrollTo(0,v0);
+                  var t0=se.scrollTop; se.scrollTop=300;
+                  var t1=se.scrollTop; se.scrollTop=t0;
+                  return [v0,v1,t0,t1];
+                })()
+              });
+            })()
+            """
+            web.evaluateJavaScript(js) { result, error in
+                self.probeLog("PROBE JS=\(result ?? "nil")")
+                if let error { self.probeLog("PROBE ERR=\(error)") }
+                // 决定性一步：直接给 WebView 喂一个滚轮事件，看页面会不会动。
+                //   - 页面动  → WKWebView 会处理滚动，问题只是事件没送到它手上
+                //   - 页面不动 → 这个 WKWebView 不接管文档级滚动，必须改用内层滚动容器
+                // 不经过系统事件 tap，所以不需要辅助功能权限。
+                web.evaluateJavaScript("                window.scrollY")
+                // 决定性一步：直接给 WebView 喂滚轮事件，看它会不会到页面。
+                //   页面收到 wheel 且滚动 → 内层容器滚动可行
+                //   页面收到 wheel 但不滚 → 命中测试/坐标问题
+                //   页面收不到       → WKWebView 整个不接管滚轮，只能在原生层自己转发
+                // 不经过系统事件 tap，所以不需要辅助功能权限。
+                web.evaluateJavaScript("""
+                window.__wc = 0;
+                window.__sc = 0;
+                addEventListener('wheel', function(){ window.__wc++; }, {passive:true});
+                var _orig = window.dshScroll;
+                window.dshScroll = function(d){ window.__sc++; return _orig.apply(this, arguments); };
+                """) { _, _ in
+                    web.evaluateJavaScript("window.scrollY") { before, _ in
+                        let y0 = (before as? NSNumber)?.doubleValue ?? -1
+                        self.feedWheel(to: web, delta: -80, times: 6)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                            web.evaluateJavaScript("JSON.stringify([window.__wc, window.__sc, window.scrollY])") { a, _ in
+                                self.probeLog("PROBE nativeWheel y0=\(y0) wc/sc/y=\(a ?? "nil")")
+                                // 对照：走 Swift 监视器那条路（JS 驱动）会不会滚
+                                web.evaluateJavaScript("window.dshScroll && window.dshScroll(120)") { _, _ in
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                                        web.evaluateJavaScript("JSON.stringify(window.scrollY)") { b, _ in
+                                            self.probeLog("PROBE jsScroll y1=\(b ?? "nil")")
+                                            // 第三项：走真实事件队列 → local monitor → dshScroll，
+                                            // 和用户滚轮走的是同一条路。
+                                            self.postWheelEvent()
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+                                                web.evaluateJavaScript("JSON.stringify([window.__sc, window.scrollY])") { c, _ in
+                                                    self.probeLog("PROBE monitorPath sc/y=\(c ?? "nil")")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -4359,12 +4526,54 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         }
         if skeuoMode {
             window?.contentView = ensureSkeuoContainer()
+            installScrollForwarder()
             startSkeuoSync()
         } else {
             skeuoSyncTimer?.invalidate()
             skeuoSyncTimer = nil
             window?.contentView = shell
         }
+    }
+
+    /// 滚轮转发：这个 WKWebView 收不到滚轮事件（实测直接喂 6 次 scrollWheel，
+    /// 页面里的 wheel 计数器始终是 0），它也没有可用的原生滚动视图
+    /// （视图树里一个 NSScrollView 都找不到）。但 window.scrollTo 是好的，
+    /// 所以滚动只能由原生截下来、交给页面执行。
+    ///
+    /// 用**本地事件监视器**而不是重写某个视图的 scrollWheel：
+    /// 监视器在事件分发之前执行，不管命中哪个子视图都能拿到，不受 hitTest 结构影响。
+    /// 上一版重写容器的 scrollWheel 就吃过这个亏 —— 事件根本到不了那里。
+    /// 事件本身继续往下传，不吞、不 preventDefault，页面滚动完全由 JS 做。
+    private func installScrollForwarder() {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, self.skeuoMode else { return event }
+            if let w = event.window, w !== self.window { return event }
+            // 触控板是精确设备，delta 就是点数；老式滚轮一格按 ~12px 折算
+            let raw = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 12
+            guard abs(raw) > 0.01 else { return event }
+            self.scrollAccum += raw
+            self.flushScrollSoon()
+            // 吞掉事件：这个 WebView 拿到滚轮也不会滚（实测两次都是 0），
+            // 但如果哪天真滚了，就会和上面的 JS 滚动叠成双倍。只留一个源。
+            return nil
+        }
+    }
+
+    /// 把同一轮 runloop 里的多个滚轮事件合批成一次 JS 调用，避免每帧十几次 IPC。
+    private func flushScrollSoon() {
+        guard scrollTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.008, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.scrollTimer = nil
+            let dy = self.scrollAccum
+            self.scrollAccum = 0
+            guard abs(dy) > 0.01, let web = self.skeuoWebView else { return }
+            // NSEvent 的 scrollingDeltaY 为正表示内容向上移，对应 scrollTop 减小
+            web.evaluateJavaScript("window.dshScroll && window.dshScroll(\(-Double(dy)))") { _, _ in }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        scrollTimer = timer
     }
 
     private func ensureSkeuoContainer() -> NSView {

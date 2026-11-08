@@ -1681,6 +1681,32 @@ window.dshSwing = function(v){
 };
 window.dshChips = renderChips;
 
+/* ── 滚轮：由 Swift 侧截下来，这里只负责把位移平滑地追上去 ──
+   为什么不在页面里监听 wheel：实测这个 WKWebView 根本收不到滚轮事件
+   （直接给 WebView 喂 6 次 scrollWheel，页面里 wheel 计数器始终是 0），
+   它也没有可用的原生滚动视图，所以「整页文档滚动」这条路在 App 里不通。
+   但 window.scrollTo 是好的（设 300 读回 300），所以改由原生截事件、JS 执行。
+   这里留一点追赶系数：滚轮事件是按系统刷新率离散来的，直接 scrollTo 会一顿一顿。 */
+(function(){
+  let target = null, raf = 0;
+  function scroller(){ return document.scrollingElement || document.documentElement; }
+  function step(){
+    const el = scroller();
+    const d = target - el.scrollTop;
+    if (Math.abs(d) < 0.5){ window.scrollTo(0, target); raf = 0; return; }
+    window.scrollTo(0, el.scrollTop + d * 0.34);
+    raf = requestAnimationFrame(step);
+  }
+  window.dshScroll = function(dy){
+    if (typeof dy !== 'number' || !isFinite(dy)) return;
+    const el = scroller();
+    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (target === null) target = el.scrollTop;
+    target = Math.max(0, Math.min(max, target + dy));
+    if (!raf) raf = requestAnimationFrame(step);
+  };
+})();
+
 render(-1);
 
 /* 首屏先出来，再烘焙木纹：16 条纹理有几千笔路径，不能挡在启动路径上。
