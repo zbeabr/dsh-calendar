@@ -256,9 +256,10 @@ body{
     0 0 22px rgba(40,230,100,.20);
 }
 .well input::placeholder{color:#3c7a52;text-shadow:none}
+/* 输入槽加高到 94 之后，按钮也得跟着长，否则像贴在一条缝旁边的纽扣 */
 .add-btn{
-  width:66px;height:46px;border-radius:6px;border:1px solid #565656;cursor:pointer;
-  font:inherit;font-size:12px;font-weight:600;color:#333;
+  width:84px;height:94px;flex:none;border-radius:6px;border:1px solid #565656;cursor:pointer;
+  font:inherit;font-size:13.5px;font-weight:600;letter-spacing:1px;color:#333;
   background:linear-gradient(180deg,#fafafa,#d2d2d2 55%,#adadad);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.95),0 2px 3px rgba(0,0,0,.35);
   text-shadow:0 1px 0 rgba(255,255,255,.7);
@@ -323,13 +324,25 @@ body{
   -webkit-backdrop-filter:blur(20px) saturate(.82);
   background:linear-gradient(180deg,rgba(58,55,51,.38) 0%,rgba(40,38,35,.58) 100%);
 }
-.ropes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+/* 麻绳拆成「一段间隙一条」。
+   以前是一整张画好就不动的静态 SVG：木板被甩得乱晃，绳子纹丝不动，
+   两样东西根本不是一个物体。拆开之后每段绳子的两端分别挂在相邻两块木板上，
+   木板一动，绳子就跟着倾斜 —— 这才是「串在绳上的木板」该有的样子。 */
+.ropes{position:absolute;inset:0;pointer-events:none;z-index:0}
+.rope-seg{
+  position:absolute;width:5px;margin-left:-2.5px;transform-origin:50% 0;
+  border-radius:2px;
+  background:
+    repeating-linear-gradient(26deg,rgba(60,40,17,.5) 0 1.3px,transparent 1.3px 3.6px),
+    linear-gradient(90deg,#563a1a 0%,#8a6a3f 24%,#d2ae73 47%,#a37f4d 72%,#4a3116 100%);
+  box-shadow:1px 1px 2px rgba(0,0,0,.4);
+}
 .slot{position:relative;height:82px;z-index:1}   /* 54 板 + 28 透明间隙 */
 .plank{
   position:absolute;left:0;top:0;width:100%;height:54px;
   border-radius:3px;
   transform-origin:50% 0;
-  transition:transform .5s cubic-bezier(.22,.8,.3,1);
+  /* 不加 transition：角度由 JS 逐帧写，过渡会和逐帧插值打架，看起来一卡一卡 */
   box-shadow:0 9px 16px rgba(24,14,5,.42),0 2px 3px rgba(0,0,0,.3);
 }
 .plank .base{
@@ -417,13 +430,14 @@ body{
   box-shadow:0 1px 2px rgba(0,0,0,.5);
 }
 .plank:hover .del{opacity:1}
-.plank.new{animation:hang .6s cubic-bezier(.2,1.4,.4,1)}
-@keyframes hang{0%{transform:translateY(-26px) rotate(-3deg);opacity:0}60%{transform:rotate(1.4deg);opacity:1}100%{transform:rotate(0)}}
 /* 摘下的一块自己掉落淡出，其它木板原地不动 */
 .slot.out{transition:transform .3s cubic-bezier(.4,0,.7,1),opacity .3s ease;pointer-events:none;
   transform:translateY(-22px) rotate(-8deg);opacity:0}
-/* 摆动期间由 JS 逐帧写角度，这里必须撤掉过渡，否则两套插值互相打架，看起来反而一顿一顿 */
-.swinging .plank{transition:none}
+/* 只有摆动期间才把木板提到独立合成层：此后逐帧只改 transform，走 GPU 合成，
+   不再重绘木纹和阴影。停下立刻撤掉（.awake 摘掉），否则常驻图层反而吃显存、
+   拖慢滚动 —— 这是 will-change 的标准用法：动画前加、结束撤。 */
+#planks.awake .plank{will-change:transform}
+#planks.awake .rope-seg{will-change:transform}
 /* 轻拟物对照：纯色木板，用来直接对比材质差别 */
 .light-mode .plank .noise,
 .light-mode .plank .blotch,
@@ -627,7 +641,7 @@ html,body{height:100%!important;overflow:hidden!important}
 
     <!-- 列表区没有任何背景 -->
     <div class="plank-area" id="planks">
-      <svg class="ropes" id="ropes" preserveAspectRatio="none"></svg>
+      <div class="ropes" id="ropes"></div>
     </div>
   </div>
 
@@ -709,19 +723,51 @@ function knotSVG(i){
   return '<svg class="knot" viewBox="0 0 ' + W + ' ' + PH + '" preserveAspectRatio="none">' + out + '</svg>';
 }
 
-/* 麻绳：多股捻线，只在木板间隙里露出来 */
-function drawRopes(n){
-  const total = n * (PH + GAP) + 16;
-  const svg = document.getElementById('ropes');
-  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + total);
-  let out = '';
-  [36, W - 36].forEach(function(x){
-    out += '<path d="M' + x + ' 0 L' + x + ' ' + total + '" stroke="#3a2510" stroke-width="6" opacity=".28" transform="translate(2 3)"/>';
-    out += '<path d="M' + x + ' 0 L' + x + ' ' + total + '" stroke="#8a6a3f" stroke-width="5"/>';
-    out += '<path d="M' + x + ' 0 L' + x + ' ' + total + '" stroke="#d2ae73" stroke-width="1.4" opacity=".85" transform="translate(-1.3 0)"/>';
-    out += '<path d="M' + x + ' 0 L' + x + ' ' + total + '" stroke="#4e3418" stroke-width="4.6" stroke-dasharray="1.1 2.6" opacity=".42"/>';
+/* ---------- 麻绳：按「每段间隙一条」建出来 ----------
+   以前的绳子是一整张画好就不动的静态 SVG，木板被甩得乱晃它纹丝不动。
+   现在每段绳子只跨一条间隙，两端分别挂在相邻两块木板上：
+   木板一动，绳子就被拉着倾斜，看起来才是「串在绳上的木板」。
+   建绳子只在重排（新增/删除/改窗口大小）时做一次，动画期间只写 transform。 */
+const ropeBox = document.getElementById('ropes');
+let segs = [];            // [{els:[左,右], top, h}]
+let plankEls = [];        // 与 nodes 一一对应的 .plank 元素
+
+function buildRopes(){
+  const area = document.getElementById('planks');
+  const list = Array.prototype.slice.call(area.querySelectorAll('.slot:not(.out)'));
+  ropeBox.innerHTML = '';
+  segs = [];
+  const n = list.length;
+  if (!n){ ropeBox.style.height = '0px'; return; }
+
+  const right = Math.max(60, W - 36);
+  const lastTop = list[n - 1].offsetTop || 0;
+  // 末段一直垂到列表底部；列表比窗口短时也留一截，别让绳子凭空断掉
+  const bottom = Math.max(area.scrollHeight, lastTop + PH + 40);
+  ropeBox.style.height = bottom + 'px';
+
+  // 段 0：挂杆 → 第一块木板；段 i：前一块下沿 → 本块上沿；末段：最后一块下沿 → 底
+  const gaps = [];
+  for (let i = 0; i < n; i += 1){
+    const top = list[i].offsetTop || 0;
+    const prevBottom = i === 0 ? 0 : (list[i - 1].offsetTop || 0) + PH;
+    gaps.push([prevBottom, top]);
+  }
+  gaps.push([lastTop + PH, bottom]);
+
+  gaps.forEach(function(g){
+    const h = Math.max(2, g[1] - g[0]);
+    const els = [36, right].map(function(x){
+      const el = document.createElement('div');
+      el.className = 'rope-seg';
+      el.style.left = x + 'px';
+      el.style.top = g[0] + 'px';
+      el.style.height = h + 'px';
+      ropeBox.appendChild(el);
+      return el;
+    });
+    segs.push({ els: els, h: h });
   });
-  svg.innerHTML = out;
 }
 
 
@@ -799,7 +845,6 @@ function render(newIndex){
     if (!slot){
       slot = makeSlot(it, i);
       slotOf.set(it.uid, slot);
-      if (i === newIndex) slot.querySelector('.plank').classList.add('new');
     } else {
       fillSlot(slot, it);
     }
@@ -808,7 +853,15 @@ function render(newIndex){
     if (ref !== slot) area.insertBefore(slot, ref);
   });
 
-  drawRopes(items.length);
+  buildRopes();
+  rigSync();
+  paint();   // 新木板也要有初始倾角，不能等下一次摆动才绘图
+
+  // 刚挂上的那块轻荡一下，比原来那段写死的 CSS 入场动画自然
+  if (newIndex >= 0 && nodes[newIndex]){
+    nodes[newIndex].v += 34;
+    wake();
+  }
 }
 
 /* 识别结果：玻璃版那排胶囊的拟物对应物 */
@@ -831,62 +884,125 @@ function renderChips(list){
   });
 }
 
-/* ---------- 悬挂木板的摆动：真单摆，不是统一晃一下 ----------
-   每块木板 θ'' = -(g/L)·sinθ - c·θ'，requestAnimationFrame 逐帧积分。
-   摆长、阻尼、增益按编号错开，两块相邻木板连方向都相反，所以不会「整列一起动」。
-   拖窗口时 Swift 会持续推来横向速度 —— 相当于支点被来回抽动：
-   木板滞后、反向、过冲、回摆，都是一个挂着的东西该有的反应。 */
+/* ---------- 悬挂物理：一串木板穿在两根绳子上 ----------
+   做法对齐业界标准（Jakobsen 2001「位置约束 + Verlet」那一套做绳子的思路），
+   这里等价地离散成一条链：每块木板是绳上的一个质量点，相邻点由张力耦合，
+   各自还受单摆回复力 (g/L)·x 与空气阻尼。窗口被拖动时，所有质量点受到与
+   窗口加速度反向的惯性冲量 —— 绳子从挂杆往下依次被甩起来，越靠下的木板
+   摆得越慢、幅度越大，彼此还有相位差，不会再「整列一起动」。
+
+   性能上有三条硬规矩（这也是上一版卡死的原因）：
+   1. 逐帧只写 transform —— 只有它能走合成线程，不重绘木纹和阴影；
+   2. will-change 只在动画期间挂（.awake），停下立刻撤，不做常驻图层；
+   3. 固定步长 1/120 积分，一帧最多 6 个子步，掉帧时不会越积越乱。 */
 const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-const pen = new Map();            // uid -> {a, v, len, damp, gain}
-let rafId = 0, prevT = 0;
+const PX_PER_M = 0.0016;   // 1px 当 1.6mm：让摆长落在「看得出快慢差别」的尺度
+const TENSION = 26;        // 相邻质量点的耦合，决定波动沿绳子传播的快慢
+const DAMP = 2.9;          // 空气阻尼：约 1.6 秒收住。再小就像在晃个不停，还一直白烧 GPU
+const MAXDX = 14;          // 位移上限：再大就会在窗框边露出宽缝，看着像木板滑出去了
+const FIXED = 1 / 120;
 
-function stateOf(uid, index){
-  let s = pen.get(uid);
-  if (!s){
-    s = { a: 0, v: 0,
-          len: 0.82 + ((index * 37) % 11) / 26,
-          damp: 1.55 + ((index * 13) % 7) / 12,
-          gain: 0.9 + ((index * 29) % 9) / 14 };
-    pen.set(uid, s);
-  }
-  return s;
+const pen = new Map();     // uid -> {x, v, L}
+let order = [];            // 当前渲染顺序的 uid
+let nodes = [];            // 与 order 一一对应的质量点
+const tailNode = { x: 0, v: 0, L: 0.9 };
+let rafId = 0, lastT = 0, accT = 0, awake = false;
+let lastWinV = 0, lastWinT = 0;
+
+/* 把物理状态对齐到当前 DOM：新木板从静止开始，已有的保留当前位移，
+   免得列表一刷新，正在摆的木板突然顿一下。 */
+function rigSync(){
+  const area = document.getElementById('planks');
+  const list = Array.prototype.slice.call(area.querySelectorAll('.slot:not(.out)'));
+  order = list.map(function(el){ return el.dataset.uid; });
+  plankEls = list.map(function(el){ return el.querySelector('.plank'); });
+  nodes = order.map(function(uid, i){
+    let s = pen.get(uid);
+    if (!s){ s = { x: 0, v: 0, L: 0.2 }; pen.set(uid, s); }
+    const y = (list[i].offsetTop || 0) + PH / 2;
+    s.L = Math.max(0.06, y * PX_PER_M);
+    return s;
+  });
+  const h = parseFloat(ropeBox.style.height) || 600;
+  tailNode.L = Math.max(0.15, h * PX_PER_M);
+  const alive = new Set(order);
+  pen.forEach(function(_, uid){ if (!alive.has(uid)) pen.delete(uid); });
 }
 
-function tick(t){
-  rafId = 0;
-  if (!prevT) prevT = t;
-  const dt = Math.min(0.032, (t - prevT) / 1000);   // 掉帧时别让积分炸掉
-  prevT = t;
-  let live = false;
-  document.querySelectorAll('.plank').forEach(function(p, i){
-    const slot = p.closest('.slot');
-    if (!slot) return;
-    const s = stateOf(slot.dataset.uid, i);
-    const acc = -(9.8 / (s.len * 0.062)) * Math.sin(s.a) - s.damp * s.v;
+/* 一个子步：挂杆处位移恒为 0，中间用三点差分近似绳子张力 */
+function stepPhysics(dt){
+  const n = nodes.length;
+  if (!n) return;
+  for (let i = 0; i < n; i += 1){
+    const s = nodes[i];
+    const left = i === 0 ? 0 : nodes[i - 1].x;
+    const right = i === n - 1 ? tailNode.x : nodes[i + 1].x;
+    const acc = TENSION * (left - 2 * s.x + right) - (9.8 / s.L) * s.x - DAMP * s.v;
     s.v += acc * dt;
-    s.a += s.v * dt;
-    if (Math.abs(s.a) < 0.0016 && Math.abs(s.v) < 0.05){
-      s.a = 0; s.v = 0;
-      p.style.transform = 'rotate(' + baseTilt(i) + 'deg)';
-    } else {
-      live = true;
-      p.style.transform = 'rotate(' + (baseTilt(i) + s.a * 57.2958).toFixed(2) + 'deg)';
-    }
-  });
-  if (live) rafId = requestAnimationFrame(tick);
-  else { prevT = 0; document.body.classList.remove('swinging'); }
+    s.x += s.v * dt;
+    if (s.x > MAXDX || s.x < -MAXDX){ s.x = s.x > 0 ? MAXDX : -MAXDX; s.v = 0; }
+  }
+  const aT = TENSION * (nodes[n - 1].x - tailNode.x) - (9.8 / tailNode.L) * tailNode.x - DAMP * tailNode.v;
+  tailNode.v += aT * dt;
+  tailNode.x += tailNode.v * dt;
+  const cap = MAXDX * 1.6;
+  if (tailNode.x > cap || tailNode.x < -cap){ tailNode.x = tailNode.x > 0 ? cap : -cap; tailNode.v = 0; }
 }
 
-function kick(force){
-  if (reduced || !force) return;
-  document.body.classList.add('swinging');
-  document.querySelectorAll('.plank').forEach(function(p, i){
-    const slot = p.closest('.slot');
-    if (!slot) return;
-    const s = stateOf(slot.dataset.uid, i);
-    s.v += force * s.gain * (i % 2 ? 1 : -1);
-  });
-  if (!rafId) rafId = requestAnimationFrame(tick);
+/* 整帧唯一碰 DOM 的地方：只写 transform */
+function paint(){
+  let live = false;
+  for (let i = 0; i < nodes.length; i += 1){
+    const s = nodes[i];
+    if (Math.abs(s.x) > 0.12 || Math.abs(s.v) > 1.2) live = true;   // 阈值取肉眼看不出的量级
+    const el = plankEls[i];
+    if (el) el.style.transform =
+      'translate3d(' + s.x.toFixed(2) + 'px,0,0) rotate(' + baseTilt(i) + 'deg)';
+  }
+  for (let k = 0; k < segs.length; k += 1){
+    const seg = segs[k];
+    const xTop = k === 0 ? 0 : nodes[k - 1].x;
+    const xBot = k < nodes.length ? nodes[k].x : tailNode.x;
+    const ang = Math.atan2(xBot - xTop, seg.h) * 57.2958;
+    const tf = 'translate3d(' + xTop.toFixed(2) + 'px,0,0) rotate(' + ang.toFixed(2) + 'deg)';
+    seg.els[0].style.transform = tf;
+    seg.els[1].style.transform = tf;
+  }
+  return live;
+}
+
+function frame(t){
+  rafId = 0;
+  if (!lastT) lastT = t;
+  let dt = (t - lastT) / 1000;
+  lastT = t;
+  if (dt > 0.1) dt = 0.1;   // 切后台再回来，别让一次大 dt 把积分打爆
+  accT += dt;
+  let steps = 0;
+  while (accT >= FIXED && steps < 6){ stepPhysics(FIXED); accT -= FIXED; steps += 1; }
+  if (paint()) rafId = requestAnimationFrame(frame);
+  else settle();
+}
+
+/* 停稳：归零、撤掉图层、停掉 rAF。静止时这里不该再有任何每帧开销 */
+function settle(){
+  for (let i = 0; i < nodes.length; i += 1){ nodes[i].x = 0; nodes[i].v = 0; }
+  tailNode.x = 0; tailNode.v = 0;
+  paint();
+  awake = false;
+  accT = 0; lastT = 0; lastWinV = 0;
+  if (rafId){ cancelAnimationFrame(rafId); rafId = 0; }   // 别留一帧没跑完的回调
+  document.getElementById('planks').classList.remove('awake');
+}
+
+function wake(){
+  if (reduced || !nodes.length) return;
+  if (!awake){
+    awake = true;
+    document.getElementById('planks').classList.add('awake');   // 先提层再动，第一帧就不重绘
+    paint();
+  }
+  if (!rafId){ lastT = 0; rafId = requestAnimationFrame(frame); }
 }
 
 /* 右键顺延：与玻璃模式同一套后端动作 */
@@ -977,12 +1093,30 @@ window.dshRender = function(state){
 };
 window.dshSys = setSys;
 
-/* 原生窗口拖动时：Swift 每帧推来横向速度，这里换算成角速度冲量。
-   没有参数（老版本调用）时给一个固定轻推。 */
+/* 原生窗口拖动时 Swift 每帧推来窗口的横向速度（px/s）。
+   这里取它的变化量当加速度 —— 惯性冲量与加速度反向，这正是
+   「匀速移动时挂着的东西会自己站住、一加速减速才被甩起来」的原因。 */
 window.dshSwing = function(v){
-  const speed = typeof v === 'number' ? v : 0;
-  const force = Math.max(-1.5, Math.min(1.5, speed / 900));
-  kick(force || 0.55);
+  if (reduced) return;
+  if (typeof v !== 'number'){          // 老调用方式，给一个轻推
+    nodes.forEach(function(s, i){ s.v += 22 * (i % 2 ? 1 : -1); });
+    wake();
+    return;
+  }
+  const now = performance.now();
+  if (now - lastWinT > 240) lastWinV = 0;   // 拖动停过，重新起算
+  lastWinT = now;
+  const dv = Math.max(-4000, Math.min(4000, v - lastWinV));
+  lastWinV = v;
+  if (!dv) return;
+  // 惯性冲量：单位是 px/s。dv 是这一小段时间里窗口速度的变化，
+  // 系数把「手抖一下」量级（几百 px/s 的速度突变）换算成几 px 的可见位移。
+  const imp = Math.max(-120, Math.min(120, -dv * 0.04));
+  for (let i = 0; i < nodes.length; i += 1){
+    nodes[i].v += imp * (0.86 + ((i * 7) % 5) / 14);   // 极小的个体差异，破掉完全同步
+  }
+  tailNode.v += imp * 0.75;
+  wake();
 };
 window.dshChips = renderChips;
 
