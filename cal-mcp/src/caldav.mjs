@@ -240,7 +240,15 @@ export class CalDav {
 
     const calendars = [];
     for (const block of splitResponses(text)) {
-      if (!/<(?:\w+:)?calendar\b/u.test(block)) continue;
+      // 只有 resourcetype 里真的带 <calendar/> 才是日历集合。
+      // 原来的判断是 /<(?:\w+:)?calendar\b/，而 \b 在「calendar-color」的连字符前
+      // 也成立，于是 <calendar-color> 把日历根集合、收件箱、通知、发件箱一起放了进来。
+      // 它们 REPORT 回来是 403/404，界面上就成了「2 个日历读取失败（uni x、(未命名)）」——
+      // 报的其实是根集合和收件箱，跟用户的日历无关。
+      const resourcetype = /<(?:\w+:)?resourcetype\b[^>]*>([\s\S]*?)<\/(?:\w+:)?resourcetype>/iu.exec(block)?.[1] ?? '';
+      if (!/<(?:\w+:)?calendar(?:\s[^>]*)?\/>/u.test(resourcetype)) continue;
+      // 收发件箱在个别服务端也标成 calendar 类型，显式排除
+      if (/<(?:\w+:)?schedule-(?:inbox|outbox)\b/u.test(resourcetype)) continue;
       if (/VEVENT/u.test(block) === false && /supported-calendar-component-set/u.test(block)) continue;
       const href = firstHref(block, undefined, ['href']);
       if (!href) continue;

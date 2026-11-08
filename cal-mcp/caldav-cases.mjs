@@ -57,6 +57,10 @@ let port = 0;
 let brokenCalendar = null;
 // 打开后服务端在日历属性里带上颜色，用来验证业务层没有把 color 丢掉。
 let calendarColor = null;
+// 打开后 PROPFIND 里混进苹果真实会返回、但**不是日历**的四个集合：
+// 日历根集合（displayname 可以是任意值）、收件箱、通知、发件箱。
+// 它们都带 calendar-color，而旧的过滤条件会把 <calendar-color> 当成「日历」。
+let specialCollections = false;
 
 const escapeXmlText = (text) => text.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
 const unescapeXmlText = (text) => text.replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&amp;/gu, '&');
@@ -91,6 +95,29 @@ const CALENDARS = `<?xml version="1.0" encoding="UTF-8"?>
   </d:prop></d:propstat>
 </d:response></d:multistatus>`;
 
+/**
+ * 苹果真实账号里 PROPFIND 会返回、但并不是日历的集合。
+ * 每项：href、displayname、resourcetype 内层、REPORT 时的状态码。
+ * 状态码照搬实测值：根集合 403、收件箱 404、通知与发件箱 200。
+ */
+const SPECIALS = [
+  ['/u/', 'uni x', '<d:collection/>', 403],
+  ['/u/inbox/', '(未命名)', '<d:collection/><c:schedule-inbox/>', 404],
+  ['/u/notification/', '(未命名)', '<d:collection/><cs:notification xmlns:cs="http://calendarserver.org/ns/"/>', 200],
+  ['/u/outbox/', '(未命名)', '<d:collection/><c:schedule-outbox/>', 200],
+];
+
+const specialXml = () => SPECIALS.map(([href, displayname, resourcetype]) => `<d:response>
+  <d:href>${href}</d:href>
+  <d:propstat><d:prop>
+    <d:displayname>${escapeXmlText(displayname)}</d:displayname>
+    <d:resourcetype>${resourcetype}</d:resourcetype>
+    <c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set>
+    <cs:calendar-color xmlns:cs="http://calendarserver.org/ns/">#1C1C1EFF</cs:calendar-color>
+    <d:current-user-privilege-set><d:privilege><d:write/></d:privilege></d:current-user-privilege-set>
+  </d:prop></d:propstat>
+</d:response>`).join('');
+
 /** 打开 brokenCalendar 时，在日历列表里额外塞一个会返 500 的日历。 */
 const calendarsXml = (broken, color) => {
   const colorProp = color
@@ -98,7 +125,10 @@ const calendarsXml = (broken, color) => {
     : '';
   // 只给第一个日历加颜色属性；既有用例在 color 为 null 时拿到的响应与原来完全一致。
   const base = CALENDARS.replace('<d:current-user-privilege-set>', `${colorProp}<d:current-user-privilege-set>`);
-  if (!broken) return base;
+  // 特殊集合故意排在前面：根集合的 displayname 是「uni x」，一旦被当成日历，
+  // 界面上就会出现「2 个日历读取失败（uni x、(未命名)）」。
+  const head = specialCollections ? specialXml() : '';
+  if (!broken) return base.replace('<d:response>', `${head}<d:response>`);
   const extra = `<d:response>
   <d:href>/u/broken/</d:href>
   <d:propstat><d:prop>
@@ -136,6 +166,16 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'REPORT') {
+    // 特殊集合被当成日历去 REPORT 时的真实反应：根集合 403、收件箱 404。
+    // 这正是「2 个日历读取失败（uni x、(未命名)）」的来源。
+    if (specialCollections) {
+      const special = SPECIALS.find(([href]) => href === path);
+      if (special) {
+        res.writeHead(special[3], { 'content-type': 'text/plain' });
+        res.end(special[3] === 200 ? '' : 'not a calendar');
+        return;
+      }
+    }
     if (brokenCalendar && path === '/u/broken/') {
       res.writeHead(500, { 'content-type': 'text/plain' });
       res.end('internal error');
@@ -497,6 +537,37 @@ console.log(JSON.stringify({ partial: result.partial, failed: result.failed, sum
     }
   } finally {
     brokenCalendar = null;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ── 7.5 根集合 / 收发件箱 / 通知集合不是日历 ──────────────
+await check('日历根集合与收/发件箱不算日历：不查它们，也不报「读取失败」', async () => {
+  specialCollections = true;
+  const home = mkdtempSync(join(tmpdir(), 'dsh-special-'));
+  try {
+    const res = await runNode(`import { writeConfig } from ${JSON.stringify(STORE_URL)};
+import { listCalendars, listEvents } from ${JSON.stringify(TOOLS_URL)};
+const port = process.argv[1];
+writeConfig({ baseUrl: 'http://127.0.0.1:' + port + '/', username: 'u', timeZone: 'Asia/Shanghai' });
+const cals = await listCalendars();
+const events = await listEvents({ from: new Date(2026, 10, 1), to: new Date(2026, 10, 30) });
+console.log(JSON.stringify({
+  names: cals.calendars.map((c) => c.name),
+  partial: events.partial,
+  failed: events.failed,
+  summary: events.summary,
+}));`, home, [String(port)]);
+    if (res.code !== 0) throw new Error(`子进程退出 ${res.code}：${res.err}`);
+    const data = JSON.parse(res.out);
+    // 根集合（displayname「uni x」）和三个箱都在 PROPFIND 里，且都带 calendar-color，
+    // 只有 resourcetype 里真正带 <calendar/> 的那一个才算日历。
+    expect(data.names.join('、'), '测试', '日历名');
+    expect(data.partial, false, 'partial');
+    expect((data.failed ?? []).length, 0, '失败日历条数');
+    if (data.summary.includes('读取失败')) throw new Error(`不该提示读取失败：${data.summary}`);
+  } finally {
+    specialCollections = false;
     rmSync(home, { recursive: true, force: true });
   }
 });
