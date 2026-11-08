@@ -1488,12 +1488,33 @@ function render(newIndex){
   }
 }
 
+/* 把某一块木板带到眼前。
+   只在它不在视口里时才滚 —— 用户自己滚到哪就停在哪，别每次都把他拽走。 */
+function revealSlot(uid){
+  const slot = slotOf.get(uid);
+  if (!slot) return;
+  const r = slot.getBoundingClientRect();
+  const absTop = r.top + (window.scrollY || window.pageYOffset || 0);
+  const vh = window.innerHeight || 720;
+  const margin = 96;                       // 上方留出挂杆的位置，别让木板贴着顶边
+  if (r.top >= 0 && r.bottom <= vh - 24) return;
+  const y = Math.max(0, absTop - margin);
+  if (window.dshScrollTo) window.dshScrollTo(y);
+  else window.scrollTo(0, y);
+}
+
 /* 识别结果：玻璃版那排胶囊的拟物对应物 */
 function renderChips(list){
   const box = document.getElementById('chips');
   if (!box) return;
+  const wasOn = box.classList.contains('on');
   box.innerHTML = '';
-  if (!list || !list.length){ box.classList.remove('on'); return; }
+  if (!list || !list.length){
+    box.classList.remove('on');
+    // 这一排出现/消失会把下面的木板区顶上顶下，绳子必须跟着重新量
+    if (wasOn) rigSync();
+    return;
+  }
   list.forEach(function(c){
     const s = document.createElement('span');
     s.className = 'chip k-' + (c.kind || 'tag');
@@ -1506,6 +1527,7 @@ function renderChips(list){
   Array.prototype.slice.call(box.children).forEach(function(el){
     if (el.offsetLeft + el.offsetWidth > max) el.remove();
   });
+  if (!wasOn) rigSync();
 }
 
 /* ---------- 悬挂物理：一串木板穿在两根绳子上 ----------
@@ -1792,6 +1814,10 @@ function submit(){
     post({type:'submit', text:text});
     el.value = '';
     setSys('… 正在写入日历');
+    // 交出去之后这一句就不再是「正在输入的内容」了，小牌立刻撤掉，
+    // 免得写着写着还挂着上一句的识别结果
+    renderChips(null);
+    post({type:'parse', text:''});
   } else {
     const d = new Date(); d.setDate(d.getDate() + 1);
     items.unshift({uid:'demo' + Date.now(),
@@ -1804,6 +1830,25 @@ function submit(){
 }
 document.getElementById('add').addEventListener('click', submit);
 document.getElementById('phrase').addEventListener('keydown', function(e){ if (e.key === 'Enter') submit(); });
+
+/* 边打字边识别：把这一句推给原生，走和玻璃版同一个解析器，结果作为小牌推回来。
+   为什么不是页面自己解析：时间、地点、日历标签、顺延……那一整套判断都在 node 后端里，
+   页面再实现一份必然会和真写入的结果对不上（「小牌说 15:00，写进去是 16:00」）。
+   250ms 防抖和后端进程启动的开销对齐：打字快的时候只在停顿处解析一次。 */
+(function(){
+  const input = document.getElementById('phrase');
+  if (!input || !bridged) return;
+  let timer = 0, last = null;
+  input.addEventListener('input', function(){
+    clearTimeout(timer);
+    const text = input.value;
+    if (text === last) return;
+    timer = setTimeout(function(){
+      last = text;
+      post({type:'parse', text:text});
+    }, 250);
+  });
+})();
 
 /* 旧版立体红绿灯：悬停有符号反馈，点击真的关/最小化/缩放 */
 document.querySelectorAll('.lamps .lamp').forEach(function(el, i){
@@ -1825,15 +1870,23 @@ window.dshRender = function(state){
     }).join('\n');
     if (key !== lastEventKey){
       lastEventKey = key;
-      /* 滚动现在在页面（document）上，不在 #planks 里。
-         保存/恢复的位置也要跟着换，否则数据一变就弹回顶部。 */
-      const scroller = document.scrollingElement || document.documentElement;
-      const top = scroller.scrollTop;
+      /* 先认出「这一批里哪一块是新挂的」：刚写完日程，用户要看的就是它。
+         旧版这里固定传 -1，新木板哪怕挂上了，也在可视区外面（列表十几块、
+         窗口只有 720 高），看起来就像「什么都没发生」。 */
+      const known = new Set(items.map(function(it){ return it.uid; }));
+      const isEmpty = items.length === 0;      // 首屏：全是新的，别滚
       items = state.events.map(function(e){
         return {uid:e.uid, when:e.when, what:e.what, tag:e.tag};
       });
-      render(-1);
-      scroller.scrollTop = top;
+      let fresh = -1;
+      if (!isEmpty){
+        items.forEach(function(it, i){ if (fresh < 0 && !known.has(it.uid)) fresh = i; });
+      }
+      const scroller = document.scrollingElement || document.documentElement;
+      const top = scroller.scrollTop;
+      render(fresh);
+      if (fresh >= 0) revealSlot(items[fresh].uid);
+      else scroller.scrollTop = top;
     }
   }
   if (state.sys != null) setSys(state.sys);
@@ -1921,6 +1974,16 @@ window.dshChips = renderChips;
     if (target === null) target = el.scrollTop;
     target = Math.max(0, Math.min(max, target + dy));
     if (!raf) raf = requestAnimationFrame(step);
+  };
+  /* 直接定到某个位置（新木板出现时用）。
+     必须同时改 target：不然下一次滚轮会从旧的 target 起算，画面突然跳回去。 */
+  window.dshScrollTo = function(y){
+    if (typeof y !== 'number' || !isFinite(y)) return;
+    const el = scroller();
+    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+    target = Math.max(0, Math.min(max, y));
+    if (raf){ cancelAnimationFrame(raf); raf = 0; }
+    window.scrollTo(0, target);
   };
 })();
 

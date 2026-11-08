@@ -679,6 +679,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 最近一次识别出的胶囊，原样镜像一份推给拟物界面。
     /// 只读镜像：玻璃版的胶囊绘制与产品逻辑一行没动。
     private var lastChips: [[String: String]] = []
+    /// 拟物界面里正在输入的那句话。
+    /// 拟物模式的输入框是网页里的 `<input>`，不是玻璃版的 NSTextView ——
+    /// 它不会触发 textDidChange，所以解析只能用这份镜像判断「结果是不是还是当前这句」。
+    private var skeuoText = ""
+    /// 拟物界面的解析节流状态：一次解析要起一个 node 进程，不能每个按键都发。
+    private var parseInFlight = false
+    private var parseQueued = ""
+    /// 最近一次解析成功时对应的那句话。提交时拿它判断「能不能省掉再解析一遍」。
+    private var lastParsedText = ""
     private var appearanceMenuItem: NSMenuItem?
     /// 日历名 → 颜色，给每条日程配左侧色条
     private var calendarColors: [String: NSColor] = [:]
@@ -1819,6 +1828,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         Engine.call(parseArgs(snapshot, model: false)) { [weak self] result in
             guard let self, self.isCurrent(snapshot) else { return }
             self.applyPreview(result)
+            if case .success(let payload) = result, (payload["ok"] as? Bool) == true {
+                self.lastParsedText = snapshot
+            }
 
             // 规则结果可疑（缺地点、标题脏、残留时间词）就让本地模型兜一次；
             // 判定统一放在解析器里（needsModel），App 这边只消费，避免两处逻辑走偏。
@@ -2192,6 +2204,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         container.frame = NSRect(x: 0, y: 0, width: width, height: max(y, 44))
     }
 
+    /// 写入成功后先在本地把这条挂上，别让用户盯着不动的列表等 2.6 秒以上。
+    /// 只是占位：`refreshAgenda()` 会用服务端的结果整份覆盖，uid 相同不会重复。
+    private func insertLocal(uid: String, title: String, start: Date, end: Date,
+                             location: String?, calendar: String, allDay: Bool) {
+        guard !agenda.contains(where: { $0.uid == uid }) else { return }
+        agenda.append(AgendaItem(uid: uid, title: title, start: start, end: end,
+                                 location: location, calendar: calendar, allDay: allDay))
+        agenda.sort { $0.start < $1.start }
+        renderAgenda()
+        if skeuoMode { pushSkeuoState() }   // 不等 0.6s 轮询，木板立刻挂上去
+    }
+
     private func deleteItem(_ item: AgendaItem) {
         Engine.call(["rm", item.uid, "--json"]) { [weak self] result in
             guard let self else { return }
@@ -2288,6 +2312,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         statusLabel?.textColor = .secondaryLabelColor
         statusLabel?.stringValue = "正在写入…"
 
+        /* 打字时已经解析过一次了，同一句话不用再算一遍。
+           实测这一跳省掉 1.5 秒（进程启动），提交总耗时从 5.5 秒降到 4 秒左右。
+           手动挑过日历的话更简单：那句话里的 #标签 本来就不该覆盖手选。 */
+        if manualOverride || lastParsedText == snapshot {
+            send(snapshot, calendar: currentCalendar)
+            return
+        }
+
         // 提交前再解析一次：用户可能打完字立刻回车，防抖里的那次解析还没回来。
         // 这样句子里写的 #标签 一定生效，同时手动选过的标签优先级更高。
         Engine.call(parseArgs(snapshot, model: false)) { [weak self] result in
@@ -2317,8 +2349,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 let calendar = payload["calendar"] as? String ?? self.currentCalendar
                 self.input?.stringValue = ""
                 self.resetPreview(message: "")
+                self.lastParsedText = ""      // 输入框已经空了，这条缓存不再代表「当前这句」
+                self.skeuoText = ""
                 self.placeholderLabel?.isHidden = false
                 self.highlightUID = (payload["uid"] as? String) ?? (payload["id"] as? String)
+                /* 先本地插一条，再去核对。
+                   实测：写入成功后 `ls` 要 2.6 秒（14 个日历逐个拉），加上前面的解析，
+                   从按下回车到列表变化要 5~8 秒。这段时间里界面一动不动，
+                   用户看到的就是「挂上了但底下什么都没出现」。
+                   所以用写入返回的字段先插一条占位，`refreshAgenda()` 回来后再用
+                   服务端数据整份替换 —— 同 uid，不会重复，也不会留下假条目。 */
+                if let uid = payload["uid"] as? String,
+                   let title = payload["title"] as? String,
+                   let start = ISO.date(payload["start"] as? String ?? ""),
+                   let end = ISO.date(payload["end"] as? String ?? "") {
+                    self.insertLocal(uid: uid, title: title, start: start, end: end,
+                                     location: payload["location"] as? String,
+                                     calendar: calendar,
+                                     allDay: payload["allDay"] as? Bool ?? false)
+                }
                 self.refreshAgenda()
                 if (payload["queued"] as? Bool) == true {
                     self.pending = payload["pending"] as? Int ?? (self.pending + 1)
@@ -2433,6 +2482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         let args = CommandLine.arguments
         if args.contains("--scrollprobe") { runScrollProbe(); return }
         if args.contains("--hitprobe") { runHitProbe(); return }
+        if args.contains("--chipsprobe") { runChipsProbe(); return }
         guard let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count else { return }
         let path = args[index + 1]
         let demo = ProcessInfo.processInfo.environment
@@ -2511,7 +2561,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 诊断输出走 stderr：stdout 是块缓冲，进程被 terminate 时会把没来得及刷的内容丢掉，
     /// 前几次「明明执行了却没有输出」就是这么来的。
     private func probeLog(_ line: String) {
-        FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
+        // 带毫秒时间戳：判断「是引擎慢」还是「回调被主线程推迟」，全靠这个间隔
+        let t = ProcessInfo.processInfo.systemUptime
+        FileHandle.standardError.write(String(format: "[%.3f] %@\n", t, line).data(using: .utf8)!)
     }
 
     /// 一次性点击诊断（`--hitprobe`）。回答两件事：
@@ -2597,6 +2649,110 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             """) { res, err in
                 if let err = err { self.probeLog("HIT CLICK ERR \(err)") }
                 else { self.probeLog("HIT CLICK \(String(describing: res))") }
+            }
+        }
+    }
+
+    /// 一次性诊断（`--chipsprobe`）：拟物模式下「打字有没有得到识别结果」和
+    /// 「挂上之后木板列表有没有多一块」这两件事，分成两步取证。
+    ///
+    /// 关键是**只走真实链路**：往 DOM 里写值 + 派发 input 事件（模拟真实打字），
+    /// 让任何页面侧的监听自己跑起来；提交也调页面自己的 submit()，不旁路。
+    private func runChipsProbe() {
+        let env = ProcessInfo.processInfo.environment
+        let delay = env["DSH_CAL_SNAPSHOT_DELAY"].flatMap(Double.init) ?? 6
+        let sample = env["DSH_CAL_PROBE_TEXT"] ?? "明天下午三点在图书馆开会半小时"
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            defer { DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { NSApp.terminate(nil) } }
+            guard let web = self.skeuoWebView else { self.probeLog("CHIPS: no skeuoWebView"); return }
+            NSApp.activate(ignoringOtherApps: true)
+            self.window?.makeKeyAndOrderFront(nil)
+            self.probeLog("CHIPS start agenda=\(self.agenda.count) lastChips=\(self.lastChips.count)")
+
+            let type = """
+            (function(){
+              var i = document.getElementById('phrase');
+              i.focus();
+              i.value = \(String(reflecting: sample));
+              i.dispatchEvent(new Event('input', {bubbles:true}));
+              var c = document.getElementById('chips');
+              return JSON.stringify({value:i.value, chipsClass:c?c.className:'none', n:c?c.children.length:0});
+            })()
+            """
+            web.evaluateJavaScript(type) { res, err in
+                if let err = err { self.probeLog("CHIPS type ERR \(err)") }
+                else { self.probeLog("CHIPS typed \(String(describing: res))") }
+            }
+
+            // 页面打字之后，原生侧到底有没有收到解析请求、有没有算出 chips
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                self.probeLog("CHIPS after-type lastChips=\(self.lastChips.count) "
+                    + "\(self.lastChips.map { $0["text"] ?? "" })")
+                web.evaluateJavaScript("""
+                (function(){
+                  var c = document.getElementById('chips');
+                  return JSON.stringify({cls:c?c.className:'none', n:c?c.children.length:0,
+                    texts:[].slice.call(c?c.children:[]).map(function(e){return e.textContent;}),
+                    rect:c?[c.offsetWidth,c.offsetHeight]:null, sys:(document.getElementById('sysline')||{}).textContent,
+                    scrollY:Math.round(window.scrollY), docH:document.documentElement.scrollHeight});
+                })()
+                """) { res, err in
+                    if let err = err { self.probeLog("CHIPS read ERR \(err)") }
+                    else { self.probeLog("CHIPS dom \(String(describing: res))") }
+                    if let shot = ProcessInfo.processInfo.environment["DSH_CAL_CHIPS_SHOT"] {
+                        self.renderSkeuoSnapshot(to: shot) { }
+                    }
+                }
+            }
+
+            // 第二步：真走一遍提交链路。这一步会**真的写一条日历**，所以先记下已有 uid，
+            // 结束时把新增的那条删掉 —— 只有真走一遍才能知道「点了挂上到底发生了什么」。
+            let before = Set(self.agenda.map { $0.uid })
+            func snap(_ tag: String) {
+                web.evaluateJavaScript("""
+                JSON.stringify({planks:document.querySelectorAll('.plank').length,
+                  sys:(document.getElementById('sysline')||{}).textContent,
+                  scrollY:Math.round(window.scrollY),
+                  fresh:(function(){var s=[].slice.call(document.querySelectorAll('.slot')).filter(function(e){
+                      return (e.textContent||'').indexOf('开会')>=0;})[0];
+                    if(!s) return null; var r=s.getBoundingClientRect();
+                    return [Math.round(r.top),Math.round(r.bottom)];})()})
+                """) { res, err in
+                    if let err = err { self.probeLog("CHIPS \(tag) ERR \(err)") }
+                    else {
+                        self.probeLog("CHIPS \(tag) agenda=\(self.agenda.count) adding=\(self.isAdding) "
+                            + "status=\(self.statusLabel?.stringValue ?? "-") dom=\(String(describing: res))")
+                    }
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+                self.probeLog("CHIPS native input=\(self.input != nil) card=\(self.inputCard != nil) "
+                    + "addButton=\(self.addButton != nil) calendars=\(self.calendars.count) current=\(self.currentCalendar)")
+                web.evaluateJavaScript("window.submit(); 'submitted'") { res, err in
+                    if let err = err { self.probeLog("CHIPS submit ERR \(err)") }
+                    else { self.probeLog("CHIPS submit \(String(describing: res))") }
+                }
+            }
+            for (i, t) in [3.6, 5.4, 7.4].enumerated() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { snap("t\(i)") }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 9.0) {
+                let fresh = self.agenda.filter { !before.contains($0.uid) }
+                self.probeLog("CHIPS cleanup new=\(fresh.map { "\($0.uid):\($0.title)" })")
+                guard let item = fresh.first else {
+                    self.probeLog("CHIPS end (没有新事件，无需清理)")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { NSApp.terminate(nil) }
+                    return
+                }
+                Engine.call(["rm", item.uid, "--json"]) { res in
+                    if case .success(let p) = res {
+                        self.probeLog("CHIPS cleanup removed ok=\(p["ok"] ?? "-")")
+                    } else {
+                        self.probeLog("CHIPS cleanup FAILED \(res)")
+                    }
+                    self.probeLog("CHIPS end")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { NSApp.terminate(nil) }
+                }
             }
         }
     }
@@ -2914,6 +3070,17 @@ struct AgendaItem {
     let location: String?
     let calendar: String
     let allDay: Bool
+
+    init(uid: String, title: String, start: Date, end: Date,
+         location: String?, calendar: String, allDay: Bool) {
+        self.uid = uid
+        self.title = title
+        self.start = start
+        self.end = end
+        self.location = location
+        self.calendar = calendar
+        self.allDay = allDay
+    }
 
     init?(json: [String: Any]) {
         guard let uid = json["uid"] as? String,
@@ -4733,6 +4900,44 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         pushSkeuoState()
     }
 
+    /// 拟物界面的「边打字边识别」。
+    ///
+    /// 一次解析要起一个 node 子进程（实测 1.5 秒左右，规则本身只占 0.1 秒，
+    /// 剩下全是进程启动），所以不能让每个按键都发一次：
+    /// 同一时刻只允许一个在飞，期间来了新的就只留最后一句，回来后再补跑。
+    /// 否则快速打字会堆出四五个进程，最后返回顺序还可能乱。
+    private func requestSkeuoParse(_ text: String) {
+        skeuoText = text
+        if text.isEmpty {
+            parseQueued = ""
+            lastChips = []
+            pushSkeuoState()
+            return
+        }
+        if parseInFlight { parseQueued = text; return }
+        runSkeuoParse(text)
+    }
+
+    private func runSkeuoParse(_ text: String) {
+        parseInFlight = true
+        Engine.call(parseArgs(text, model: false)) { [weak self] result in
+            guard let self else { return }
+            self.parseInFlight = false
+            // 回来时用户可能已经改了，旧结果直接丢：宁可少一次反馈，也不能让
+            // 小牌显示的是上一句的时间
+            if self.skeuoText == text {
+                self.applyPreview(result)     // 顺带更新 lastChips / 上色 / 日历标签 / 冲突提示
+                if case .success(let payload) = result, (payload["ok"] as? Bool) == true {
+                    self.lastParsedText = text
+                }
+                self.pushSkeuoState()         // 别等 0.6s 轮询，打完字立刻看到小牌
+            }
+            let next = self.parseQueued
+            self.parseQueued = ""
+            if !next.isEmpty && next != text { self.runSkeuoParse(next) }
+        }
+    }
+
     private func pushSkeuoState() {
         guard skeuoMode, let web = skeuoWebView else { return }
         let day = DateFormatter()
@@ -4780,6 +4985,14 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
+        case "parse":
+            /* 拟物界面边打字边识别。
+               为什么必须由页面推过来：拟物模式的输入框是网页里的 <input>，
+               它不属于任何 NSTextView，`textDidChange` 永远不会响 —— 上一版
+               就是在等一个不会来的回调，于是 chips 一直空着。
+               这里只跑规则（--fast），和玻璃版打字预览同一条路径、同一个解析器。 */
+            let typed = (body["text"] as? String) ?? ""
+            requestSkeuoParse(typed.trimmingCharacters(in: .whitespacesAndNewlines))
         case "submit":
             let text = (body["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !text.isEmpty else { return }

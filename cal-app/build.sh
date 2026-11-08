@@ -101,10 +101,17 @@ fi
 mkdir -p "$TARGET/Contents/MacOS" "$TARGET/Contents/Resources"
 
 # 不用 ditto 覆盖已安装的 .app：它会先 unlink 再写入，被安全策略判成「删除已安装的 App」，
-# 中途被拦还会留下 .BC.T_* 临时文件把签名弄坏。逐文件用 cat 覆写，不产生任何删除动作。
+# 中途被拦还会留下 .BC.T_* 临时文件把签名弄坏。逐文件覆写，不产生任何删除动作。
+#
+# 但**可执行文件不能原地覆写**：签名的页哈希是按 inode 缓存到内核里的，
+# 用 `cat > 目标` 改写同一个 inode 后，第一页就会被判成「签名无效」并被 SIGKILL
+# （crash 里写的是 CODESIGNING / Invalid Page，codesign -v 却一切正常，极难查）。
+# 正确做法是先写同目录临时文件，再 rename 过去 —— rename 换的是 inode，不算删除。
 install_file() {  # $1 源文件  $2 目标文件
   mkdir -p "$(dirname "$2")"
-  cat "$1" > "$2"
+  local tmp="$2.new.$$"
+  cat "$1" > "$tmp"
+  mv -f "$tmp" "$2"
 }
 install_file "$STAGE/Contents/MacOS/DSHCalendar" "$TARGET/Contents/MacOS/DSHCalendar"
 chmod +x "$TARGET/Contents/MacOS/DSHCalendar"
