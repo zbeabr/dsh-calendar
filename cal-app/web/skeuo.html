@@ -309,10 +309,15 @@ body{
        然后急转直下进入暗部 —— 这是弧面金属的判读特征。
        少了这条，无论渐变多顺，都只是一条黄色的条。 */
     linear-gradient(180deg,
-      #f7e6b4 0%, #e6c77e 3%, #d9b96a 8%, #c8a44f 14%,
-      #dcc07c 19%, #d3b265 24%,
-      #b5903c 37%, #9c7830 51%, #8a6724 65%,
-      #6f5015 79%, #54390c 89%, #3a2605 96%, #2a1a03 100%);
+      /* 圆柱金属：上下两条边都是暗的（反射到背景），
+         最亮的一条在上 1/4（朝天），底部还有一道环境反光 ——
+         少了底部那道，杆子就只是一块「上亮下暗」的板，不是圆柱。 */
+      #8a6a28 0%, #c9a95e 2%, #f4e4b6 6%, #ecd193 11%,
+      #d8b96c 18%, #cba750 26%,
+      #ab8639 40%, #8c692a 55%, #6d4e15 70%,
+      #5b3e0d 82%,
+      #7d5a17 91%, #96701f 96%,
+      #3d2806 100%);
   border-top:1px solid #6f4c12;border-bottom:1px solid #201402;
   box-shadow:
     0 1px 0 rgba(255,246,214,.32),
@@ -323,8 +328,31 @@ body{
     inset 0 -7px 9px rgba(38,23,2,.35);   /* 下半段自暗 */
   overflow:hidden;
 }
-.rail::before{ /* 黄铜拉丝 + 氧化斑 */
-  content:"";position:absolute;inset:0;filter:url(#brassGrain);opacity:.62;mix-blend-mode:multiply;
+/* 拉丝。
+   ── 2026-11-03 实测：filter:url(#brassBrush) 在空元素上根本不出图 ──
+   空 ::before 没有内容，浏览器会把 SVG filter 这条路径直接优化掉，
+   所以上一版铜杆表面连一粒噪点都没有（放大 7 倍确认）。
+   改成实打实的 repeating-linear-gradient：四段互质周期（.55 / 1.15 / 1.95 / 2.9），
+   亮丝与暗丝交替，soft-light 参与明暗而不盖色 —— 这才是拉丝的观感。
+   两层：这一层是密的细丝，颜色层（.rail background 第一层）是更疏的一道，
+   两层周期不一样，看不出重复。 */
+.rail::before{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:
+    /* 四层周期互质、角度各偏 0.2~0.6 度的细丝叠在一起。
+       只用一层 repeating-gradient 出来是「印刷横纹」：等距、等深、
+       从头到尾一个样 —— 那是布纹不是拉丝。四层的间距与深度互不整除，
+       叠起来才会出现「有些地方密、有些地方断」的真丝。 */
+    repeating-linear-gradient(179.4deg,
+      rgba(255,253,238,.40) 0 .5px, transparent .5px 1.7px),
+    repeating-linear-gradient(180.6deg,
+      rgba(58,37,9,.32) 0 .6px, transparent .6px 2.3px),
+    repeating-linear-gradient(179.8deg,
+      rgba(255,248,222,.22) 0 .4px, transparent .4px 3.1px),
+    repeating-linear-gradient(180.2deg,
+      rgba(40,26,6,.24) 0 .5px, transparent .5px 4.7px);
+  mix-blend-mode:overlay;
+  opacity:.8;
 }
 /* 沿杆长方向明暗交替 —— 这一层是「像真金属」的关键。
    纯渐变的金属永远是假的：真铜条上反射是几块大小不等的光斑，
@@ -371,12 +399,14 @@ body{
    以前是一整张画好就不动的静态 SVG：木板被甩得乱晃，绳子纹丝不动，
    两样东西根本不是一个物体。拆开之后每段绳子的两端分别挂在相邻两块木板上，
    木板一动，绳子就跟着倾斜 —— 这才是「串在绳上的木板」该有的样子。 */
-/* 绳子单独一层，压在木板之上。
-   原来 z-index:0，木板（z-index 由 .slot 给）盖在绳上：木板那条
-   `0 9px 16px rgba(24,14,5,.42)` 的投影正好落在下方 0~25px，
-   把间隙里绳子的上半截压暗 —— 于是「板内那段绳亮、板外那段绳暗」，
-   又成了两截。提到木板之上，这一段就不受它影响了。 */
-.ropes{position:absolute;inset:0;pointer-events:none;z-index:1}
+/* 绳子单独一层，在木板**后面**（z-index:0，DOM 又排在 #planks 之前）。
+   ── 2026-11-08 第三次：不再把绳子提到木板前面 ──
+   上一版为了「不显得一截一截」，把绳子叠到木板之上、横穿整个板面。
+   那是错的：真绳是穿在孔里、走在木板背面，玩家看到的是「木板挡住绳、
+   只有孔里露出一点」。摆在前面等于绳子贴在木板上，一眼假（用户原话）。
+   现在回到背面；孔里那一段由 .grommet::after 补出来 —— 物理正确，
+   视觉上也还读得出「一根绳从孔后穿过」。 */
+.ropes{position:absolute;inset:0;pointer-events:none;z-index:0}
 /* 麻绳：三股左捻（Z 捻）。
    之前做错的地方：用两组相反方向的斜纹交叉，结果出来是「编织网/弹簧」。
    捻绳的本质是**单向的平行股带**——三股往同一个方向拧，股与股之间是深沟。
@@ -385,7 +415,7 @@ body{
 .rope-seg{
   --a:38deg;   /* 捻纹角度：越陡越像拧紧的绳 */
   --ext:10px;  /* 上下各多伸进木板多少，用来把接缝藏到木头底下（JS 按段改写） */
-  position:absolute;width:8px;margin-left:-4px;
+  position:absolute;width:9px;margin-left:-4.5px;
   /* 旋转原点定在「孔」的高度，不是元素顶端。
      元素的上下各多出一截钻进相邻木板的下面；木板不透明又压在绳子之上，
      于是每段绳子的两个断口（旋转造成的台阶、楔形缺口）正好落在看不见的地方。
@@ -406,11 +436,11 @@ body{
     /* ③ 三股捻带：一条亮股 → 缓降 → 一条深沟，周期 3.2px。
        颜色要压成亚麻的灰土黄，偏黄一点就变成铜丝了。 */
     repeating-linear-gradient(var(--a),
-      #a68d5e 0 .85px,
-      #907a51 .85px 1.7px,
-      #6b5735 1.7px 2.35px,
-      #3f3019 2.35px 2.95px,
-      #5f4c2b 2.95px 3.2px),
+      #b59b6a 0 .85px,
+      #9d855a .85px 1.7px,
+      #74603c 1.7px 2.35px,
+      #46351c 2.35px 2.95px,
+      #6a5632 2.95px 3.2px),
     /* ④ 捻得松紧不匀：沿绳长方向的极轻明暗起伏 */
     repeating-linear-gradient(180deg,rgba(255,236,200,.05) 0 7px,rgba(20,10,2,.12) 7px 15px);
   /* 不给每段加投影：投影一断开，绳子立刻变成一截一截。
@@ -441,38 +471,11 @@ body{
   content:"";position:absolute;left:0;right:0;bottom:0;height:26px;border-radius:0 0 4px 4px;
   background:linear-gradient(180deg,transparent,rgba(10,5,1,.4) 46%,rgba(8,4,1,.72));
 }
-/* 木板穿孔里的绳节。
-   ── 2026-11-08 第二次重做：从「孔里的塞子」改成「木板前面那段绳」 ──
-   之前的做法是「绳子只在孔里露一小截」：一段绳伸进木板 10px 就被木头盖住，
-   孔到这里再冒出来。54px 高的板上，孔只有 10.8px 内径 —— 结果的观感是
-   一串「绳结」穿在板上，而不是一根绳。用户的原话：「绳子根本不像一根」。
-   现在这一段改成整块板高（56px）、叠在木板之上：绳子从挂杆到最底完全连续，
-   铜环只是压在绳上（z-index 低于它），孔壁不再把绳子切断。 */
-.rope-core{
-  position:absolute;top:50%;width:8px;height:56px;
-  margin-top:-28px;margin-left:-4px;transform-origin:50% 50%;
-  z-index:3;
-  background:
-    linear-gradient(90deg,
-      rgba(22,13,5,.60) 0%, rgba(34,21,8,.36) 14%,
-      rgba(255,240,210,.03) 34%, rgba(255,246,220,.13) 48%,
-      rgba(255,240,210,.03) 64%, rgba(34,21,8,.36) 86%, rgba(18,10,3,.62) 100%),
-    repeating-linear-gradient(var(--a,38deg),rgba(255,242,214,.13) 0 .4px,transparent .4px 1.15px),
-    repeating-linear-gradient(var(--a,38deg),
-      #a68d5e 0 .85px, #907a51 .85px 1.7px, #6b5735 1.7px 2.35px,
-      #3f3019 2.35px 2.95px, #5f4c2b 2.95px 3.2px),
-    repeating-linear-gradient(180deg,rgba(255,236,200,.05) 0 7px,rgba(20,10,2,.12) 7px 15px);
-  /* 内阴影必须和 .rope-seg 一模一样，否则孔口处「粗一圈」。
-     外阴影不能加：那圈暗晕会让板内那段看着比间隙里宽 0.7px，
-     又是「两截绳」的观感。 */
-  box-shadow:
-    inset -1px 0 1px rgba(0,0,0,.42),
-    inset 1px 0 1px rgba(255,228,185,.18);
-}
-.rope-core.l{left:36px}
-.rope-core.r{left:auto;right:36px;margin-left:0;margin-right:-4px;--a:-38deg}
-/* z-index 必须留在 auto：设成 1 会建立层叠上下文，把 .rope-core 和 .grommet
-   一起关在木板下面，「绳在木板前面」就做不成了。 */
+/* ── 2026-11-08 第三次：删掉 .rope-core ──
+   它是「叠在木板前面、贯穿整板」的那段绳，正是用户说「绳子挂在木板前面、
+   太假」的来源。真绳走木板背面，不需要在板面上另画一条。
+   孔里那一段改由 .grommet::after 画（见下面的孔底），所以这里整块移除。
+   顺带：.slot 保持 z-index:auto，木板才能稳稳盖住 .ropes。 */
 .slot{position:relative;height:82px}   /* 54 板 + 28 透明间隙 */
 .plank{
   position:absolute;left:0;top:0;width:100%;height:54px;
@@ -534,7 +537,7 @@ body{
 .grommet{
   position:absolute;top:50%;left:36px;width:20px;height:20px;
   margin-top:-10px;margin-left:-10px;border-radius:50%;
-  /* 铜环压在绳段之上、但低于 .rope-core —— 绳子才是「从这里过去」的那条线 */
+  /* 铜环在木板之内、木板之上；孔底那段绳由 ::after 画在孔里，不影响层级 */
   z-index:2;
   /* 从圆心往外一次性排好：孔 → 内缘(翻边向下弯，暗) → 环面(渐渐起亮) →
      外翻边(最亮的一条窄环) → 外缘暗线。顺序错了立刻变硬币贴纸。 */
@@ -568,22 +571,52 @@ body{
       rgba(255,246,214,.1) 0deg 3deg, rgba(70,46,12,.1) 3deg 6deg);
   mix-blend-mode:overlay;opacity:.55;
 }
-/* 孔：孔壁左上被照亮一段铜色、右下全黑；孔口内缘有一道翻边反光 */
+/* 孔：孔壁左上被照亮一段铜色、右下全黑；孔口内缘有一道翻边反光。
+   ── 2026-11-08 第三次：孔底要看得见绳 ──
+   绳子已回到木板背面（见 .ropes），木板会把它整段挡住，孔是唯一露出来的地方。
+   所以孔底必须画出「透过孔看到的那一截绳」，否则整根绳在每块板上都是断的。
+   关键三条：
+     · 宽度必须和孔外完全一致：绳 8px、孔径 10.8px → 13%~87%，一个像素都不许差；
+     · 亮度必须更暗：孔里没有直射光，绳在孔壁影子里，和孔外一样亮就成人造塞子；
+     · 上下两端要没入暗部：绳是穿过去的，不是横在孔里的一个横档。 */
 .grommet::after{
   content:"";position:absolute;inset:4.6px;border-radius:50%;
   background:
-    /* 孔底就是孔底，这里绝对不能再画一根「细绳」。
-       原来这里有两条竖直色带冒充穿过的绳：宽 4.1px、颜色 #8d6630（偏黄）；
-       真正的绳子是 .rope-core，宽 8px、颜色 #a68d5e（亚麻灰土黄）。
-       两截宽度差一倍、色相也不同，孔里就成了「一节细绳接一节粗绳」——
-       这是「绳子不是一根」最直接的来源。 */
+    /* ⓪ 孔里终归少一层光：整片压一档，很轻。放在最上面才会同时压住绳和孔底 */
+    linear-gradient(rgba(24,15,5,.16), rgba(24,15,5,.16)),
+    /* ① 绳的两头没入孔壁阴影 */
+    linear-gradient(180deg,
+      rgba(3,1,0,.78) 0%, rgba(3,1,0,.26) 15%, rgba(3,1,0,0) 34%,
+      rgba(3,1,0,0) 68%, rgba(3,1,0,.24) 84%, rgba(3,1,0,.78) 100%),
+    /* ② 绳身：颜色、宽度都和孔外那条绳一致，只叠一层很淡的暗。
+       之前压到「深褐近黑」，孔外亮、孔里黑，就成了两截 ——
+       「在孔里」这个判断靠孔壁的框和阴影，不靠把绳改成另一个颜色。 */
+    linear-gradient(90deg,
+      transparent 0 8.3%,
+      rgba(90,70,40,.82) 13% 20%,
+      #b09a6c 16% 31%,
+      #c2a97b 31% 47%,
+      #a68e60 47% 63%,
+      #86724a 63% 82%,
+      rgba(74,56,30,.86) 78% 87%,
+      transparent 91.7% 100%),
+    /* ③ 股纹：单向捻带，孔里这几像素也得有丝，不能是光板 */
+    repeating-linear-gradient(38deg,
+      rgba(255,240,206,.07) 0 .5px,
+      rgba(20,12,3,.15) .5px 1.65px,
+      transparent 1.65px 2.45px,
+      rgba(20,12,3,.1) 2.45px 3.15px),
+    /* ④ 孔底：只在绳的两侧露出一点。这里不能亮 —— 孔底比绳亮，
+       整片孔就会读成「一枚亮环里嵌着黑条」。 */
     radial-gradient(circle at 34% 28%,
-      #7d5824 0%, #523913 16%, #2c1c08 36%, #140b03 58%, #070302 78%, #030201 100%);
+      #3a2609 0%, #1c1104 28%, #0a0502 58%, #020100 84%, #010100 100%);
   box-shadow:
-    inset 0 1px 2px rgba(0,0,0,.95),
-    inset 1px 0 1px rgba(170,128,66,.45),
-    inset -1px 0 1.5px rgba(0,0,0,.95),
-    0 0 0 .6px rgba(255,240,196,.32);
+    /* 只留上沿一道孔壁阴影。
+       左右两道 inset 阴影本来是想做孔壁的圆度，但绳宽 9px、孔径 10.8px，
+       两侧各只有 0.9px —— 这两道阴影像两把刀，把绳的两边各削掉一线，
+       孔里就只剩中间一条细暗条，「绳子填满孔」变成「孔里嵌了根黑棍」。 */
+    inset 0 1px 2px rgba(0,0,0,.85),
+    0 0 0 .6px rgba(255,240,196,.30);
 }
 .grommet.l{left:36px}
 .grommet.r{left:auto;right:36px;margin-left:0;margin-right:-10px}
@@ -681,8 +714,11 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{width:0!important;height:0!impor
   backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
   background:linear-gradient(180deg,rgba(58,55,51,.55) 0%,rgba(40,38,35,.78) 100%)!important;
   /* 顶部留够一段：第一块木板上边要能看见绳子从铜杆后面垂下来，
-     不留这段，第一块板就像直接焊在杆上 */
-  padding-top:32px!important;padding-bottom:64px!important}
+     不留这段，第一块板就像直接焊在杆上。
+     底部更要留够：6 条日程时整页只比窗口高 47px，滚一下就到头，
+     手感是「根本没得滚」，最后一块还被底部雾层压掉半截。
+     留 140px，末块能滚到雾层之上，可滚距离也短得合理。 */
+  padding-top:32px!important;padding-bottom:140px!important}
 /* 只隔离布局，不做 paint 裁剪：木板摆动时会转出自己的格子，
    裁掉的话边缘和阴影会被切出一条直边。 */
 .slot{contain:layout;transform:none}
@@ -691,7 +727,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{width:0!important;height:0!impor
    z-index 要高过底部雾层(5)，否则滚上来的木板会盖住输入区。 */
 .chrome{flex:none!important;position:sticky!important;top:0!important;z-index:20!important}
 /* 列表底部雾层：现在页面整体滚动，它得钉在视口底部而不是文档底部 */
-.app-window::after{content:"";position:fixed;left:0;right:0;bottom:0;height:58px;z-index:5;
+.app-window::after{content:"";position:fixed;left:0;right:0;bottom:0;height:46px;z-index:5;
   pointer-events:none;background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.97))}
 
 /* 右侧日历标签：以前叠了四层阴影外加描边，字被自己的影子糊死了。
@@ -780,6 +816,14 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
   <filter id="brassGrain" x="0" y="0" width="100%" height="100%">
     <feTurbulence type="fractalNoise" baseFrequency="0.09 0.5" numOctaves="3" seed="19" result="n"/>
     <feColorMatrix in="n" type="matrix" values="0 0 0 0 0.32  0 0 0 0 0.22  0 0 0 0 0.06  0 0 0 0.5 -0.08"/>
+  </filter>
+  <!-- 黄铜拉丝：和 #brushed 同一个思路（x 低频、y 高频 → 沿杆长方向的细丝），
+       但铜杆只有 20px 高，用 1.35 的频率会在 20px 里塞进 27 条丝，
+       缩到屏幕上就是一片噪点。0.55 让丝距落到 ~1.8px，20px 里十条左右。 -->
+  <filter id="brassBrush" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.0035 0.55" numOctaves="4" seed="31" result="n"/>
+    <feColorMatrix in="n" type="saturate" values="0"/>
+    <feComponentTransfer><feFuncA type="linear" slope="0.92" intercept="0"/></feComponentTransfer>
   </filter>
 </defs>
 </svg>
@@ -910,12 +954,14 @@ function strokeLine(ctx, x0, w, y, wave, alpha, lw){
 
 function drawPlank(ctx, x0, y0, w, h, seed){
   const R = rngOf(seed);
-  /* 每块板都要有自己的「身份」。上一版只给了 8° 色相、3% 明度的摆动，
-     16 条铺到屏幕上就是同一块木头 —— 用户的原话是「第一块和第二块看着一样」。
-     真木地板装出来深浅交错，15% 明度差、10° 色相差在真木头里非常常见。 */
-  const hue = 16 + R() * 14;
-  const sat = 39 + R() * 20;
-  const lit = 25 + R() * 12;
+  /* 每块板都要有自己的「身份」，但身份不能靠「颜色跳出去」。
+     上一版把明度差拉到 12%、色相 14°，结果有一条板跳到橙红，
+     跟整列完全不是一个木头 —— 用户原话「完全没有质感，跟别的颜色完全不搭」。
+     真地板是同一批料：色相最多差 8°、明度差 6%，差异主要来自
+     **纹型、疏密、明暗对比**，而不是色相。 */
+  const hue = 20 + R() * 6;
+  const sat = 43 + R() * 6;
+  const lit = 28 + R() * 4;
   const kind = R();          // 决定这块板是直纹 / 山纹 / 波纹，见 ③
 
   /* ① 底色：上亮下暗（光从上方来）。同一批木料，色差要有但只能很小 */
@@ -951,7 +997,7 @@ function drawPlank(ctx, x0, y0, w, h, seed){
      间距用 R()*R()（多数贴得近、少数离得远），线宽 0.4~1.6，每条都配一道高光。
      这样 54px 高的板子上才「看得见一条一条的纹」。
      上一版二十多条细线挤在一起，缩到屏幕上就糊成一块均匀的横纹布。 */
-  const density = 0.9 + R() * 1.1;
+  const density = 1.05 + R() * 0.95;
   if (kind < 0.34){
     /* ---- 直纹 ---- */
     const wA = 0.6 + R() * 2.0, wL = 420 + R() * 520, wP = R() * 6.283;
@@ -962,7 +1008,7 @@ function drawPlank(ctx, x0, y0, w, h, seed){
     let y = y0 - 5 + R() * 8;
     while (y < y0 + h + 5){
       const sh = (R() - 0.5) * 1.8;
-      strokeLine(ctx, x0, w, y + sh, wave, 0.12 + R() * 0.3, 0.4 + R() * 1.1);
+      strokeLine(ctx, x0, w, y + sh, wave, 0.14 + R() * 0.36, 0.5 + R() * 1.2);
       y += (2.6 + R() * R() * 11) * density;
     }
   } else if (kind < 0.74){
@@ -972,8 +1018,8 @@ function drawPlank(ctx, x0, y0, w, h, seed){
     let r = y0 - cy - 2 + R() * 3;                  // 第一条弧正好贴着板顶
     while (cy + r < y0 + h + 5){
       const half = Math.atan2(w * 0.72, Math.max(40, r));
-      const a = 0.1 + R() * 0.26;
-      const lw = 0.45 + R() * 1.15;
+      const a = 0.13 + R() * 0.31;
+      const lw = 0.5 + R() * 1.2;
       const a0 = -Math.PI / 2 - half, a1 = -Math.PI / 2 + half;
       ctx.beginPath(); ctx.arc(cx, cy, r, a0, a1);
       ctx.strokeStyle = 'rgba(50,22,5,' + a.toFixed(3) + ')';
@@ -996,7 +1042,7 @@ function drawPlank(ctx, x0, y0, w, h, seed){
     let y = y0 - 5 + R() * 8;
     while (y < y0 + h + 5){
       const sh = (R() - 0.5) * 1.4;
-      strokeLine(ctx, x0, w, y + sh, wave, 0.1 + R() * 0.3, 0.4 + R() * 1.1);
+      strokeLine(ctx, x0, w, y + sh, wave, 0.13 + R() * 0.37, 0.5 + R() * 1.2);
       y += (2.4 + R() * R() * 10) * density;
     }
   }
@@ -1213,7 +1259,6 @@ function knotSVG(i){
 const ropeBox = document.getElementById('ropes');
 let segs = [];            // [{els:[左,右], top, h}]
 let plankEls = [];        // 与 nodes 一一对应的 .plank 元素
-let coreEls = [];         // 与 nodes 一一对应的穿孔内绳节 [左, 右]
 
 function buildRopes(){
   const area = document.getElementById('planks');
@@ -1290,7 +1335,6 @@ function makeSlot(it, index){
       ';background-position:0 -' + (woodSlotOf(it.uid) * PH) + 'px">' +
       '<div class="bevel"></div><div class="edge"></div>' +
       '<span class="grommet l"></span><span class="grommet r"></span>' +
-      '<span class="rope-core l"></span><span class="rope-core r"></span>' +
       '<div class="txt"><span class="when"></span><span class="what"></span><span class="tag"></span></div>' +
       '<button class="del" title="摘下这块木板">×</button>' +
     '</div>';
@@ -1411,20 +1455,7 @@ function rigSync(){
   const list = Array.prototype.slice.call(area.querySelectorAll('.slot:not(.out)'));
   order = list.map(function(el){ return el.dataset.uid; });
   plankEls = list.map(function(el){ return el.querySelector('.plank'); });
-  coreEls = list.map(function(el){ return el.querySelectorAll('.rope-core'); });
   placeWood();   // 顺序变了，哪块用哪条纹理要重算
-
-  /* 孔里那截绳节的捻纹，必须和上下段共用同一套「页面绝对 y」相位。
-     不设的话每块板的绳节都从自己顶端重新起纹，相邻两段的股带就错开半格 ——
-     这段现在有整块板高、叠在木板前面，错半格是最显眼的接缝。
-     core 高 56、居中于 27，所以顶部在板顶 -1。 */
-  for (let i = 0; i < list.length; i += 1){
-    const cs = coreEls[i];
-    if (!cs || !cs.length) continue;
-    const yCore = (list[i].offsetTop || 0) - 1;
-    const bp = '0 ' + (-yCore) + 'px';
-    for (let k = 0; k < cs.length; k += 1) cs[k].style.backgroundPosition = bp;
-  }
   nodes = order.map(function(uid, i){
     let s = pen.get(uid);
     if (!s){ s = { x: 0, v: 0, L: 0.2 }; pen.set(uid, s); }
@@ -1478,20 +1509,6 @@ function paint(){
     const el = plankEls[i];
     if (el) el.style.transform =
       'translate3d(' + s.x.toFixed(2) + 'px,0,0) rotate(' + tilt + 'deg)';
-    // 孔里的绳节跟着上下两段的平均角度转。固定成垂直的话，绳子一斜，
-    // 孔口那里就露出一个折角 —— 正是「绳子断在孔里」的观感来源。
-    const cores = coreEls[i];
-    if (cores && cores.length){
-      const aUp = angs[i], aDn = angs[i + 1];
-      let mid = 0;
-      if (aUp != null && aDn != null) mid = (aUp + aDn) / 2;
-      else if (aUp != null) mid = aUp;
-      else if (aDn != null) mid = aDn;
-      // 减掉木板自身的倾角：.plank 已经转过了，绳节是它的子元素
-      const ctf = 'rotate(' + (mid - tilt).toFixed(2) + 'deg)';
-      cores[0].style.transform = ctf;
-      cores[1].style.transform = ctf;
-    }
   }
 
   for (let k = 0; k < segs.length; k += 1){
@@ -1557,6 +1574,40 @@ function showCtx(x, y, uid){
   ctx.style.display = 'block';
 }
 document.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+
+/* ── 滚动兜底 ──
+   实测：页面 scrollHeight 1135 / clientHeight 720，脚本设 scrollTop 能滚 300，
+   说明布局和可滚高度都对。但真实滚轮打到窗口上时偶发「怎么都滑不动」，
+   那是事件在原生层被丢掉，Web 这边根本收不到，靠 CSS 修不了。
+   策略：先不动手。只有「连续三次滚轮之后 scrollTop 一点没变，而且当时
+   并不在顶部/底部边界」才判定为原生滚动坏了，从第四次起由页面自己接管。
+   正常情况下一次都不会接管，也不会有一帧延迟或惯性丢失。 */
+(function(){
+  let tries = 0, takeover = false;
+  function scroller(){ return document.scrollingElement || document.documentElement; }
+  addEventListener('wheel', function(e){
+    const se = scroller();
+    const max = se.scrollHeight - se.clientHeight;
+    if (max <= 1) return;                       // 没有可滚内容，交给默认行为
+    const step = e.deltaY * (e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? se.clientHeight : 1));
+    if (takeover){
+      e.preventDefault();
+      se.scrollTop = Math.max(0, Math.min(max, se.scrollTop + step));
+      return;
+    }
+    const atEdge = (se.scrollTop <= 0 && step < 0) || (se.scrollTop >= max - 1 && step > 0);
+    if (atEdge) return;                         // 到顶/到底本来就不动，不算坏
+    const before = se.scrollTop;
+    setTimeout(function(){
+      if (Math.abs(scroller().scrollTop - before) < 0.5){
+        tries += 1;
+        if (tries >= 3) takeover = true;
+      } else {
+        tries = 0;
+      }
+    }, 60);
+  }, {passive:false});
+})();
 document.addEventListener('click', function(){ ctx.style.display = 'none'; });
 
 function setSys(text){ document.getElementById('sysline').textContent = text; }

@@ -4295,6 +4295,27 @@ extension NSColor {
 ///
 /// 不用 `performDrag(with:)`：它会把主线程交给系统拖动循环，期间一个事件都拿不到，
 /// 木板只能在开始那一瞬间「统一晃一下」（用户说的死板）。这里自己跟鼠标，就能每 40ms
+/// 滚轮兜底。
+/// 实测过：页面里 `scrollHeight=1135 / clientHeight=720`，用脚本设 scrollTop 能滚到 300，
+/// 说明布局和可滚高度都没问题；但真实滚轮打到窗口上时，事件在原生层没被
+/// WKWebView 消费，页面就成了「明明有内容却怎么都滑不动」。
+/// 这个容器只在事件**冒泡上来**（＝WebView 没接）时，把滚轮转给它内部的
+/// NSScrollView；WebView 正常接住时事件根本不会到这里，所以不会双滚。
+final class SkeuoScrollHost: NSView {
+    weak var web: WKWebView?
+    private var forwarding = false
+
+    override func scrollWheel(with event: NSEvent) {
+        guard !forwarding, let web else { super.scrollWheel(with: event); return }
+        guard let sv = web.subviews.compactMap({ $0 as? NSScrollView }).first else {
+            super.scrollWheel(with: event); return
+        }
+        forwarding = true
+        sv.scrollWheel(with: event)
+        forwarding = false
+    }
+}
+
 /// 把横向速度推给页面，让每块木板按真实速度滞后、反向、过冲、回摆。
 final class SkeuoDragView: NSView {
     /// 横向速度，px/s。
@@ -4378,8 +4399,9 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         web.navigationDelegate = self
         web.allowsBackForwardNavigationGestures = false
 
-        let container = NSView(frame: bounds)
+        let container = SkeuoScrollHost(frame: bounds)
         container.wantsLayer = true
+        container.web = web
         container.addSubview(web)
 
         let barHeight: CGFloat = 34
