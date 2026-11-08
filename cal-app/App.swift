@@ -2067,10 +2067,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
     // MARK: 冲突提示
 
+    /// 只清自己写下的那一类告警，别误伤「已删除 / 已添加 / 美化已开」等别的提示。
+    ///
+    /// 这一句是 SYS 栏「日程重复」误报的根子：拟物模式的输入框是 WKWebView 里的
+    /// `<input>`，原生 `input.string` 恒为空。旧代码在没有命中时用
+    /// `guard !(input?.string.isEmpty ?? true) else { return }` 提前退出，
+    /// 于是上一句留下的「这个时间和…重叠」永远不会被清掉，推到 SYS 栏就成了
+    /// 「七点半到八点 和 八点开始 被说成重复」。改成进来先按前缀精确清一次。
+    private func clearStaleConflictHint() {
+        guard hintLabel?.stringValue.hasPrefix("这个时间和") == true else { return }
+        hintLabel?.stringValue = ""
+        hintLabel?.textColor = .secondaryLabelColor
+    }
+
+    /// 半开区间 [start, end)：19:30–20:00 与 20:00–21:00 只是首尾相接，不算重叠。
+    /// 30 秒容差吃掉 CalDAV 回来的秒级抖动（19:59:59 这种），不把挨着的两条误判成冲突。
+    private static func overlaps(_ event: AgendaItem, _ start: Date, _ end: Date) -> Bool {
+        let slack: TimeInterval = 30
+        return event.start < end.addingTimeInterval(-slack)
+            && event.end > start.addingTimeInterval(slack)
+    }
+
     /// 用已经拉下来的列表做区间比较，不额外发请求
     private func checkConflict() {
+        clearStaleConflictHint()
         guard let start = previewStart, let end = previewEnd else { return }
-        let hits = agenda.filter { $0.start < end && $0.end > start }
+        let hits = agenda.filter { AppDelegate.overlaps($0, start, end) }
 
         if let first = hits.first {
             let extra = hits.count > 1 ? " 等 \(hits.count) 条" : ""
@@ -2078,7 +2100,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             hintLabel?.textColor = .systemOrange
             return
         }
-        guard !(input?.string.isEmpty ?? true) else { return }
+        // 拟物模式的输入框在网页里，原生 input 为空也要允许走「远期补查」；
+        // skeuoText 就是页面推过来的当前句子。旧告警上面已经清过，这里不会再留。
+        guard !(input?.string.isEmpty ?? true) || !skeuoText.isEmpty else { return }
 
         // agenda 只装了最近一周：更远的时间得单独查一次，
         // 否则「下个月 5 号」这种永远检测不到冲突，界面会安静地漏报。
@@ -2088,10 +2112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             from: today,
             to: Calendar.current.startOfDay(for: start)
         ).day ?? 0
-        guard days > 6, days <= 90 else {
-            hintLabel?.stringValue = ""
-            return
-        }
+        guard days > 6, days <= 90 else { return }
         let key = "\(start.timeIntervalSince1970)-\(end.timeIntervalSince1970)"
         guard key != remoteConflictKey else { return }
         remoteConflictKey = key
@@ -2101,7 +2122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             guard case .success(let payload) = result, (payload["ok"] as? Bool) == true else { return }
             let events = (payload["events"] as? [[String: Any]]) ?? []
             let found = events.compactMap { AgendaItem(json: $0) }
-                .filter { $0.start < end && $0.end > start }
+                .filter { AppDelegate.overlaps($0, start, end) }
             guard let first = found.first else { return }
             let extra = found.count > 1 ? " 等 \(found.count) 条" : ""
             self.hintLabel?.stringValue = "这个时间和「\(first.title)」重叠\(extra)"
@@ -2492,8 +2513,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         let delay = demo["DSH_CAL_SNAPSHOT_DELAY"].flatMap(Double.init) ?? base
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             if self.skeuoMode {
-                // WKWebView 不参与 AppKit 的离屏绘制，得用它自己的快照 API
-                self.renderSkeuoSnapshot(to: path) { NSApp.terminate(nil) }
+                // 自检开关，只在 --snapshot 下生效，不改任何产品状态：
+                // · DSH_CAL_SNAP_SCROLL_BOTTOM=1 滚到最底，核对绳尾与底部底色
+                // · DSH_CAL_SNAP_JS="..." 在快照前跑一段 JS，核对选中 / 确认弹层等交互态
+                let env = ProcessInfo.processInfo.environment
+                let finish = { self.renderSkeuoSnapshot(to: path) { NSApp.terminate(nil) } }
+                let web = self.skeuoWebView
+                let js = env["DSH_CAL_SNAP_JS"]
+                func afterJS(_ run: @escaping () -> Void) {
+                    if let js = js, let web = web {
+                        web.evaluateJavaScript(js) { _, _ in
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { run() }
+                        }
+                    } else { run() }
+                }
+                if env["DSH_CAL_SNAP_SCROLL_BOTTOM"] == "1", let web = web {
+                    web.evaluateJavaScript("window.dshScrollTo(1e9)") { _, _ in
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { afterJS(finish) }
+                    }
+                } else {
+                    afterJS(finish)
+                }
             } else {
                 self.renderSnapshot(to: path)
                 NSApp.terminate(nil)
@@ -4854,6 +4894,10 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         web.autoresizingMask = [.width, .height]
         web.navigationDelegate = self
         web.allowsBackForwardNavigationGestures = false
+        // 滚到底回弹时露出来的是 WebView 的 underPage 底色，系统默认是白的 ——
+        // 页面里 html/body 已经压成同一块深色，原生这一层也要一起压，
+        // 否则橡皮筋拉出来的那一块还是「没渲染的白底」。
+        web.underPageBackgroundColor = NSColor(calibratedRed: 0.169, green: 0.161, blue: 0.149, alpha: 1)
 
         let container = NSView(frame: bounds)
         container.wantsLayer = true
@@ -4911,6 +4955,9 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         if text.isEmpty {
             parseQueued = ""
             lastChips = []
+            // 输入框被清空时也要把上一句的预览区间和「这个时间和…重叠」一起清掉，
+            // 否则 SYS 栏会挂着一句已经不属于当前输入的冲突告警。
+            resetPreview(message: "")
             pushSkeuoState()
             return
         }

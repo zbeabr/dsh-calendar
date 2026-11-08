@@ -7,6 +7,7 @@
 <style>
 :root{
   --w: 560px;                 /* 窗口宽度：标题栏 / 输入区 / 木板三者严格共用 */
+  --plank-inset:16px;        /* 木板左右各内收多少：两端露出木头端面，绳子/铆钉跟着它算 */
   --wood-hi:#b07b45;
   --wood-mid:#8a5527;
   --wood-lo:#4a2b12;
@@ -106,10 +107,14 @@ body{
 .lamp.g i{background:radial-gradient(circle at 34% 26%,#cbf2a8,#66ba46 42%,#2c781f 82%,#14430d)}
 /* 早期 Macintosh 的铭牌字：Apple Garamond 一路的衬线斜体，直接蚀刻在金属上。
    不加牌子、不加框、不加铆钉 —— 只在字体与压印质感上做手脚。 */
-.titlebar .name{
-  position:absolute;left:0;right:0;text-align:center;pointer-events:none;
+.chrome > .name{
+  /* 整条「窗口顶边 → 绿屏上沿」的金属带里上下左右居中，不再挤在 34px 标题栏里。
+     DOM 上从 .titlebar 提出来做 .chrome 的直接子元素，height 64 = 标题栏 34
+     + 输入区上衬 10 + 标签 13 + 标签下留白 7。 */
+  position:absolute;left:0;right:0;top:0;height:64px;z-index:4;
+  display:flex;align-items:center;justify-content:center;pointer-events:none;
   font-family:"Apple Garamond","Hoefler Text",Georgia,"Times New Roman","Songti SC",serif;
-  font-size:19px;font-weight:600;font-style:italic;letter-spacing:1.6px;
+  font-size:24px;font-weight:600;font-style:italic;letter-spacing:2px;
   color:#f2eee1;
   -webkit-text-stroke:.25px rgba(20,18,14,.35);
   text-shadow:
@@ -296,12 +301,13 @@ body{
    告诉用户「这里点了也能打字」，别让光标显示成箭头还怪点了没反应。 */
 .compose-label,.compose .lcd-strip,.compose .lamprack{cursor:text}
 .well input{
-  position:relative;z-index:1;
-  /* 之前 input 只有一行字高（22px），整块屏 94px，点偏上偏下就落在 .well 上，
-     光标进不来 —— 用户反馈「在对话框里点，只有中间一条能输入」。
-     这里用上下各 36px 的内衬把它撑到 94px（22+72），
-     既铺满整块屏，文字仍然垂直居中；内衬本身也是输入框的一部分，点哪都进。 */
-  width:100%;padding:36px 0;box-sizing:border-box;
+  /* 整块绿屏就是输入框本身。上一版靠 padding:36px 0 把一行字撑到 94px，
+     但 .well 左右还有 16px 内衬、扫描线和凿口伪层盖在上面，点边角仍落在
+     .well 上 —— 用户反馈「对话框里还是不能整块点进去」。
+     现在 absolute inset:0 铺满 .well 的整个内盒，绿屏上每个像素都是 input，
+     浏览器原生就把焦点和光标放到那儿，不依赖任何 JS 补焦。 */
+  position:absolute;inset:0;z-index:1;
+  width:100%;height:100%;padding:0 16px;box-sizing:border-box;
   border:0;background:transparent;outline:none;cursor:text;
   font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Courier New",monospace;
   font-size:14px;line-height:1.45;letter-spacing:.6px;
@@ -456,7 +462,8 @@ body{
   background:linear-gradient(90deg,rgba(70,45,10,.12),rgba(70,45,10,.85),rgba(70,45,10,.12));
   box-shadow:0 1px 0 rgba(255,244,210,.45);
 }
-.rail .rivet.l{left:30px}.rail .rivet.r{right:30px}   /* 中心 36 = 绳子的 x，绳子看起来是系在铆钉上的 */
+.rail .rivet.l{left:calc(var(--plank-inset) + 30px)}
+.rail .rivet.r{right:calc(var(--plank-inset) + 30px)}   /* x 与绳/孔同步内收，绳子仍像系在铆钉上 */
 /* ---------- 列表区：木板间隙是后方窗口的高斯模糊，不再是硬透明 ---------- */
 /* 后方文字如果被原样透上来会抢木板刻字的注意力，所以先虚化再压一层暖灰 */
 .plank-area{
@@ -761,7 +768,11 @@ body{
    上半块（标题栏 + 输入区 + 黄铜杆）改用 sticky 吸顶，滚的时候它不动，
    木板从它下面滑过去 —— 用户要的「对话框别跟着动」照样成立。 */
 html,body{height:auto!important;min-height:100%!important;overflow:visible!important;
-  scrollbar-width:none!important}
+  scrollbar-width:none!important;background-color:#2b2926!important;
+  overscroll-behavior-y:none}
+/* WKWebView 滚到底回弹时露出来的是画布 / underPage 底色，body 原来是
+   #d6d2c9 浅米白，于是最下面出现一块「没渲染的白底」。压成和桌面同色；
+   原生侧另设 WKWebView.underPageBackgroundColor，两层一起才不留白。 */
 html::-webkit-scrollbar,body::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}
 .desktop{padding:0!important;height:auto!important;min-height:100vh!important;overflow:visible!important;
   justify-content:flex-start!important;
@@ -834,6 +845,73 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
   box-shadow:0 10px 24px rgba(0,0,0,.5);font-size:12px;color:#2b2822}
 .ctx div{padding:5px 10px;border-radius:4px;cursor:pointer}
 .ctx div:hover{background:#3d6fb5;color:#fff}
+
+
+/* ===== 2026-11-08 第八轮：八处反馈 ===== */
+/* ⑦ 木板比窗口窄一圈：两端露出木头端面，不再顶到窗框被切掉。
+   绳子、铆钉的 x 由 JS 读同一个 --plank-inset 后同步，孔、绳、板不错位。 */
+.plank{left:var(--plank-inset)!important;right:var(--plank-inset)!important;width:auto!important}
+/* 叉叉常驻半亮：以前 opacity:0 只有 hover 才浮出来，用户以为「删除键没反应」 */
+.plank .del{opacity:.62!important}
+.plank:hover .del{opacity:1!important}
+/* ① 选中一块木板：黄铜描边 + 顶端小铭牌，键盘删除才有明确的靶子 */
+.slot.sel .plank{
+  outline:2px solid rgba(255,214,140,.9);outline-offset:2px;
+  box-shadow:0 9px 16px rgba(24,14,5,.42),0 0 0 5px rgba(255,196,92,.22),
+             0 0 24px rgba(255,190,80,.32);
+}
+.slot.sel .plank::after{
+  content:"已选中";position:absolute;top:-11px;left:50%;transform:translateX(-50%);
+  font:600 9px/1 ui-monospace,Menlo,monospace;letter-spacing:1px;color:#3a2409;
+  padding:3px 8px;border-radius:2px;white-space:nowrap;
+  background:linear-gradient(180deg,#f7e3a8,#c9a24e 62%,#8a6a2c);
+  border:1px solid #6b4715;
+  box-shadow:0 1px 2px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.7);
+}
+/* ⑤ 绳尾：最后一段只垂到末板下方 68px，收口缠一道麻线结，再散出纤维 */
+.rope-tail{position:absolute;width:19px;height:27px;margin-left:-9.5px;pointer-events:none;z-index:1}
+.rope-tail .whip{
+  position:absolute;left:3px;top:0;width:13px;height:10px;border-radius:2px;
+  background:repeating-linear-gradient(90deg,#9a8052 0 1.2px,#544122 1.2px 2.4px),
+             linear-gradient(180deg,#b19763,#54401f);
+  box-shadow:inset 0 1px 1px rgba(255,238,200,.38),0 1px 3px rgba(0,0,0,.7);
+}
+.rope-tail .fray{
+  position:absolute;left:1px;top:9px;width:17px;height:18px;
+  background:repeating-linear-gradient(72deg,#b99c68 0 1px,transparent 1px 3px),
+             repeating-linear-gradient(94deg,#9c8255 0 .8px,transparent .8px 2.7px),
+             repeating-linear-gradient(112deg,#7c653f 0 .8px,transparent .8px 3.4px);
+  mask-image:linear-gradient(180deg,#000 0%,rgba(0,0,0,.85) 42%,transparent 100%);
+  -webkit-mask-image:linear-gradient(180deg,#000 0%,rgba(0,0,0,.85) 42%,transparent 100%);
+  opacity:.95;
+}
+/* ② 二次确认：凿进同一块拉丝金属的小铭牌，按钮沿用「挂上」那套立体金属钮 */
+.confirm{position:fixed;inset:0;z-index:200;display:none;align-items:center;justify-content:center;
+  background:rgba(14,11,8,.62)}
+.confirm.on{display:flex}
+.confirm-card{width:min(372px,86vw);border-radius:9px;overflow:hidden;
+  border:1px solid #3a3a3a;
+  background:linear-gradient(180deg,#9b9b9b 0%,#828282 10%,#6f6f6f 48%,#5b5b5b 88%,#494949 100%);
+  box-shadow:0 26px 60px rgba(0,0,0,.72),inset 0 1px 0 rgba(255,255,255,.5),
+             inset 0 -2px 3px rgba(0,0,0,.42)}
+.confirm-head{padding:12px 16px 10px;border-bottom:1px solid rgba(0,0,0,.45);
+  font-family:"Apple Garamond","Hoefler Text",Georgia,"Songti SC",serif;
+  font-size:17px;font-weight:600;font-style:italic;letter-spacing:1px;color:#f4efe2;
+  text-shadow:0 -1px 0 rgba(18,17,15,.9),0 1px 0 rgba(255,255,255,.5)}
+.confirm-body{padding:14px 16px 16px;background:linear-gradient(180deg,rgba(10,22,14,.9),rgba(6,16,10,.94));
+  border-top:1px solid rgba(255,255,255,.18);box-shadow:inset 0 4px 10px rgba(0,0,0,.7)}
+.confirm-line{font:13px/1.5 ui-monospace,Menlo,monospace;color:#8dffab;
+  text-shadow:0 0 5px rgba(90,255,140,.6);word-break:break-all}
+.confirm-sub{margin-top:8px;font-size:11px;color:#c9c5b9}
+.confirm-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+.confirm-btn{min-width:82px;height:30px;border-radius:6px;border:1px solid #565656;cursor:pointer;
+  font:inherit;font-size:12px;font-weight:600;color:#333;
+  background:linear-gradient(180deg,#fafafa,#d2d2d2 55%,#adadad);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.95),0 2px 3px rgba(0,0,0,.35);
+  text-shadow:0 1px 0 rgba(255,255,255,.7)}
+.confirm-btn.danger{color:#4a120b;background:linear-gradient(180deg,#ffd9c9,#e88b6b 55%,#c25a3c)}
+.confirm-btn:active{background:linear-gradient(180deg,#bdbdbd,#e2e2e2);box-shadow:inset 0 2px 4px rgba(0,0,0,.3)}
+.confirm-btn:focus-visible{outline:2px solid rgba(255,220,150,.9);outline-offset:2px}
 
 </style>
 </head>
@@ -918,7 +996,6 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
     <div class="chrome" id="chrome">
       <div class="titlebar">
         <div class="lamps"><span class="lamp r"><i></i></span><span class="lamp y"><i></i></span><span class="lamp g"><i></i></span></div>
-        <div class="name">DSH 日历</div>
         <!-- 玻璃模式原有的状态指示灯与「已连接 / 模型已接入」文字，拟物版照样留着。
              轻/重拟物切换不再占右上角：两者差别不大，切换收进窗口菜单/设置。 -->
         <div class="status-lamps">
@@ -927,6 +1004,8 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
           <span class="led a"><i></i></span><span class="st-txt">模型已接入</span>
         </div>
       </div>
+      <!-- 铭牌是 .chrome 的直接子元素：在「窗口顶边 → 绿屏上沿」整条金属带里居中 -->
+      <div class="name">DSH 日历</div>
 
       <!-- 输入区与标题栏是同一块金属板；主屏是凿进去的老式终端磷光屏 -->
       <div class="compose">
@@ -967,6 +1046,21 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
     <div>6. <b>木板上的字改成凿刻痕</b>：凹槽上缘背光发暗、下缘受光亮、字色是刻开的浅木芯，边缘带烙焦，不再像浮在表面的亮字。</div>
     <div>7. <b>标题只动字体</b>：换成早期 Macintosh 那路衬线斜体（Hoefler Text / Apple Garamond），放大、拉字距、压印蚀刻在金属上；不加铭牌、不加框、不加铆钉。</div>
     <div class="hint">回车 / 点「挂上」会挂一块新木板；悬停木板出现黄铜删除钮；拖动窗口木板轻摆。玻璃 ↔ 全拟物的无损切换仍在 App 的窗口菜单里，两个外观都保留。木板之间的空隙看到的是后面那个文本编辑窗口被高斯模糊后的柔光。</div>
+  </div>
+</div>
+
+<!-- 摘下木板前的二次确认：叉叉和键盘删除都先走这里 -->
+<div class="confirm" id="confirm" role="dialog" aria-modal="true" aria-label="删除日程二次确认">
+  <div class="confirm-card">
+    <div class="confirm-head">摘下这块木板？</div>
+    <div class="confirm-body">
+      <div class="confirm-line" id="confirmLine"></div>
+      <div class="confirm-sub">这条日程会从日历里删掉，没有撤销。按 Esc 或点「取消」可以反悔。</div>
+      <div class="confirm-actions">
+        <button class="confirm-btn" id="confirmNo" type="button">取消</button>
+        <button class="confirm-btn danger" id="confirmYes" type="button">摘下</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1386,10 +1480,18 @@ function buildRopes(){
   const n = list.length;
   if (!n){ ropeBox.style.height = '0px'; return; }
 
-  const right = Math.max(60, W - 36);
+  // 木板两端各内收 16px，孔也跟着挪；绳子的 x 必须读同一个变量，
+  // 否则孔在板上、绳在窗外，一眼就看出不是一根绳穿起来的。
+  const inset = parseFloat(getComputedStyle(document.documentElement)
+    .getPropertyValue('--plank-inset')) || 0;
+  const leftX = inset + 36;
+  const rightX = Math.max(60, W - inset - 36);
   const lastTop = list[n - 1].offsetTop || 0;
-  // 末段一直垂到列表底部；列表比窗口短时也留一截，别让绳子凭空断掉
-  const bottom = Math.max(area.scrollHeight, lastTop + PH + 40);
+  // ⑤ 绳尾：末段只垂到最后一板下方 68px 就收口，打结、散纤维。
+  //   以前一直拖到文档底部，滚到底只看见一根没完没了的绳，尾巴反而看不见。
+  const TAIL = 76;
+  const tailEnd = lastTop + PH + TAIL;
+  const bottom = Math.max(area.scrollHeight, tailEnd + 24);
   ropeBox.style.height = bottom + 'px';
 
   // 段 0：挂杆 → 第一块木板；段 i：前一块下沿 → 本块上沿；末段：最后一块下沿 → 底
@@ -1399,7 +1501,7 @@ function buildRopes(){
     const prevBottom = i === 0 ? 0 : (list[i - 1].offsetTop || 0) + PH;
     gaps.push([prevBottom, top]);
   }
-  gaps.push([lastTop + PH, bottom]);
+  gaps.push([lastTop + PH, tailEnd]);
 
   /* ── 每段绳都画成「上一个孔 → 这个孔」的直线 ──
      这是这一轮最要紧的一处。原来每段的旋转角是 atan2(dx, 缝隙高度 28)：
@@ -1420,12 +1522,12 @@ function buildRopes(){
     const top = g[0] - up;
     // 上锚点：首段在挂杆（柱顶 y=0），其余在上一个孔；下锚点：本孔，末段则是绳尾
     const anchorTop = first ? 0 : holeOf(gi - 1);
-    const anchorBot = last ? bottom : holeOf(gi);
+    const anchorBot = last ? tailEnd : holeOf(gi);
     // 捻纹必须按「页面绝对 y」对齐。不这么做，每一段的斜纹都从自己顶端
     // 重新开始，相邻两段的股带相位对不上 —— 一眼就看得出是拼起来的。
     const bgPos = '0 ' + (-top) + 'px';
     const cls = 'rope-seg' + (first ? ' cap-top' : '') + (last ? ' cap-bot' : '');
-    const els = [36, right].map(function(x){
+    const els = [leftX, rightX].map(function(x){
       const el = document.createElement('div');
       el.className = cls;
       el.style.left = x + 'px';
@@ -1438,6 +1540,15 @@ function buildRopes(){
       return el;
     });
     segs.push({ els: els, h: h, span: Math.max(8, anchorBot - anchorTop) });
+  });
+  // 两根绳的末端：缠一道麻线结 + 散开几根纤维，收口只在整根绳的尽头出现
+  [leftX, rightX].forEach(function(x){
+    const t = document.createElement('div');
+    t.className = 'rope-tail';
+    t.style.left = x + 'px';
+    t.style.top = (tailEnd - 4) + 'px';
+    t.innerHTML = '<span class="whip"></span><span class="fray"></span>';
+    ropeBox.appendChild(t);
   });
 }
 
@@ -1458,6 +1569,102 @@ function baseTilt(i){ return i % 2 ? 0.35 : -0.3; }
    「所有木板诡异的一起动」），滚动位置也跟着归零。现在只动真正变了的那一块。 */
 const slotOf = new Map();
 
+/* ① ② 选中 + 二次确认。
+   叉叉是真删（→ CalDAV HTTP DELETE），以前点一下就没了、没有反悔机会；
+   现在键盘 ⌫ / Delete 和叉叉都先弹确认。选中态只属于这台拟物机器，
+   不写进任何产品状态，也不碰玻璃模式那套列表。 */
+let selectedUid = null;
+let selectionNote = '';
+let confirmUid = null;
+let noSelectTimer = 0;
+const confirmEl = document.getElementById('confirm');
+
+function findItem(uid){ return items.find(function(x){ return x.uid === uid; }); }
+/* 没选中就按删除键时也要有回应：以前是彻底没反应，用户以为键坏了。
+   只是一条 2.4 秒后自动撤掉的 SYS 提示，不改任何数据。 */
+function hintNoSelection(){
+  const note = '> 先点一块木板选中，再按删除键摘下';
+  selectionNote = note;
+  updateSys();
+  clearTimeout(noSelectTimer);
+  noSelectTimer = setTimeout(function(){
+    if (selectionNote === note){ selectionNote = ''; updateSys(); }
+  }, 2400);
+}
+function clearSelection(){
+  selectedUid = null;
+  selectionNote = '';
+  document.querySelectorAll('.slot.sel').forEach(function(s){ s.classList.remove('sel'); });
+  updateSys();
+}
+function selectSlot(uid){
+  const it = findItem(uid);
+  if (!it) return;
+  selectedUid = uid;
+  document.querySelectorAll('.slot.sel').forEach(function(s){ s.classList.remove('sel'); });
+  const slot = slotOf.get(uid);
+  if (slot) slot.classList.add('sel');
+  // 交出输入框焦点：否则 ⌫ 只会删文本框里的字，删不掉选中的木板
+  const input = document.getElementById('phrase');
+  if (input && document.activeElement === input) input.blur();
+  selectionNote = '> 已选中「' + (it.what || '') + '」 · 按删除键摘下 · Esc 取消';
+  updateSys();
+}
+function doDelete(uid){
+  if (bridged) post({type:'delete', uid:uid});
+  else { items = items.filter(function(x){ return x.uid !== uid; }); render(-1); }
+}
+function openConfirm(uid){
+  const it = findItem(uid);
+  if (!it || !confirmEl) return;
+  confirmUid = uid;
+  const line = document.getElementById('confirmLine');
+  if (line) line.textContent = (it.when ? it.when + '  ' : '') + (it.what || '这条日程');
+  confirmEl.classList.add('on');
+  const no = document.getElementById('confirmNo');
+  if (no) no.focus();
+}
+function closeConfirm(){
+  confirmUid = null;
+  if (confirmEl) confirmEl.classList.remove('on');
+}
+function confirmDelete(){
+  const uid = confirmUid;
+  closeConfirm();
+  if (!uid) return;
+  if (selectedUid === uid) clearSelection();
+  doDelete(uid);
+}
+if (confirmEl){
+  const yes = document.getElementById('confirmYes');
+  const no = document.getElementById('confirmNo');
+  if (yes) yes.addEventListener('click', confirmDelete);
+  if (no) no.addEventListener('click', closeConfirm);
+  confirmEl.addEventListener('mousedown', function(e){
+    if (e.target === confirmEl) closeConfirm();       // 点遮罩空白处 = 取消
+  });
+}
+/* 键盘：Esc 取消/取消选中；确认框里 Enter = 摘下；选中木板后 ⌫ / Delete = 弹确认。
+   输入框里还有字时不抢删除键，打字始终是打字。 */
+document.addEventListener('keydown', function(e){
+  const isOpen = !!(confirmEl && confirmEl.classList.contains('on'));
+  if (e.key === 'Escape'){
+    if (isOpen){ e.preventDefault(); closeConfirm(); }
+    else if (selectedUid){ e.preventDefault(); clearSelection(); }
+    return;
+  }
+  if (isOpen){
+    if (e.key === 'Enter'){ e.preventDefault(); confirmDelete(); }
+    return;
+  }
+  if (e.key !== 'Backspace' && e.key !== 'Delete') return;
+  const input = document.getElementById('phrase');
+  if (input && document.activeElement === input && input.value.length > 0) return;
+  if (!selectedUid){ hintNoSelection(); return; }
+  e.preventDefault();
+  openConfirm(selectedUid);
+});
+
 function makeSlot(it, index){
   const slot = document.createElement('div');
   slot.className = 'slot';
@@ -1472,10 +1679,15 @@ function makeSlot(it, index){
       '<button class="del" title="摘下这块木板">×</button>' +
     '</div>';
   fillSlot(slot, it);
+  // 点板子选中；叉叉、右键顺延都不算选中
+  slot.addEventListener('click', function(e){
+    if (e.target.closest && e.target.closest('.del')) return;
+    selectSlot(it.uid);
+  });
+  // 叉叉与键盘删除共用同一个二次确认
   slot.querySelector('.del').addEventListener('click', function(e){
     e.stopPropagation();
-    if (bridged) { post({type:'delete', uid:it.uid}); }
-    else { items = items.filter(function(x){ return x.uid !== it.uid; }); render(-1); }
+    openConfirm(it.uid);
   });
   slot.addEventListener('contextmenu', function(e){
     e.preventDefault();
@@ -1494,6 +1706,7 @@ function fillSlot(slot, it){
 function render(newIndex){
   const area = document.getElementById('planks');
   const wanted = new Set(items.map(function(it){ return it.uid; }));
+  if (selectedUid && !wanted.has(selectedUid)) clearSelection();
 
   // 消失的：让这一块自己掉落淡出，别的木板不受影响
   slotOf.forEach(function(slot, uid){
@@ -1810,7 +2023,12 @@ document.addEventListener('contextmenu', function(e){ e.preventDefault(); });
    却不生效，而且 takeover 是单向的，一旦触发就再也回不去。
    原生滚动一旦被插一脚，就只剩「完全不能滚」这一个结果。
    滚轮一律交给 WebKit 自己处理，页面侧不再干预。 */
-document.addEventListener('click', function(){ ctx.style.display = 'none'; });
+document.addEventListener('click', function(e){
+  ctx.style.display = 'none';
+  if (selectedUid && !(e.target.closest && e.target.closest('.slot, #confirm'))){
+    clearSelection();
+  }
+});
 
 /* 在输入面板里点哪都算「点进输入框」。
    绿色屏内部本来就铺满 input，但还有三处落在别处：
@@ -1820,23 +2038,32 @@ document.addEventListener('click', function(){ ctx.style.display = 'none'; });
    所以接管范围放到整个 .compose，只放过右边的「挂上」按钮 ——
    点按钮是要提交，抢焦点会让它看起来没反应。 */
 (function(){
-  const panel = document.querySelector('.compose');
+  const chrome = document.querySelector('.chrome');
   const input = document.getElementById('phrase');
-  if (!panel || !input) return;
-  panel.addEventListener('mousedown', function(e){
-    if (e.target.closest && e.target.closest('button,a,textarea')) return;
+  if (!chrome || !input) return;
+  /* 绿屏本身已经整个是 input（见 .well input 的 absolute inset:0），
+     这里再接管整块上半部金属板：标题、「新建日程」标签、SYS 小屏、
+     六色灯阵、黄铜挂杆，用户眼里它们都是「对话框」的一部分。
+     只放过按钮、左上角红绿灯和确认弹层 —— 那些有各自的动作。 */
+  function focusFrom(e){
+    if (e.target.closest && e.target.closest(
+      'button,a,textarea,.lamps,.status-lamps,#confirm')) return;
     if (e.target === input){
-      /* 点在输入框上：光标落在哪儿交给浏览器算（别 preventDefault，否则丢定位），
-         但焦点要自己拿 —— 全指望着 WebKit 的默认聚焦，一旦它没做
-         （窗口刚激活、点完按钮回来、或者事件是程序合成的），就是「点了没反应」。 */
+      /* 光标落点交给浏览器算（别 preventDefault），但焦点要自己拿：
+         窗口刚激活、或点完按钮回来时 WebKit 不一定会自己聚焦。 */
       if (document.activeElement !== input) input.focus();
       return;
     }
+    if (document.activeElement === input) return;
     e.preventDefault();               // 别让浏览器把刚拿到的焦点又收回
     input.focus();
     const n = input.value.length;
     try { input.setSelectionRange(n, n); } catch (_){}
-  });
+  }
+  chrome.addEventListener('mousedown', focusFrom);
+  // 窗口未激活时的「首点」只负责激活窗口，mousedown 不一定送到页面里；
+  // click 再兜一次，保证点哪都能进输入。
+  chrome.addEventListener('click', focusFrom);
 })();
 
 /* SYS 屏：写日程时显示识别出的具体文字；空闲时显示系统提示。
@@ -1847,7 +2074,9 @@ let lastSysText = '正在读取日历…';
 function isIdleSys(t){ return /正在读取日历|日程已读取|正在写入日历/.test(t || ''); }
 function updateSys(){
   var line;
-  if (lastRecognized){
+  if (selectionNote){
+    line = selectionNote;
+  } else if (lastRecognized){
     var extra = (lastSysText && !isIdleSys(lastSysText)) ? '  ·  ' + lastSysText : '';
     line = '> ' + lastRecognized + extra;
   } else {
