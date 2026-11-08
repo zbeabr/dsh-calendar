@@ -185,33 +185,80 @@ body{
 }
 /* 输入区：凿进同一块金属板的凹槽，不是浮在上面的独立圆角面板 */
 .compose{position:relative;z-index:2;padding:10px 14px 0}
-/* 识别出的关键词：玻璃版那排胶囊的拟物对应物 —— 一颗颗压进金属的黄铜小牌。
-   以前拟物版只有一句 SYS 文字，用户看不出「到底认成了什么」，这是补上的那排。 */
-.chips{
-  position:relative;z-index:2;display:none;flex-wrap:nowrap;align-items:center;
-  gap:6px;margin-top:9px;min-height:22px;overflow:hidden;
+/* 固定 LED 灯阵 v2：六个槽位常驻、颜色各异、亮起的按 2.6s 呼吸。
+   熄灭时仍保留各自的暗色玻璃，所以任何时候都能看出是六颗不同的灯。 */
+.lamprack{
+  position:relative;z-index:2;display:flex;align-items:center;
+  height:26px;margin-top:9px;padding:0 8px;border-radius:3px;
+  background:linear-gradient(180deg,#2b2b29,#494945 48%,#242423);
+  border:1px solid #171716;
+  box-shadow:inset 0 2px 5px rgba(0,0,0,.78),
+             inset 0 -1px 0 rgba(255,255,255,.14),
+             0 1px 0 rgba(255,255,255,.32);
 }
-.chips.on{display:flex}
-.chip{
-  --c:#6b5a2e;
-  flex:none;display:inline-block;height:22px;line-height:22px;padding:0 10px;
-  border-radius:11px;max-width:170px;vertical-align:middle;
-  font-family:ui-monospace,"SF Mono",Menlo,monospace;
-  font-size:10.5px;font-weight:600;letter-spacing:.3px;
-  color:#f6ecd2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  background:linear-gradient(180deg,rgba(255,255,255,.22),rgba(0,0,0,.30)),var(--c);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.42),
-    inset 0 -1px 0 rgba(0,0,0,.52),
-    0 1px 2px rgba(0,0,0,.5);
-  text-shadow:0 1px 0 rgba(0,0,0,.6);
+.lamprack::after{
+  content:"";position:absolute;inset:0;border-radius:2px;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.045) 0 1px,transparent 1px 3px);
 }
-.chip.k-title{--c:#8a6a20}
-.chip.k-time{--c:#1f6b3a}
-.chip.k-location{--c:#1b5e6e}
-.chip.k-repeat{--c:#5a3d7a}
-.chip.k-tag{--c:#7a5a2c}
-.chip.k-alarm{--c:#7d3a24}
+.lampcell{
+  position:relative;z-index:1;flex:1;min-width:0;display:flex;align-items:center;gap:6px;
+  padding:0 7px;border-right:1px solid rgba(0,0,0,.42);
+  box-shadow:1px 0 0 rgba(255,255,255,.07);
+}
+.lampcell:last-child{border-right:0;box-shadow:none}
+/* 六种灯色：亮色三段 + 对应辉光；--d1/--d2 是未通电时同色相的暗玻璃 */
+.lampcell[data-kind="title"]   {--c1:#fff0c4;--c2:#ffb43c;--c3:#8a4a06;--glow:rgba(255,176,60,.85); --d1:#7a5a24;--d2:#3a2a12}
+.lampcell[data-kind="time"]    {--c1:#d8ffc4;--c2:#5fe884;--c3:#12652c;--glow:rgba(80,255,130,.80); --d1:#3f6b46;--d2:#1d3022}
+.lampcell[data-kind="location"]{--c1:#d6faff;--c2:#4fd8e8;--c3:#0c5a68;--glow:rgba(80,220,240,.80);--d1:#3d6a72;--d2:#1a3036}
+.lampcell[data-kind="repeat"]  {--c1:#dceaff;--c2:#6ba8ff;--c3:#1b3d80;--glow:rgba(110,170,255,.80);--d1:#465a86;--d2:#1e2740}
+.lampcell[data-kind="tag"]     {--c1:#f3e2ff;--c2:#c48cff;--c3:#5a2787;--glow:rgba(195,140,255,.80);--d1:#694a80;--d2:#2e1f3a}
+.lampcell[data-kind="alarm"]   {--c1:#ffe0d6;--c2:#ff6b58;--c3:#892012;--glow:rgba(255,105,85,.85); --d1:#7a4038;--d2:#331a16}
+.lampcell .bulb{
+  flex:none;width:10px;height:10px;border-radius:50%;padding:1.5px;
+  background:radial-gradient(circle at 34% 28%,#d8c79a,#8a6a2c 60%,#3d2a0c);
+  box-shadow:0 1px 0 rgba(255,255,255,.22),inset 0 1px 2px rgba(0,0,0,.85);
+}
+.lampcell .bulb i{
+  display:block;width:100%;height:100%;border-radius:50%;position:relative;
+  background:radial-gradient(circle at 36% 28%,var(--d1),var(--d2) 55%,#120e0a);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.9);
+}
+.lampcell .bulb i::after{
+  content:"";position:absolute;left:20%;top:14%;width:38%;height:28%;border-radius:50%;
+  background:rgba(255,255,255,.26);
+}
+.lampcell.on .bulb i{
+  background:radial-gradient(circle at 36% 28%,var(--c1),var(--c2) 45%,var(--c3) 85%);
+  box-shadow:0 0 5px var(--glow),0 0 11px var(--glow),
+             inset 0 1px 1px rgba(255,255,255,.55);
+  animation:lampBreathe 2.6s ease-in-out infinite;
+}
+.lampcell.on .bulb i::after{background:rgba(255,255,255,.78)}
+.lampcell .silk{
+  font:600 9.5px/1 ui-monospace,Menlo,monospace;letter-spacing:.6px;
+  color:#b4b2a9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  text-shadow:0 -1px 0 rgba(0,0,0,.85),0 1px 0 rgba(255,255,255,.12);
+}
+.lampcell.on .silk{
+  color:var(--c2);text-shadow:0 0 5px var(--glow),0 -1px 0 rgba(0,0,0,.85);
+  animation:silkBreathe 2.6s ease-in-out infinite;
+}
+/* 呼吸：灯芯亮度与外圈辉光一起起伏，和右上角那两颗状态灯同为 2.6s；
+   六颗错相位，像一排各自通电的指示灯，而不是整齐划一地闪 */
+@keyframes lampBreathe{
+  0%,100%{opacity:.56;filter:brightness(.84)}
+  50%{opacity:1;filter:brightness(1.16)}
+}
+@keyframes silkBreathe{0%,100%{opacity:.70}50%{opacity:1}}
+.lampcell[data-kind="title"]    .bulb i,.lampcell[data-kind="title"]    .silk{animation-delay:0s}
+.lampcell[data-kind="time"]     .bulb i,.lampcell[data-kind="time"]     .silk{animation-delay:-.43s}
+.lampcell[data-kind="location"] .bulb i,.lampcell[data-kind="location"] .silk{animation-delay:-.87s}
+.lampcell[data-kind="repeat"]   .bulb i,.lampcell[data-kind="repeat"]   .silk{animation-delay:-1.30s}
+.lampcell[data-kind="tag"]      .bulb i,.lampcell[data-kind="tag"]      .silk{animation-delay:-1.73s}
+.lampcell[data-kind="alarm"]    .bulb i,.lampcell[data-kind="alarm"]    .silk{animation-delay:-2.17s}
+@media (prefers-reduced-motion: reduce){
+  .lampcell.on .bulb i,.lampcell.on .silk{animation:none;opacity:1;filter:none}
+}
 .compose-label{
   font-size:10.5px;letter-spacing:.6px;color:#f0efeb;
   text-shadow:0 1px 1px rgba(0,0,0,.55);margin-bottom:7px;
@@ -247,7 +294,7 @@ body{
 .well{cursor:text}
 /* 标签、小液晶屏、关键词小牌也算输入面板的一部分：鼠标移上去给文本光标，
    告诉用户「这里点了也能打字」，别让光标显示成箭头还怪点了没反应。 */
-.compose-label,.compose .lcd-strip,.compose .chips{cursor:text}
+.compose-label,.compose .lcd-strip,.compose .lamprack{cursor:text}
 .well input{
   position:relative;z-index:1;
   /* 之前 input 只有一行字高（22px），整块屏 94px，点偏上偏下就落在 .well 上，
@@ -891,7 +938,8 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
           <button class="add-btn" id="add">挂上</button>
         </div>
         <!-- 识别结果：玻璃版那排胶囊在这里变成黄铜小牌，让用户一眼看出「认成了什么」 -->
-        <div class="chips" id="chips"></div>
+        <!-- 识别指示灯阵：槽位常驻，亮灭表示这一项有没有认出来 -->
+        <div class="lamprack" id="chips"><div class="lampcell" data-kind="title"><span class="bulb"><i></i></span><span class="silk">事项</span></div><div class="lampcell" data-kind="time"><span class="bulb"><i></i></span><span class="silk">时间</span></div><div class="lampcell" data-kind="location"><span class="bulb"><i></i></span><span class="silk">地点</span></div><div class="lampcell" data-kind="repeat"><span class="bulb"><i></i></span><span class="silk">重复</span></div><div class="lampcell" data-kind="tag"><span class="bulb"><i></i></span><span class="silk">标签</span></div><div class="lampcell" data-kind="alarm"><span class="bulb"><i></i></span><span class="silk">提醒</span></div></div>
         <!-- 系统提示单独放一块细长的小液晶屏，不挤在主屏里 -->
         <div class="lcd-strip">
           <span class="tag">SYS</span>
@@ -1503,31 +1551,18 @@ function revealSlot(uid){
   else window.scrollTo(0, y);
 }
 
-/* 识别结果：玻璃版那排胶囊的拟物对应物 */
+/* 识别结果 → 六色灯阵 + SYS 屏。函数名沿用旧桥接 renderChips，
+   Swift 侧 payload 里的 chips 结构不用动。面板高度恒定，不再调用 rigSync()。 */
 function renderChips(list){
-  const box = document.getElementById('chips');
-  if (!box) return;
-  const wasOn = box.classList.contains('on');
-  box.innerHTML = '';
-  if (!list || !list.length){
-    box.classList.remove('on');
-    // 这一排出现/消失会把下面的木板区顶上顶下，绳子必须跟着重新量
-    if (wasOn) rigSync();
-    return;
-  }
-  list.forEach(function(c){
-    const s = document.createElement('span');
-    s.className = 'chip k-' + (c.kind || 'tag');
-    s.textContent = c.text == null ? '' : c.text;
-    box.appendChild(s);
+  var arr = list || [];
+  var kinds = new Set(arr.map(function(c){ return c.kind || 'tag'; }));
+  document.querySelectorAll('.lamprack .lampcell').forEach(function(el){
+    el.classList.toggle('on', kinds.has(el.dataset.kind));
   });
-  box.classList.add('on');
-  // 放不下的直接去掉：宁可少一颗，也不要露出一颗被切掉一半的
-  const max = box.clientWidth - 2;
-  Array.prototype.slice.call(box.children).forEach(function(el){
-    if (el.offsetLeft + el.offsetWidth > max) el.remove();
-  });
-  if (!wasOn) rigSync();
+  lastRecognized = arr.map(function(c){
+    return String(c.text == null ? '' : c.text).trim();
+  }).filter(Boolean).join(' · ');
+  updateSys();
 }
 
 /* ---------- 悬挂物理：一串木板穿在两根绳子上 ----------
@@ -1804,7 +1839,27 @@ document.addEventListener('click', function(){ ctx.style.display = 'none'; });
   });
 })();
 
-function setSys(text){ document.getElementById('sysline').textContent = text; }
+/* SYS 屏：写日程时显示识别出的具体文字；空闲时显示系统提示。
+   若同时有重要系统提示（冲突 / 失败 / 离线等），用「 · 」接在识别文字后面，
+   不吞掉冲突告警。空闲流水账（正在读取 / 已读取 / 正在写入）不抢这一行。 */
+let lastRecognized = '';
+let lastSysText = '正在读取日历…';
+function isIdleSys(t){ return /正在读取日历|日程已读取|正在写入日历/.test(t || ''); }
+function updateSys(){
+  var line;
+  if (lastRecognized){
+    var extra = (lastSysText && !isIdleSys(lastSysText)) ? '  ·  ' + lastSysText : '';
+    line = '> ' + lastRecognized + extra;
+  } else {
+    line = lastSysText;
+  }
+  document.getElementById('sysline').textContent = line;
+}
+function setSys(text){
+  if (text == null) return;
+  lastSysText = String(text);
+  updateSys();
+}
 
 function submit(){
   const el = document.getElementById('phrase');
