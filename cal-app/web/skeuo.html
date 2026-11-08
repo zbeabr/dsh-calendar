@@ -1516,6 +1516,8 @@ const SOFT = 5;            // 软限位起点。木板是「窗口等宽」的�
                            // 露出一条缝，所以能给的横向位移只有几像素 ——
                            // 摆动感主要交给倾角，不靠横移。
 const WAVE = 1.3;          // 冲量沿绳往下传的速度（px/ms）：1.3 时最后一块比第一块晚约 0.4s
+const TILT_MAX = 1.7;      // 倾角上限。原本 1.4，但修好派发之后各块峰值都顶到 1.39，
+                           // 等于一直被削平，摆到极限那一下是「停住」而不是「过零」。
 const FIXED = 1 / 120;
 
 const pen = new Map();     // uid -> {x, v, L}
@@ -1523,7 +1525,7 @@ let order = [];            // 当前渲染顺序的 uid
 let nodes = [];            // 与 order 一一对应的质量点
 const tailNode = { x: 0, v: 0, L: 0.9 };
 let rafId = 0, lastT = 0, accT = 0, awake = false;
-let lastWinV = 0, lastWinT = 0;
+let lastWinV = 0, lastWinVY = 0, lastWinT = 0;
 
 /* 把物理状态对齐到当前 DOM：新木板从静止开始，已有的保留当前位移，
    免得列表一刷新，正在摆的木板突然顿一下。 */
@@ -1546,8 +1548,9 @@ function rigSync(){
   }
   nodes = order.map(function(uid, i){
     let s = pen.get(uid);
-    if (!s){ s = { x: 0, v: 0, rt: 0, L: 0.2 }; pen.set(uid, s); }
+    if (!s){ s = { x: 0, v: 0, rt: 0, L: 0.2, q: [] }; pen.set(uid, s); }
     if (s.rt == null) s.rt = 0;
+    if (!s.q) s.q = [];
     const y = (list[i].offsetTop || 0) + PH / 2;
     /* 摆长不能纯按 y 线性取（原来 0.06~0.75 差了 12 倍）：最底下那块会甩到
        上限被削平，最上面那块几乎不动，整列读起来像被拉长的一根弹簧。
@@ -1600,7 +1603,7 @@ function stepPhysics(dt){
     const xNext = i === n - 1 ? tailNode.x : nodes[i + 1].x;
     const span = (i === 0 || i === n - 1) ? (PH + GAP) : (PH + GAP) * 2;
     const raw = Math.atan2(xNext - xPrev, span) * 57.2958 * 0.42;
-    const target = Math.max(-1.4, Math.min(1.4, raw));
+    const target = Math.max(-TILT_MAX, Math.min(TILT_MAX, raw));
     s.rt += (target - s.rt) * Math.min(1, dt * 16);
   }
 }
@@ -1654,10 +1657,23 @@ function frame(t){
   // 放出还没到时间的延迟冲量（沿绳往下的传播），只要还有没放完的，循环就不能停
   const now = performance.now();
   let pending = false;
+  /* 冲量出队。上一版是「每个节点只存一个 qv + 一个 qd」：拖动中每来一个事件都把
+     qd 往后推一次，靠下的节点要等 63~410ms，可事件每 40ms 就来一次 —— qd 永远被
+     推后，于是它们在整个拖动期间一次都收不到冲量，只在拖完才被一次性灌一大口。
+     现场看到的就是「上面甩得开、中间死、最下面僵着」。改成每个冲量各自带到达
+     时间排队，谁来谁上，逐条兑现。 */
   for (let i = 0; i < nodes.length; i += 1){
     const s = nodes[i];
-    if (!s.qv) continue;
-    if (now >= s.qd){ s.v += s.qv; s.qv = 0; } else pending = true;
+    const q = s.q;
+    if (!q || !q.length) continue;
+    if (q.length === 1 && now >= q[0].at){ s.v += q[0].v; q.length = 0; continue; }
+    let w = 0;
+    for (let j = 0; j < q.length; j += 1){
+      if (now >= q[j].at) s.v += q[j].v;
+      else q[w++] = q[j];
+    }
+    q.length = w;
+    if (w) pending = true;
   }
 
   let steps = 0;
@@ -1671,12 +1687,13 @@ function frame(t){
 function settle(){
   for (let i = 0; i < nodes.length; i += 1){
     const s = nodes[i];
-    s.x = 0; s.v = 0; s.rt = 0; s.qv = 0;
+    s.x = 0; s.v = 0; s.rt = 0;
+    if (s.q) s.q.length = 0;
   }
   tailNode.x = 0; tailNode.v = 0;
   paint();
   awake = false;
-  accT = 0; lastT = 0; lastWinV = 0;
+  accT = 0; lastT = 0; lastWinV = 0; lastWinVY = 0;
   if (rafId){ cancelAnimationFrame(rafId); rafId = 0; }   // 别留一帧没跑完的回调
   document.getElementById('planks').classList.remove('awake');
 }
@@ -1807,26 +1824,36 @@ window.dshRender = function(state){
 };
 window.dshSys = setSys;
 
-/* 原生窗口拖动时 Swift 每帧推来窗口的横向速度（px/s）。
+/* 原生窗口拖动时 Swift 每帧推来窗口的速度向量（px/s）。
    这里取它的变化量当加速度 —— 惯性冲量与加速度反向，这正是
-   「匀速移动时挂着的东西会自己站住、一加速减速才被甩起来」的原因。 */
-window.dshSwing = function(v){
+   「匀速移动时挂着的东西会自己站住、一加速减速才被甩起来」的原因。
+
+   两个轴都要用上：横向直接决定板子往哪边甩；纵向（上下抽动窗口）在物理上
+   是让绳的张力周期性变化 —— 参数共振，正是垂直驱动单摆会横向摆起来的原因，
+   所以纵向加速度也给一份横向冲量，系数约为横向的四成半，指向取负号。 */
+window.dshSwing = function(vx, vy){
   if (reduced) return;
-  if (typeof v !== 'number'){          // 老调用方式，给一个轻推
+  if (typeof vx !== 'number'){          // 老调用方式，给一个轻推
     nodes.forEach(function(s, i){ s.v += 22 * (i % 2 ? 1 : -1); });
     wake();
     return;
   }
   const now = performance.now();
-  if (now - lastWinT > 240) lastWinV = 0;   // 拖动停过，重新起算
+  if (now - lastWinT > 240){ lastWinV = 0; lastWinVY = 0; }   // 拖动停过，重新起算
   lastWinT = now;
-  const dv = Math.max(-4000, Math.min(4000, v - lastWinV));
-  lastWinV = v;
-  if (!dv) return;
+  const dvx = Math.max(-4000, Math.min(4000, vx - lastWinV));
+  const dvy = Math.max(-4000, Math.min(4000, (typeof vy === 'number' ? vy : 0) - lastWinVY));
+  lastWinV = vx;
+  lastWinVY = (typeof vy === 'number' ? vy : lastWinVY);
+  if (!dvx && !dvy) return;
   /* 惯性冲量：单位是 px/s。
      系数 0.04 → 0.16：原来一次拖窗只换来 4px 的位移，看着像「被碰了一下」，
-     不是摆。0.16 配上下面的新阻尼，快到 500px/s 的拖动差不多 8~12px 的摆幅。 */
-  const imp = Math.max(-180, Math.min(180, -dv * 0.12));
+     不是摆。0.16 配上下面的新阻尼，快到 500px/s 的拖动差不多 8~12px 的摆幅。
+     之后收到 0.12：派发改对以后每个节点都能真收到冲量，总量比原来大了一倍多。
+     纵向系数 0.055 起，实测「只上下抽窗」要 180px/s 的速度增量才换来 6px，
+     比横向迟钝太多，收到 0.075 让两轴手感接近（纵向仍略轻，符合它只是
+     参数共振、不是主驱动的物理地位）。 */
+  const imp = Math.max(-180, Math.min(180, -dvx * 0.12 - dvy * 0.075));
   for (let i = 0; i < nodes.length; i += 1){
     const s = nodes[i];
     const vv = imp * (0.86 + ((i * 7) % 5) / 14);   // 极小的个体差异，破掉完全同步
@@ -1835,12 +1862,9 @@ window.dshSwing = function(v){
        这是「晃动太假」的另一半原因。按 y 距离给一个几十毫秒的延迟，
        看起来才像从挂杆一路甩下去。 */
     const delay = (i * (PH + GAP)) / WAVE;
-    if (delay < 8){
-      s.v += vv;
-    } else {
-      s.qv = (s.qv || 0) + vv;
-      s.qd = now + delay;
-    }
+    const at = now + Math.max(0, delay);
+    if (!s.q) s.q = [];
+    s.q.push({ at: at, v: vv });
   }
   tailNode.v += imp * 0.75;
   wake();

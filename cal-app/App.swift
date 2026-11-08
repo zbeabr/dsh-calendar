@@ -4464,8 +4464,8 @@ extension NSColor {
 /// 木板只能在开始那一瞬间「统一晃一下」（用户说的死板）。这里自己跟鼠标，就能每 40ms
 /// 把真实速度推给页面。
 final class SkeuoDragView: NSView {
-    /// 横向速度，px/s。
-    var onDrag: ((CGFloat) -> Void)?
+    /// 窗口移动速度，px/s，横纵两个分量。
+    var onDrag: ((CGFloat, CGFloat) -> Void)?
 
     private var startMouse = NSPoint.zero
     private var lastMouse = NSPoint.zero
@@ -4500,12 +4500,13 @@ final class SkeuoDragView: NSView {
         let now = ProcessInfo.processInfo.systemUptime
         let dt = max(1.0 / 240.0, now - lastTime)
         let dx = point.x - lastMouse.x
+        let dy = point.y - lastMouse.y
         lastMouse = point
         lastTime = now
         // 每帧都推会给 WebView 灌几百次 JS 调用，40ms 一次已经够顺
         if now - lastSent > 0.04 {
             lastSent = now
-            onDrag?(CGFloat(dx) / CGFloat(dt))
+            onDrag?(CGFloat(dx) / CGFloat(dt), CGFloat(dy) / CGFloat(dt))
         }
     }
 }
@@ -4595,10 +4596,11 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         let drag = SkeuoDragView(frame: NSRect(x: 0, y: bounds.height - barHeight,
                                                width: bounds.width, height: barHeight))
         drag.autoresizingMask = [.width, .minYMargin]
-        drag.onDrag = { [weak self] speed in
+        drag.onDrag = { [weak self] vx, vy in
             guard let web = self?.skeuoWebView else { return }
-            let v = Int(max(-2000, min(2000, speed)))
-            web.evaluateJavaScript("window.dshSwing(\(v))") { _, _ in }
+            let x = Int(max(-2000, min(2000, vx)))
+            let y = Int(max(-2000, min(2000, vy)))
+            web.evaluateJavaScript("window.dshSwing(\(x),\(y))") { _, _ in }
         }
         container.addSubview(drag)
 
