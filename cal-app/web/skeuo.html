@@ -298,22 +298,65 @@ body{
   animation:blink 1.1s steps(1) infinite;
 }
 @keyframes blink{50%{opacity:0}}
-/* 黄铜挂杆：与窗口等宽，铆在金属板下沿 */
+/* 黄铜挂杆：一整条铸造黄铜，铆在金属板下沿。
+   廉价感来自「一条均匀的垂直渐变」——那是金属条贴图，不是金属。
+   真的铜条是三段倒角：上斜面迎天光最亮、主弧面中间偏上有一点反射、
+   下斜面入暗，两端氧化发黑，中间还有几块不均匀的高光斑。 */
 .rail{
-  position:relative;z-index:3;height:14px;margin-top:12px;
+  position:relative;z-index:3;height:20px;margin-top:10px;border-radius:2px;
   background:
-    linear-gradient(180deg,rgba(255,255,255,.75) 0 1px,transparent 1px),
-    linear-gradient(180deg,#f0d48c 0%,#c9a24e 26%,#9a732c 62%,#6b4715 100%);
-  border-top:1px solid #4a3410;border-bottom:2px solid #3a2709;
-  box-shadow:0 3px 5px rgba(0,0,0,.35),inset 0 -1px 1px rgba(255,240,190,.5);
+    /* 关键是 20% 处那条反射带：它必须比上面的斜面更亮，
+       然后急转直下进入暗部 —— 这是弧面金属的判读特征。
+       少了这条，无论渐变多顺，都只是一条黄色的条。 */
+    linear-gradient(180deg,
+      #f7e6b4 0%, #e6c77e 3%, #d9b96a 8%, #c8a44f 14%,
+      #dcc07c 19%, #d3b265 24%,
+      #b5903c 37%, #9c7830 51%, #8a6724 65%,
+      #6f5015 79%, #54390c 89%, #3a2605 96%, #2a1a03 100%);
+  border-top:1px solid #6f4c12;border-bottom:1px solid #201402;
+  box-shadow:
+    0 1px 0 rgba(255,246,214,.32),
+    0 3px 6px rgba(0,0,0,.45),            /* 压在木板上的接触影 */
+    0 7px 15px rgba(0,0,0,.24),           /* 外扩的柔影 */
+    inset 0 1px 0 rgba(255,252,232,.62),  /* 顶棱高光，别做成白描边 */
+    inset 0 -1px 0 rgba(255,226,160,.18), /* 底棱反光 */
+    inset 0 -7px 9px rgba(38,23,2,.35);   /* 下半段自暗 */
+  overflow:hidden;
 }
 .rail::before{ /* 黄铜拉丝 + 氧化斑 */
-  content:"";position:absolute;inset:0;filter:url(#brassGrain);opacity:.5;mix-blend-mode:multiply;
+  content:"";position:absolute;inset:0;filter:url(#brassGrain);opacity:.62;mix-blend-mode:multiply;
+}
+/* 沿杆长方向明暗交替 —— 这一层是「像真金属」的关键。
+   纯渐变的金属永远是假的：真铜条上反射是几块大小不等的光斑，
+   中间还夹着暗区，不可能一路均匀。 */
+.rail::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:
+    radial-gradient(38% 120% at 13% 28%,rgba(255,250,222,.5),transparent 72%),
+    radial-gradient(26% 110% at 36% 66%,rgba(255,246,212,.22),transparent 70%),
+    radial-gradient(44% 130% at 61% 26%,rgba(255,252,230,.42),transparent 74%),
+    radial-gradient(22% 110% at 80% 62%,rgba(255,244,206,.24),transparent 68%),
+    radial-gradient(30% 120% at 47% 46%,rgba(40,24,2,.3),transparent 72%),
+    linear-gradient(90deg,rgba(24,14,2,.6) 0%,rgba(24,14,2,0) 8%,
+                    rgba(24,14,2,0) 92%,rgba(24,14,2,.6) 100%),
+    linear-gradient(180deg,transparent 55%,rgba(26,15,2,.4) 100%);
 }
 .rail .rivet{
-  position:absolute;top:2px;width:9px;height:9px;border-radius:50%;
-  background:radial-gradient(circle at 33% 27%,#fff0bf,#cda752 45%,#79541c 85%);
-  box-shadow:0 1px 1px rgba(0,0,0,.55),inset 0 -1px 1px rgba(70,40,5,.7);
+  position:absolute;top:4px;width:12px;height:12px;border-radius:50%;
+  background:radial-gradient(circle at 36% 24%,
+    #fdf3cf 0%,#e8cc88 12%,#c9a24e 30%,#a17b2c 54%,#6b4a13 80%,#3b2605 100%);
+  box-shadow:
+    0 1px 2px rgba(0,0,0,.7),
+    0 0 0 1px rgba(52,32,6,.5),
+    inset 0 1px 1px rgba(255,252,232,.95),
+    inset 0 -1.5px 2.5px rgba(46,27,2,.9);
+}
+/* 铆钉头上的一道浅刻痕 + 它下缘的受光边 —— 没有这两笔，它就只是个圆点 */
+.rail .rivet::after{
+  content:"";position:absolute;left:50%;top:50%;width:6px;height:1.5px;
+  margin:-.75px 0 0 -3px;border-radius:1px;
+  background:linear-gradient(90deg,rgba(70,45,10,.12),rgba(70,45,10,.85),rgba(70,45,10,.12));
+  box-shadow:0 1px 0 rgba(255,244,210,.45);
 }
 .rail .rivet.l{left:26px}.rail .rivet.r{right:26px}
 /* ---------- 列表区：木板间隙是后方窗口的高斯模糊，不再是硬透明 ---------- */
@@ -329,13 +372,57 @@ body{
    两样东西根本不是一个物体。拆开之后每段绳子的两端分别挂在相邻两块木板上，
    木板一动，绳子就跟着倾斜 —— 这才是「串在绳上的木板」该有的样子。 */
 .ropes{position:absolute;inset:0;pointer-events:none;z-index:0}
+/* 麻绳：三股左捻（Z 捻）。
+   之前做错的地方：用两组相反方向的斜纹交叉，结果出来是「编织网/弹簧」。
+   捻绳的本质是**单向的平行股带**——三股往同一个方向拧，股与股之间是深沟。
+   所以这里只有一组同向斜带，再叠一层沿绳长的松紧起伏和一层圆柱受光。
+   圆柱那层必须是半透明叠在最上面：要是实色放在底层，会把股带整个盖死。 */
 .rope-seg{
-  position:absolute;width:5px;margin-left:-2.5px;transform-origin:50% 0;
-  border-radius:2px;
+  --a:38deg;   /* 捻纹角度：越陡越像拧紧的绳 */
+  position:absolute;width:8px;margin-left:-4px;transform-origin:50% 0;
+  border-radius:4px;
   background:
-    repeating-linear-gradient(26deg,rgba(60,40,17,.5) 0 1.3px,transparent 1.3px 3.6px),
-    linear-gradient(90deg,#563a1a 0%,#8a6a3f 24%,#d2ae73 47%,#a37f4d 72%,#4a3116 100%);
-  box-shadow:1px 1px 2px rgba(0,0,0,.4);
+    /* ① 圆柱受光：亮带偏左，两侧入暗（半透明，压在股带上） */
+    linear-gradient(90deg,
+      rgba(8,4,1,.74) 0%, rgba(24,14,4,.44) 12%,
+      rgba(255,240,210,.04) 32%, rgba(255,248,225,.15) 48%,
+      rgba(255,240,210,.04) 64%, rgba(24,14,4,.44) 88%, rgba(6,3,1,.78) 100%),
+    /* ② 纤维：沿股方向的极细毛纹，比股密得多 */
+    repeating-linear-gradient(var(--a),rgba(255,242,214,.13) 0 .4px,transparent .4px 1.15px),
+    /* ③ 三股捻带：一条亮股 → 缓降 → 一条深沟，周期 3.2px。
+       颜色要压成亚麻的灰土黄，偏黄一点就变成铜丝了。 */
+    repeating-linear-gradient(var(--a),
+      #bfa67c 0 .85px,
+      #a98f63 .85px 1.7px,
+      #7f6842 1.7px 2.35px,
+      #4e3d24 2.35px 2.95px,
+      #75603c 2.95px 3.2px),
+    /* ④ 捻得松紧不匀：沿绳长方向的极轻明暗起伏 */
+    repeating-linear-gradient(180deg,rgba(255,236,200,.05) 0 7px,rgba(20,10,2,.12) 7px 15px);
+  box-shadow:
+    1px 1px 1px rgba(0,0,0,.5),
+    2px 3px 6px rgba(0,0,0,.28),
+    inset -1px 0 1px rgba(0,0,0,.42),
+    inset 1px 0 1px rgba(255,228,185,.18);
+}
+/* 右边的绳子捻向镜像：两条同向会像贴图复制品 */
+.rope-seg:nth-child(even){--a:-38deg}
+/* 绳子两侧飞出来的短纤维：极细、极淡、带一点虚化，不能做成规则锯齿 */
+.rope-seg::before{
+  content:"";position:absolute;inset:3px -1px;
+  background:repeating-linear-gradient(178deg,rgba(206,176,136,.34) 0 .5px,transparent .5px 2.6px);
+  mask-image:linear-gradient(90deg,#000 0 8%,transparent 22%,transparent 78%,#000 92%);
+  -webkit-mask-image:linear-gradient(90deg,#000 0 8%,transparent 22%,transparent 78%,#000 92%);
+  filter:blur(.5px);
+  opacity:.42;
+}
+/* 两端入孔：绳子钻进铜环，孔口会把它压暗。
+   不加这一层，两段绳子就是「被剪断」的——断口平得像塑料。 */
+.rope-seg::after{
+  content:"";position:absolute;inset:0;border-radius:4px;
+  background:linear-gradient(180deg,
+    rgba(10,5,1,.58) 0%, rgba(10,5,1,.14) 6%, transparent 15%,
+    transparent 85%, rgba(10,5,1,.14) 94%, rgba(10,5,1,.58) 100%);
 }
 .slot{position:relative;height:82px;z-index:1}   /* 54 板 + 28 透明间隙 */
 .plank{
@@ -385,18 +472,61 @@ body{
   content:"";position:absolute;inset:0;border-radius:0 0 3px 3px;
   background:repeating-linear-gradient(90deg,rgba(255,205,145,.10) 0 1px,transparent 1px 4px);
 }
-/* 黄铜穿孔 + 麻绳垫圈 */
+/* 黄铜鸡眼扣：不是一颗「小金圆点」，是一片被压进木头里的翻边铜环。
+   真实感全靠这个判读顺序，缺一层就塌：
+   木头被压出的凹坑 → 铜环外翻边的高光 → 环面的拉丝与氧化 →
+   内缘锐利的暗过渡 → 孔壁左上被照亮的一段 → 孔底近黑 → 穿过孔的绳芯。 */
 .grommet{
-  position:absolute;top:50%;width:15px;height:15px;margin-top:-7.5px;border-radius:50%;
-  background:radial-gradient(circle at 34% 28%,#fbe9b4,#c9a24e 42%,#8a6320 72%,#4a310e 100%);
-  box-shadow:0 1px 2px rgba(0,0,0,.6),inset 0 -1px 2px rgba(60,38,6,.8),inset 0 1px 1px rgba(255,245,205,.9);
+  position:absolute;top:50%;left:36px;width:20px;height:20px;
+  margin-top:-10px;margin-left:-10px;border-radius:50%;
+  /* 从圆心往外一次性排好：孔 → 内缘(翻边向下弯，暗) → 环面(渐渐起亮) →
+     外翻边(最亮的一条窄环) → 外缘暗线。顺序错了立刻变硬币贴纸。 */
+  background:
+    /* 沿圆周的明暗：左上受光、右下入暗，金属圆环的反射是转一圈变化的 */
+    conic-gradient(from 200deg at 50% 50%,
+      rgba(255,246,214,.26) 0deg, transparent 74deg,
+      rgba(56,36,8,.22) 152deg, transparent 214deg,
+      rgba(255,246,214,.2) 302deg, rgba(255,246,214,.26) 360deg),
+    radial-gradient(circle at 50% 50%,
+      #33210a 0%, #452e0d 53%,
+      #6d4f16 62%, #8d6a24 70%, #a5822f 77%, #b08c3a 83%,
+      #cfb078 90%, #e6d09a 94%,
+      rgba(52,32,8,.92) 97%, rgba(30,18,3,.96) 100%);
+  box-shadow:
+    /* 木头被压出凹坑：刻线 → 压紧变色的木环 → 凹陷软影 → 落向右下 */
+    0 0 0 1px rgba(12,6,1,.75),
+    0 0 0 2.5px rgba(146,104,58,.22),
+    0 0 5px 1px rgba(16,8,1,.55),
+    1px 2px 4px rgba(0,0,0,.5),
+    inset 0 1px 1px rgba(255,250,226,.72),
+    inset 0 -1.5px 2px rgba(30,17,2,.9);
 }
+/* 环面上的氧化斑与拉丝：铜放久了不会是一圈均匀的亮金 */
+.grommet::before{
+  content:"";position:absolute;inset:0;border-radius:50%;
+  background:
+    radial-gradient(58% 50% at 26% 72%, rgba(58,36,8,.34), transparent 70%),
+    radial-gradient(44% 40% at 78% 24%, rgba(46,28,6,.3), transparent 72%),
+    repeating-conic-gradient(from 0deg at 50% 50%,
+      rgba(255,246,214,.1) 0deg 3deg, rgba(70,46,12,.1) 3deg 6deg);
+  mix-blend-mode:overlay;opacity:.55;
+}
+/* 孔：孔壁左上被照亮一段铜色、右下全黑；孔口内缘有一道翻边反光 */
 .grommet::after{
-  content:"";position:absolute;inset:4px;border-radius:50%;
-  background:radial-gradient(circle at 60% 65%,#5a3a18,#1a0d04 70%);
-  box-shadow:inset 0 1px 2px rgba(0,0,0,.9);
+  content:"";position:absolute;inset:5.6px;border-radius:50%;
+  background:
+    /* 穿过孔的绳：不能被木头整个盖住，否则绳子看着是断的 */
+    linear-gradient(90deg,transparent 0 31%,#4a3014 31% 45%,#8d6630 45% 56%,#3a2410 56% 69%,transparent 69% 100%),
+    radial-gradient(circle at 34% 28%,
+      #7d5824 0%, #523913 16%, #2c1c08 36%, #140b03 58%, #070302 78%, #030201 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,.95),
+    inset 1px 0 1px rgba(170,128,66,.45),
+    inset -1px 0 1.5px rgba(0,0,0,.95),
+    0 0 0 .6px rgba(255,240,196,.32);
 }
-.grommet.l{left:28px}.grommet.r{right:28px}
+.grommet.l{left:36px}
+.grommet.r{left:auto;right:36px;margin-left:0;margin-right:-10px}
 /* 右侧留出「标签 + 删除钮 + 黄铜孔」三段空间，标签和叉叉不再叠在一起 */
 .plank .txt{position:absolute;inset:0;display:flex;align-items:center;padding:0 100px 0 58px;gap:0}
 /* 凿进木头的刻痕，不是浮在表面的亮字：
