@@ -2432,6 +2432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private func snapshotIfRequested() {
         let args = CommandLine.arguments
         if args.contains("--scrollprobe") { runScrollProbe(); return }
+        if args.contains("--hitprobe") { runHitProbe(); return }
         guard let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count else { return }
         let path = args[index + 1]
         let demo = ProcessInfo.processInfo.environment
@@ -2511,6 +2512,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 前几次「明明执行了却没有输出」就是这么来的。
     private func probeLog(_ line: String) {
         FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
+    }
+
+    /// 一次性点击诊断（`--hitprobe`）。回答两件事：
+    /// 1) 输入区里每个点，DOM 侧命中的是谁（input / .well / 别的）；
+    /// 2) 原生视图树里有没有哪个子视图盖在输入区上方 —— 那是 DOM 查不出来的那半边。
+    private func runHitProbe() {
+        let env = ProcessInfo.processInfo.environment
+        let delay = env["DSH_CAL_SNAPSHOT_DELAY"].flatMap(Double.init) ?? 5
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            defer { DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { NSApp.terminate(nil) } }
+            guard let web = self.skeuoWebView else { self.probeLog("HIT: no skeuoWebView"); return }
+            // 命令行直接跑起来的进程不会是 key window，页面拿不到键盘焦点
+            // （document.hasFocus() 为 false），什么点击都测不出来 —— 先激活再测。
+            NSApp.activate(ignoringOtherApps: true)
+            self.window?.makeKeyAndOrderFront(nil)
+            self.probeLog("HIT keyWindow=\(self.window?.isKeyWindow ?? false)")
+            self.probeLog("HIT winFrame=\(self.window?.frame ?? .zero)")
+            self.probeLog("HIT contentBounds=\(self.window?.contentView?.bounds ?? .zero)")
+            self.probeLog("HIT webFrame=\(web.frame)")
+            func dump(_ v: NSView, _ depth: Int) {
+                let pad = String(repeating: "  ", count: depth)
+                self.probeLog("HIT \(pad)\(type(of: v)) frame=\(v.frame) "
+                    + "hidden=\(v.isHidden) alpha=\(v.alphaValue) "
+                    + "layer=\(v.wantsLayer ? "y" : "n")")
+                for sub in v.subviews { dump(sub, depth + 1) }
+            }
+            if let cv = self.window?.contentView { dump(cv, 0) }
+
+            let js = """
+            (function(){
+              var w=document.querySelector('.well'), i=document.getElementById('phrase');
+              if(!w||!i) return JSON.stringify({error:'missing', well:!!w, input:!!i});
+              var r=w.getBoundingClientRect(), ri=i.getBoundingClientRect();
+              var hits={}, bad=[], n=0, refocusFail=0, probe={};
+              for(var y=r.top+3;y<r.bottom-3;y+=6){
+                for(var x=r.left+3;x<r.right-15;x+=6){
+                  var el=document.elementFromPoint(x,y); n++;
+                  var k = el===i?'input':(el===w?'well':((el&&(el.id||el.className))||'null'));
+                  hits[k]=(hits[k]||0)+1;
+                  if(el!==i && bad.length<6) bad.push([Math.round(x),Math.round(y),String(k)]);
+                }
+              }
+              // 兜底是否生效：在 .well 上派发 mousedown（合成事件不触发默认聚焦，只测我们的监听器）
+              // 记一下每次 mousedown 真正的目标，确认合成事件有没有进到页面
+              window.__tgt = null;
+              document.addEventListener('mousedown', function(e){
+                window.__tgt = (e.target && (e.target.id || e.target.className || e.target.tagName)) || '?';
+              }, true);
+              var cx = r.left + 4, cy = r.top + r.height/2;
+              i.blur();
+              w.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy}));
+              probe.wellRefocus = document.activeElement === i;
+              // 输入框上派发，检查有没有别处把焦点抢走
+              i.focus();
+              probe.inputFocusable = document.activeElement === i;
+              probe.value = i.value.length;
+              probe.rects = {well:[r.left,r.top,r.width,r.height].map(Math.round), input:[ri.left,ri.top,ri.width,ri.height].map(Math.round)};
+              return JSON.stringify({n:n, hits:hits, bad:bad, probe:probe,
+                active:(document.activeElement&&(document.activeElement.id||document.activeElement.tagName))});
+            })()
+            """
+            web.evaluateJavaScript(js) { res, err in
+                if let err = err { self.probeLog("HIT JS ERROR \(err)") }
+                else { self.probeLog("HIT DOM \(String(describing: res))") }
+            }
+
+            /* 不在这里用 NSEvent 模拟鼠标：`NSEvent.mouseEvent` 的 location 是屏幕坐标，
+               无标题栏窗口的内容坐标还要过一次 flipped 换算，两个坑叠在一起，
+               实测每个点都偏出去几十像素、命中到隔壁元素上 —— 拿它验证只会得到假结论。
+               「点击能不能落到输入框」改用两条更硬的证据：
+               1) 上面那套 elementFromPoint 全网格扫描（DOM 侧谁在拦）；
+               2) 下面用真实元素派发 click()，看浏览器自己的激活行为有没有把焦点交出去。 */
+            web.evaluateJavaScript("""
+            (function(){
+              var i=document.getElementById('phrase');
+              i.blur();
+              var el=document.elementFromPoint(380,111);
+              if(el) el.click();
+              var r1 = {target:(el&&(el.id||el.className||el.tagName))||'none', focused:document.activeElement===i};
+              i.blur();
+              return JSON.stringify(r1);
+            })()
+            """) { res, err in
+                if let err = err { self.probeLog("HIT CLICK ERR \(err)") }
+                else { self.probeLog("HIT CLICK \(String(describing: res))") }
+            }
+        }
     }
 
     private func runScrollProbe() {
@@ -4463,7 +4551,19 @@ extension NSColor {
 /// 不用 `performDrag(with:)`：它会把主线程交给系统拖动循环，期间一个事件都拿不到，
 /// 木板只能在开始那一瞬间「统一晃一下」（用户说的死板）。这里自己跟鼠标，就能每 40ms
 /// 把真实速度推给页面。
+/// 窗口不是 key window 时，macOS 默认把第一次点击**只用来激活窗口**，事件不下发。
+/// 输入框在窗口中部，用户从别的 App 切回来点一下，往往「没反应、得再点一次」——
+/// 表现就是「点对话框中间不能输入」。放开 acceptsFirstMouse 之后，
+/// 激活与点击一次完成，第一下就落到输入框里。
+final class ClickThroughWebView: WKWebView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
+/// 拟物模式的标题栏拖拽区。同一条规则：窗口没激活时第一下也能拖。
 final class SkeuoDragView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     /// 窗口移动速度，px/s，横纵两个分量。
     var onDrag: ((CGFloat, CGFloat) -> Void)?
 
@@ -4583,7 +4683,7 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "dsh")
-        let web = WKWebView(frame: bounds, configuration: config)
+        let web = ClickThroughWebView(frame: bounds, configuration: config)
         web.autoresizingMask = [.width, .height]
         web.navigationDelegate = self
         web.allowsBackForwardNavigationGestures = false
@@ -4714,6 +4814,13 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         skeuoLastPayload = ""
         pushSkeuoState()
+        /* 打开就能打字：DOM 焦点给了输入框，还得让 WebView 成为 firstResponder，
+           否则光标在闪、键盘事件却送到别处（AppKit 的 firstResponder 和 DOM 的
+           activeElement 是两套东西，这一步只做一次，之后不再抢用户的焦点）。 */
+        if webView === skeuoWebView, let win = window {
+            win.makeFirstResponder(webView)
+            webView.evaluateJavaScript("document.getElementById('phrase').focus()") { _, _ in }
+        }
     }
 
     /// 自检：WKWebView 的内容不在 AppKit 的离屏位图里，得单独导出

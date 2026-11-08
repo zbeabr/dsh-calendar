@@ -245,6 +245,9 @@ body{
     linear-gradient(105deg,rgba(255,255,255,.055) 0%,transparent 28%,transparent 72%,rgba(255,255,255,.025) 100%);
 }
 .well{cursor:text}
+/* 标签、小液晶屏、关键词小牌也算输入面板的一部分：鼠标移上去给文本光标，
+   告诉用户「这里点了也能打字」，别让光标显示成箭头还怪点了没反应。 */
+.compose-label,.compose .lcd-strip,.compose .chips{cursor:text}
 .well input{
   position:relative;z-index:1;
   /* 之前 input 只有一行字高（22px），整块屏 94px，点偏上偏下就落在 .well 上，
@@ -262,6 +265,20 @@ body{
     0 0 22px rgba(40,230,100,.20);
 }
 .well input::placeholder{color:#3c7a52;text-shadow:none}
+/* 聚焦态：整块屏的磷光提一档、外圈亮起一道极细的绿边。
+   以前点了没点看不出区别，用户会以为「没点进去」。 */
+.well:focus-within{
+  border-color:#3f8f5c;
+  box-shadow:
+    inset 0 6px 14px rgba(0,0,0,.92),
+    inset 0 0 30px rgba(45,200,100,.20),
+    inset 1px 0 3px rgba(0,0,0,.5),
+    inset -1px 0 3px rgba(0,0,0,.5),
+    inset 0 -1px 0 rgba(120,220,150,.22),
+    0 0 0 1px rgba(90,255,140,.26),
+    0 0 13px rgba(60,255,120,.13),
+    0 1px 0 rgba(255,255,255,.42);
+}
 /* 输入槽加高到 94 之后，按钮也得跟着长，否则像贴在一条缝旁边的纽扣 */
 .add-btn{
   width:66px;height:46px;flex:none;border-radius:6px;border:1px solid #565656;cursor:pointer;
@@ -1738,16 +1755,26 @@ document.addEventListener('contextmenu', function(e){ e.preventDefault(); });
    滚轮一律交给 WebKit 自己处理，页面侧不再干预。 */
 document.addEventListener('click', function(){ ctx.style.display = 'none'; });
 
-/* 点屏幕任何位置都算「点进输入框」。
-   input 现在撑满整个 .well，绝大多数点都能命中；但四周还有 16px 的内衬、
-   以及上下两端的圆角，落在那里就是 .well 本身，光标进不来。
-   这里补一句：命中 .well 但不是 input 时，把焦点交给 input，光标放到末尾。 */
+/* 在输入面板里点哪都算「点进输入框」。
+   绿色屏内部本来就铺满 input，但还有三处落在别处：
+   · 屏幕左右各有 16px 内衬（.well 的 padding），落在那里是 .well；
+   · 「新建日程」标签、SYS 那条小液晶屏，用户眼里它们也是对话框的一部分；
+   · 识别结果那排黄铜小牌。
+   所以接管范围放到整个 .compose，只放过右边的「挂上」按钮 ——
+   点按钮是要提交，抢焦点会让它看起来没反应。 */
 (function(){
-  const well = document.querySelector('.well');
+  const panel = document.querySelector('.compose');
   const input = document.getElementById('phrase');
-  if (!well || !input) return;
-  well.addEventListener('mousedown', function(e){
-    if (e.target === input) return;
+  if (!panel || !input) return;
+  panel.addEventListener('mousedown', function(e){
+    if (e.target.closest && e.target.closest('button,a,textarea')) return;
+    if (e.target === input){
+      /* 点在输入框上：光标落在哪儿交给浏览器算（别 preventDefault，否则丢定位），
+         但焦点要自己拿 —— 全指望着 WebKit 的默认聚焦，一旦它没做
+         （窗口刚激活、点完按钮回来、或者事件是程序合成的），就是「点了没反应」。 */
+      if (document.activeElement !== input) input.focus();
+      return;
+    }
     e.preventDefault();               // 别让浏览器把刚拿到的焦点又收回
     input.focus();
     const n = input.value.length;
