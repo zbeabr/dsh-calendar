@@ -244,9 +244,15 @@ body{
     repeating-linear-gradient(180deg,rgba(0,0,0,.20) 0 1px,transparent 1px 3px),
     linear-gradient(105deg,rgba(255,255,255,.055) 0%,transparent 28%,transparent 72%,rgba(255,255,255,.025) 100%);
 }
+.well{cursor:text}
 .well input{
   position:relative;z-index:1;
-  width:100%;border:0;background:transparent;outline:none;
+  /* 之前 input 只有一行字高（22px），整块屏 94px，点偏上偏下就落在 .well 上，
+     光标进不来 —— 用户反馈「在对话框里点，只有中间一条能输入」。
+     这里用上下各 36px 的内衬把它撑到 94px（22+72），
+     既铺满整块屏，文字仍然垂直居中；内衬本身也是输入框的一部分，点哪都进。 */
+  width:100%;padding:36px 0;box-sizing:border-box;
+  border:0;background:transparent;outline:none;cursor:text;
   font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Courier New",monospace;
   font-size:14px;line-height:1.45;letter-spacing:.6px;
   color:#8dffab;caret-color:#8dffab;
@@ -412,30 +418,24 @@ body{
    捻绳的本质是**单向的平行股带**——三股往同一个方向拧，股与股之间是深沟。
    所以这里只有一组同向斜带，再叠一层沿绳长的松紧起伏和一层圆柱受光。
    圆柱那层必须是半透明叠在最上面：要是实色放在底层，会把股带整个盖死。 */
-.rope-seg{
-  --a:38deg;   /* 捻纹角度：越陡越像拧紧的绳 */
-  --ext:10px;  /* 上下各多伸进木板多少，用来把接缝藏到木头底下（JS 按段改写） */
-  position:absolute;width:9px;margin-left:-4.5px;
-  /* 旋转原点定在「孔」的高度，不是元素顶端。
-     元素的上下各多出一截钻进相邻木板的下面；木板不透明又压在绳子之上，
-     于是每段绳子的两个断口（旋转造成的台阶、楔形缺口）正好落在看不见的地方。
-     这就是「绳子是一根连着的」而不是「一截截短棍」的关键。 */
-  transform-origin:50% var(--ext);
-  /* 不设圆角：方口才能和下一段咬合。圆头只给整根绳的起止两端，
-     中间段一律加圆头，就是 28 根各自独立的小棒。 */
+/* 麻绳的材质只写一份，孔里那段（.rope-thru）和缝里那些段（.rope-seg）共用。
+   以前孔里的绳是另画的一套色带，两套参数稍有出入就是「孔外一根、孔里另一根」，
+   这是用户反复说「绳子不像连在一起」的根子。共用一份 = 不可能不一致。
+
+   注意这里必须是「一条规则写两个选择器」，不能抽成 :root 上的自定义属性：
+   自定义属性在**声明它的那个元素**上就把 var(--a) 算死了，
+   .rope-seg:nth-child(even) 的镜像捻向会失效。 */
+.rope-seg,.rope-thru{
   background:
-    /* ① 圆柱受光：亮带偏左，两侧入暗（半透明，压在股带上）。
-       两侧不能压成死黑 —— 8px 宽的绳上 0%/100% 各占 1px，
-       rgba(8,4,1,.74) 会把绳子读成「一条带子加两道黑描边」。 */
+    /* ① 圆柱受光：亮带偏左，两侧入暗（半透明，压在股带上） */
     linear-gradient(90deg,
       rgba(22,13,5,.60) 0%, rgba(34,21,8,.36) 14%,
       rgba(255,240,210,.03) 34%, rgba(255,246,220,.13) 48%,
       rgba(255,240,210,.03) 64%, rgba(34,21,8,.36) 86%, rgba(18,10,3,.62) 100%),
     /* ② 纤维：沿股方向的极细毛纹，比股密得多 */
-    repeating-linear-gradient(var(--a),rgba(255,242,214,.13) 0 .4px,transparent .4px 1.15px),
-    /* ③ 三股捻带：一条亮股 → 缓降 → 一条深沟，周期 3.2px。
-       颜色要压成亚麻的灰土黄，偏黄一点就变成铜丝了。 */
-    repeating-linear-gradient(var(--a),
+    repeating-linear-gradient(var(--a,38deg),rgba(255,242,214,.13) 0 .4px,transparent .4px 1.15px),
+    /* ③ 三股捻带：一条亮股 → 缓降 → 一条深沟，周期 3.2px */
+    repeating-linear-gradient(var(--a,38deg),
       #b59b6a 0 .85px,
       #9d855a .85px 1.7px,
       #74603c 1.7px 2.35px,
@@ -443,11 +443,21 @@ body{
       #6a5632 2.95px 3.2px),
     /* ④ 捻得松紧不匀：沿绳长方向的极轻明暗起伏 */
     repeating-linear-gradient(180deg,rgba(255,236,200,.05) 0 7px,rgba(20,10,2,.12) 7px 15px);
-  /* 不给每段加投影：投影一断开，绳子立刻变成一截一截。
-     绳子本来就贴着木板，投不出明显影子，省掉这一层反而干净。 */
+  /* 内阴影也共用：绳的两侧各一道暗边，是圆柱的轮廓。
+     孔里那截少一道，孔口的绳就会「宽出一线」—— 这类一像素级的差
+     放大之后全都是「两截绳」的证据。 */
   box-shadow:
     inset -1px 0 1px rgba(0,0,0,.42),
     inset 1px 0 1px rgba(255,228,185,.18);
+}
+.rope-seg{
+  --a:38deg;   /* 捻纹角度：越陡越像拧紧的绳 */
+  --ext:10px;  /* 上下各多伸进木板多少，用来把接缝藏到木头底下（JS 按段改写） */
+  position:absolute;width:9px;margin-left:-4.5px;
+  /* 旋转原点定在「上方那个孔」的高度，不是元素顶端 —— 见 buildRopes 里的说明 */
+  transform-origin:50% var(--ext);
+  /* 不设圆角：方口才能和下一段咬合。圆头只给整根绳的起止两端 */
+  /* 不给每段加投影：投影一断开，绳子立刻变成一截一截 */
 }
 /* 右边的绳子捻向镜像：两条同向会像贴图复制品 */
 .rope-seg:nth-child(even){--a:-38deg}
@@ -535,8 +545,8 @@ body{
    木头被压出的凹坑 → 铜环外翻边的高光 → 环面的拉丝与氧化 →
    内缘锐利的暗过渡 → 孔壁左上被照亮的一段 → 孔底近黑 → 穿过孔的绳芯。 */
 .grommet{
-  position:absolute;top:50%;left:36px;width:20px;height:20px;
-  margin-top:-10px;margin-left:-10px;border-radius:50%;
+  position:absolute;top:50%;left:36px;width:24px;height:24px;
+  margin-top:-12px;margin-left:-12px;border-radius:50%;
   /* 铜环在木板之内、木板之上；孔底那段绳由 ::after 画在孔里，不影响层级 */
   z-index:2;
   /* 从圆心往外一次性排好：孔 → 内缘(翻边向下弯，暗) → 环面(渐渐起亮) →
@@ -572,54 +582,46 @@ body{
   mix-blend-mode:overlay;opacity:.55;
 }
 /* 孔：孔壁左上被照亮一段铜色、右下全黑；孔口内缘有一道翻边反光。
-   ── 2026-11-08 第三次：孔底要看得见绳 ──
-   绳子已回到木板背面（见 .ropes），木板会把它整段挡住，孔是唯一露出来的地方。
-   所以孔底必须画出「透过孔看到的那一截绳」，否则整根绳在每块板上都是断的。
-   关键三条：
-     · 宽度必须和孔外完全一致：绳 8px、孔径 10.8px → 13%~87%，一个像素都不许差；
-     · 亮度必须更暗：孔里没有直射光，绳在孔壁影子里，和孔外一样亮就成人造塞子；
-     · 上下两端要没入暗部：绳是穿过去的，不是横在孔里的一个横档。 */
+   ── 2026-11-08 第四次：孔里那截绳不再是「画出来的一小段」 ──
+   前几版都在 ::after 里用百分比色带「模拟」一根穿过孔的绳：
+   宽度只能取整、捻纹相位对不上、亮度又得单独调一版，
+   调到最后就是「孔外一根、孔里另一根」，怎么修都像两截（用户反复反馈）。
+   现在改成真的放一根绳进去：孔里塞一个 .rope-thru，宽度 9px、
+   背景和 .rope-seg 逐字相同、捻纹相位按页面绝对 y 对齐 ——
+   它和孔外那根是同一份样式、同一套相位，只是被圆形遮罩裁在孔口里。
+   所以 ::after 只剩「孔底」，不再负责绳。 */
 .grommet::after{
-  content:"";position:absolute;inset:4.6px;border-radius:50%;
+  content:"";position:absolute;inset:5.6px;border-radius:50%;
   background:
-    /* ⓪ 孔里终归少一层光：整片压一档，很轻。放在最上面才会同时压住绳和孔底 */
-    linear-gradient(rgba(24,15,5,.16), rgba(24,15,5,.16)),
-    /* ① 绳的两头没入孔壁阴影 */
-    linear-gradient(180deg,
-      rgba(3,1,0,.78) 0%, rgba(3,1,0,.26) 15%, rgba(3,1,0,0) 34%,
-      rgba(3,1,0,0) 68%, rgba(3,1,0,.24) 84%, rgba(3,1,0,.78) 100%),
-    /* ② 绳身：颜色、宽度都和孔外那条绳一致，只叠一层很淡的暗。
-       之前压到「深褐近黑」，孔外亮、孔里黑，就成了两截 ——
-       「在孔里」这个判断靠孔壁的框和阴影，不靠把绳改成另一个颜色。 */
-    linear-gradient(90deg,
-      transparent 0 8.3%,
-      rgba(90,70,40,.82) 13% 20%,
-      #b09a6c 16% 31%,
-      #c2a97b 31% 47%,
-      #a68e60 47% 63%,
-      #86724a 63% 82%,
-      rgba(74,56,30,.86) 78% 87%,
-      transparent 91.7% 100%),
-    /* ③ 股纹：单向捻带，孔里这几像素也得有丝，不能是光板 */
-    repeating-linear-gradient(38deg,
-      rgba(255,240,206,.07) 0 .5px,
-      rgba(20,12,3,.15) .5px 1.65px,
-      transparent 1.65px 2.45px,
-      rgba(20,12,3,.1) 2.45px 3.15px),
-    /* ④ 孔底：只在绳的两侧露出一点。这里不能亮 —— 孔底比绳亮，
-       整片孔就会读成「一枚亮环里嵌着黑条」。 */
     radial-gradient(circle at 34% 28%,
       #3a2609 0%, #1c1104 28%, #0a0502 58%, #020100 84%, #010100 100%);
   box-shadow:
-    /* 只留上沿一道孔壁阴影。
-       左右两道 inset 阴影本来是想做孔壁的圆度，但绳宽 9px、孔径 10.8px，
-       两侧各只有 0.9px —— 这两道阴影像两把刀，把绳的两边各削掉一线，
-       孔里就只剩中间一条细暗条，「绳子填满孔」变成「孔里嵌了根黑棍」。 */
+    /* 只留上沿一道孔壁阴影，压在绳的上端，让绳从孔里「穿进去」 */
     inset 0 1px 2px rgba(0,0,0,.85),
     0 0 0 .6px rgba(255,240,196,.30);
 }
+/* 孔里那段绳：与 .rope-seg 同一份材质、同一个宽度（9px）、同一套捻纹相位。
+   圆形遮罩把它裁在孔口内（半径 6.4 = 孔径 12.8 的一半），
+   超出孔的部分不显示 —— 但上下延伸 24px，保证孔口上下沿都填满，
+   不会出现「绳子在孔口收细」的断口。 */
+.rope-thru{
+  position:absolute;left:50%;top:50%;width:9px;height:24px;
+  margin:-12px 0 0 -4.5px;z-index:3;pointer-events:none;
+  transform:none;
+  mask-image:radial-gradient(circle at 50% 50%, #000 0 6.25px, transparent 6.45px);
+  -webkit-mask-image:radial-gradient(circle at 50% 50%, #000 0 6.25px, transparent 6.45px);
+}
+.grommet.r .rope-thru{--a:-38deg}
+/* 孔口上下各压一道暗：绳是从一根管子里穿过去的，靠孔口的两端照不到光。
+   只有中间那一段是亮的，这根绳才「在孔里」而不是「贴在孔上」。 */
+.rope-thru::after{
+  content:"";position:absolute;inset:0;
+  background:linear-gradient(180deg,
+    rgba(0,0,0,.42) 0%, rgba(0,0,0,.16) 22%, rgba(0,0,0,.10) 50%,
+    rgba(0,0,0,.18) 78%, rgba(0,0,0,.44) 100%);
+}
 .grommet.l{left:36px}
-.grommet.r{left:auto;right:36px;margin-left:0;margin-right:-10px}
+.grommet.r{left:auto;right:36px;margin-left:0;margin-right:-12px}
 /* 右侧留出「标签 + 删除钮 + 黄铜孔」三段空间，标签和叉叉不再叠在一起 */
 .plank .txt{position:absolute;inset:0;display:flex;align-items:center;padding:0 100px 0 58px;gap:0}
 /* 凿进木头的刻痕，不是浮在表面的亮字：
@@ -952,17 +954,30 @@ function strokeLine(ctx, x0, w, y, wave, alpha, lw){
   ctx.lineWidth = Math.max(0.4, lw * 0.85); ctx.stroke();
 }
 
-function drawPlank(ctx, x0, y0, w, h, seed){
+/* 16 条纹理的「身份」全部按槽位排定，不靠随机数。
+   上一版把纹型交给 R() 抽签，结果 8 号和 13 号都抽成山纹、色相又接近，
+   铺上去就是「第四块和第五块一模一样」（用户原话）。
+   现在纹型按 t%3 轮换，任意相邻两个槽位必然不同族；同族之间用色相、
+   疏密拉开。深浅不靠这里 —— 明暗在 buildWood 里统一校平。 */
+function woodSpec(t){
+  return {
+    hue: 20 + ((t * 7) % 16) * 0.42,        // 20.0 ~ 26.3
+    sat: 44 + ((t * 5) % 7),                // 44 ~ 50
+    lit: 28.2 + ((t * 3) % 5) * 0.9,        // 28.2 ~ 31.8（校平前，只为初始基调）
+    kind: t % 3,                            // 0 直纹 / 1 山纹 / 2 波纹
+    density: 0.95 + ((t * 11) % 9) / 9 * 1.05
+  };
+}
+
+function drawPlank(ctx, x0, y0, w, h, seed, spec){
   const R = rngOf(seed);
   /* 每块板都要有自己的「身份」，但身份不能靠「颜色跳出去」。
-     上一版把明度差拉到 12%、色相 14°，结果有一条板跳到橙红，
-     跟整列完全不是一个木头 —— 用户原话「完全没有质感，跟别的颜色完全不搭」。
-     真地板是同一批料：色相最多差 8°、明度差 6%，差异主要来自
+     真地板是同一批料：色相最多差 8°，差异主要来自
      **纹型、疏密、明暗对比**，而不是色相。 */
-  const hue = 20 + R() * 6;
-  const sat = 43 + R() * 6;
-  const lit = 28 + R() * 4;
-  const kind = R();          // 决定这块板是直纹 / 山纹 / 波纹，见 ③
+  const hue = spec ? spec.hue : 20 + R() * 6;
+  const sat = spec ? spec.sat : 43 + R() * 6;
+  const lit = spec ? spec.lit : 28 + R() * 4;
+  const kind = spec ? spec.kind : Math.floor(R() * 3);   // 0 直 / 1 山 / 2 波，见 ③
 
   /* ① 底色：上亮下暗（光从上方来）。同一批木料，色差要有但只能很小 */
   const base = ctx.createLinearGradient(0, y0, 0, y0 + h);
@@ -982,8 +997,8 @@ function drawPlank(ctx, x0, y0, w, h, seed){
     ctx.translate(cx, cy);
     ctx.scale(rx, ry);
     const rg = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-    rg.addColorStop(0, dark ? 'rgba(38,17,3,.32)' : 'rgba(255,216,164,.24)');
-    rg.addColorStop(0.55, dark ? 'rgba(38,17,3,.12)' : 'rgba(255,216,164,.08)');
+    rg.addColorStop(0, dark ? 'rgba(38,17,3,.24)' : 'rgba(255,216,164,.22)');
+    rg.addColorStop(0.55, dark ? 'rgba(38,17,3,.09)' : 'rgba(255,216,164,.07)');
     rg.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = rg;
     ctx.fillRect(-1, -1, 2, 2);
@@ -997,8 +1012,8 @@ function drawPlank(ctx, x0, y0, w, h, seed){
      间距用 R()*R()（多数贴得近、少数离得远），线宽 0.4~1.6，每条都配一道高光。
      这样 54px 高的板子上才「看得见一条一条的纹」。
      上一版二十多条细线挤在一起，缩到屏幕上就糊成一块均匀的横纹布。 */
-  const density = 1.05 + R() * 0.95;
-  if (kind < 0.34){
+  const density = spec ? spec.density : 1.05 + R() * 0.95;
+  if (kind === 0){
     /* ---- 直纹 ---- */
     const wA = 0.6 + R() * 2.0, wL = 420 + R() * 520, wP = R() * 6.283;
     const wave = function(px){
@@ -1011,7 +1026,7 @@ function drawPlank(ctx, x0, y0, w, h, seed){
       strokeLine(ctx, x0, w, y + sh, wave, 0.14 + R() * 0.36, 0.5 + R() * 1.2);
       y += (2.6 + R() * R() * 11) * density;
     }
-  } else if (kind < 0.74){
+  } else if (kind === 1){
     /* ---- 山纹 ---- */
     const cx = x0 + w * (0.22 + R() * 0.56);
     const cy = y0 - h * (1.1 + R() * 2.4);          // 弧心在板外上方，所以弧顶朝上隆起
@@ -1178,14 +1193,52 @@ function placeWood(){
   }
 }
 
-function buildWood(){
-  const w = 1024, h = PH * WOOD_TILES;
-  const cv = document.createElement('canvas');
-  cv.width = w; cv.height = h;
-  const ctx = cv.getContext('2d');
-  for (let t = 0; t < WOOD_TILES; t += 1){
-    drawPlank(ctx, 0, t * PH, w, PH, 20261108 + t * 7919);
+/* 画完每块木板都要把「平均亮度」校到同一个值。
+   ── 为什么必须做这一步 ──
+   色相、纹型可以靠查表排定，但每一笔线条、每一块色斑的叠加深度是累计出来的，
+   16 次画下来总有一条明显偏暗（用户原话「第一块木板长得太黑」）。
+   与其去猜哪几个参数凑成了暗板，不如量出来：取这块的像素平均亮度，
+   差多少就用一层极淡的白/黑罩补多少。
+   罩的上限 0.34：再大就不是「同一批料」，是把纹理压成一片橙棕色了。
+   差异从此只来自纹路本身，不来自明暗 —— 这才是一批木头该有的样子。 */
+const WOOD_TARGET_MEAN = 96;      // 0-255，实测这批木料的中间调
+
+function normalizeTile(c, w, h){
+  const d = c.getImageData(0, 0, w, h).data;
+  let sum = 0, cnt = 0;
+  for (let i = 0; i < d.length; i += 4 * 5){   // 每 5 个像素采一个，够准也够快
+    sum += d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722;
+    cnt += 1;
   }
+  if (!cnt) return;
+  const mean = sum / cnt;
+  const diff = WOOD_TARGET_MEAN - mean;
+  if (Math.abs(diff) < 0.6) return;
+  c.globalCompositeOperation = 'source-atop';
+  if (diff > 0){
+    c.fillStyle = 'rgba(255,242,222,' + Math.min(0.34, diff / (255 - mean)).toFixed(4) + ')';
+  } else {
+    c.fillStyle = 'rgba(18,10,3,' + Math.min(0.34, 1 - WOOD_TARGET_MEAN / mean).toFixed(4) + ')';
+  }
+  c.fillRect(0, 0, w, h);
+  c.globalCompositeOperation = 'source-over';
+}
+
+function buildWood(){
+  const w = 1024;
+  const tiles = [];
+  for (let t = 0; t < WOOD_TILES; t += 1){
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = PH;
+    const c = cv.getContext('2d');
+    drawPlank(c, 0, 0, w, PH, 20261108 + t * 7919, woodSpec(t));
+    normalizeTile(c, w, PH);
+    tiles.push(cv);
+  }
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = PH * WOOD_TILES;
+  const ctx = cv.getContext('2d');
+  for (let t = 0; t < WOOD_TILES; t += 1) ctx.drawImage(tiles[t], 0, t * PH);
   cv.toBlob(function(blob){
     if (!blob) return;
     wood.url = URL.createObjectURL(blob);
@@ -1283,13 +1336,26 @@ function buildRopes(){
   }
   gaps.push([lastTop + PH, bottom]);
 
+  /* ── 每段绳都画成「上一个孔 → 这个孔」的直线 ──
+     这是这一轮最要紧的一处。原来每段的旋转角是 atan2(dx, 缝隙高度 28)：
+     两个孔之间其实隔了 82px（板中到板中），可缝隙只有 28px，
+     于是同样 4px 的错位被算成了 8° 的折角，绳子在每块板的上沿和下沿
+     各折一下 —— 摆动起来就是一根锯齿，用户看到的「不像连在一起」，
+     一半是这个折角造成的。
+     现在角度按「两个孔的真实竖向距离」算，旋转原点定在上方那个孔上，
+     整段就正好贴在连接两个孔的弦上；板子再按同样的角度倾一点，
+     绳和板就咬成一条链，而不是「板在滑、绳在折」。 */
   const EXT = 10;
+  const holeOf = function(i){ return (list[i].offsetTop || 0) + PH / 2; };
   gaps.forEach(function(g, gi){
     const h = Math.max(2, g[1] - g[0]);
     const first = gi === 0, last = gi === gaps.length - 1;
     const up = first ? 12 : EXT;   // 首段向上钻到挂杆背后，看起来是从杆子底下出来的
     const dn = last ? 0 : EXT;
     const top = g[0] - up;
+    // 上锚点：首段在挂杆（柱顶 y=0），其余在上一个孔；下锚点：本孔，末段则是绳尾
+    const anchorTop = first ? 0 : holeOf(gi - 1);
+    const anchorBot = last ? bottom : holeOf(gi);
     // 捻纹必须按「页面绝对 y」对齐。不这么做，每一段的斜纹都从自己顶端
     // 重新开始，相邻两段的股带相位对不上 —— 一眼就看得出是拼起来的。
     const bgPos = '0 ' + (-top) + 'px';
@@ -1301,11 +1367,12 @@ function buildRopes(){
       el.style.top = top + 'px';
       el.style.height = (h + up + dn) + 'px';
       el.style.setProperty('--ext', up + 'px');
+      el.style.transformOrigin = '50% ' + (anchorTop - top) + 'px';
       el.style.backgroundPosition = bgPos;
       ropeBox.appendChild(el);
       return el;
     });
-    segs.push({ els: els, h: h });
+    segs.push({ els: els, h: h, span: Math.max(8, anchorBot - anchorTop) });
   });
 }
 
@@ -1334,7 +1401,8 @@ function makeSlot(it, index){
     '<div class="plank" style="transform:rotate(' + baseTilt(index) + 'deg)' +
       ';background-position:0 -' + (woodSlotOf(it.uid) * PH) + 'px">' +
       '<div class="bevel"></div><div class="edge"></div>' +
-      '<span class="grommet l"></span><span class="grommet r"></span>' +
+      '<span class="grommet l"><i class="rope-thru"></i></span>' +
+      '<span class="grommet r"><i class="rope-thru"></i></span>' +
       '<div class="txt"><span class="when"></span><span class="what"></span><span class="tag"></span></div>' +
       '<button class="del" title="摘下这块木板">×</button>' +
     '</div>';
@@ -1436,9 +1504,18 @@ function renderChips(list){
    3. 固定步长 1/120 积分，一帧最多 6 个子步，掉帧时不会越积越乱。 */
 const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const PX_PER_M = 0.0016;   // 1px 当 1.6mm：让摆长落在「看得出快慢差别」的尺度
-const TENSION = 26;        // 相邻质量点的耦合，决定波动沿绳子传播的快慢
-const DAMP = 2.9;          // 空气阻尼：约 1.6 秒收住。再小就像在晃个不停，还一直白烧 GPU
-const MAXDX = 14;          // 位移上限：再大就会在窗框边露出宽缝，看着像木板滑出去了
+const TENSION = 15;        // 相邻质量点的耦合，决定波动沿绳子传播的快慢
+/* 阻尼 2.9 → 2.4。
+   2.9 那版的问题其实不是衰减太快，而是**幅度太小**：冲量只有 4px，
+   怎么掉都像「被碰了一下的弹簧片」。这一版把幅度提到 8~11px 之后，
+   同样的衰减速度已经能看见两个来回，再把阻尼放到 1.15 就又晃太久了
+   （实测要 8 秒才停，白烧 rAF）。2.4 大约 2.5 秒收住。 */
+const DAMP = 2.4;
+const MAXDX = 8;           // 软限位的外沿：超过 SOFT 之后位移被压缩，永远到不了这里
+const SOFT = 5;            // 软限位起点。木板是「窗口等宽」的，横向一移就会在窗框内侧
+                           // 露出一条缝，所以能给的横向位移只有几像素 ——
+                           // 摆动感主要交给倾角，不靠横移。
+const WAVE = 1.3;          // 冲量沿绳往下传的速度（px/ms）：1.3 时最后一块比第一块晚约 0.4s
 const FIXED = 1 / 120;
 
 const pen = new Map();     // uid -> {x, v, L}
@@ -1456,11 +1533,26 @@ function rigSync(){
   order = list.map(function(el){ return el.dataset.uid; });
   plankEls = list.map(function(el){ return el.querySelector('.plank'); });
   placeWood();   // 顺序变了，哪块用哪条纹理要重算
+
+  /* 孔里那截绳的捻纹相位，按「孔心的页面绝对 y」对齐孔外那些段。
+     不设的话每块板的孔都从自己顶端重新起纹，孔口上下股带错半格 ——
+     9px 宽的绳上，那半格就是一道看得见的接缝。 */
+  for (let i = 0; i < list.length; i += 1){
+    const ths = list[i].querySelectorAll('.rope-thru');
+    if (!ths.length) continue;
+    const yTop = (list[i].offsetTop || 0) + PH / 2 - 12;   // .rope-thru 盒顶（高 24、居中）
+    const bp = '0 ' + (-yTop) + 'px';
+    for (let k = 0; k < ths.length; k += 1) ths[k].style.backgroundPosition = bp;
+  }
   nodes = order.map(function(uid, i){
     let s = pen.get(uid);
-    if (!s){ s = { x: 0, v: 0, L: 0.2 }; pen.set(uid, s); }
+    if (!s){ s = { x: 0, v: 0, rt: 0, L: 0.2 }; pen.set(uid, s); }
+    if (s.rt == null) s.rt = 0;
     const y = (list[i].offsetTop || 0) + PH / 2;
-    s.L = Math.max(0.06, y * PX_PER_M);
+    /* 摆长不能纯按 y 线性取（原来 0.06~0.75 差了 12 倍）：最底下那块会甩到
+       上限被削平，最上面那块几乎不动，整列读起来像被拉长的一根弹簧。
+       改成 0.10 + 0.0009y（0.10~0.55），快慢还差一倍多，仍在「看得出层次」的范围。 */
+    s.L = 0.10 + y * 0.0009;
     return s;
   });
   const h = parseFloat(ropeBox.style.height) || 600;
@@ -1480,13 +1572,37 @@ function stepPhysics(dt){
     const acc = TENSION * (left - 2 * s.x + right) - (9.8 / s.L) * s.x - DAMP * s.v;
     s.v += acc * dt;
     s.x += s.v * dt;
-    if (s.x > MAXDX || s.x < -MAXDX){ s.x = s.x > 0 ? MAXDX : -MAXDX; s.v = 0; }
+    /* 软限位。原来是硬夹：超过 14 就钉在 14、速度清零。
+       一列木板同时顶到同一个数，看起来就是一个刚体在平移，而且「死停」很假。
+       这里改成越接近外沿、能兑现的份额越小（指数压缩），
+       既不会露出窗框边的宽缝，也不会所有板子压成同一个值。 */
+    if (Math.abs(s.x) > SOFT){
+      const over = Math.abs(s.x) - SOFT;
+      const squeezed = SOFT + (MAXDX - SOFT) * (1 - Math.exp(-over / (MAXDX - SOFT)));
+      s.x = s.x > 0 ? squeezed : -squeezed;
+    }
   }
   const aT = TENSION * (nodes[n - 1].x - tailNode.x) - (9.8 / tailNode.L) * tailNode.x - DAMP * tailNode.v;
   tailNode.v += aT * dt;
   tailNode.x += tailNode.v * dt;
-  const cap = MAXDX * 1.6;
-  if (tailNode.x > cap || tailNode.x < -cap){ tailNode.x = tailNode.x > 0 ? cap : -cap; tailNode.v = 0; }
+  if (Math.abs(tailNode.x) > SOFT){
+    const over = Math.abs(tailNode.x) - SOFT;
+    const squeezed = SOFT + (MAXDX + 3 - SOFT) * (1 - Math.exp(-over / (MAXDX + 3 - SOFT)));
+    tailNode.x = tailNode.x > 0 ? squeezed : -squeezed;
+  }
+
+  /* 板子的倾角：跟着它上下的绳「平均弦角」走，打六折，再做一阶滞后。
+     没有这一步，木板永远是水平的、只在横向平移 —— 绳子在折、板子却在滑，
+     这就是用户说的「晃动的样子太假」。板子有了倾角，整列才像穿在一根绳上。 */
+  for (let i = 0; i < n; i += 1){
+    const s = nodes[i];
+    const xPrev = i === 0 ? 0 : nodes[i - 1].x;
+    const xNext = i === n - 1 ? tailNode.x : nodes[i + 1].x;
+    const span = (i === 0 || i === n - 1) ? (PH + GAP) : (PH + GAP) * 2;
+    const raw = Math.atan2(xNext - xPrev, span) * 57.2958 * 0.42;
+    const target = Math.max(-1.4, Math.min(1.4, raw));
+    s.rt += (target - s.rt) * Math.min(1, dt * 16);
+  }
 }
 
 /* 整帧唯一碰 DOM 的地方：只写 transform */
@@ -1494,27 +1610,33 @@ function paint(){
   let live = false;
   const n = nodes.length;
 
-  // 先把每段的倾角算出来（纯数学，不碰 DOM）：木板要它，孔里的绳节也要它
+  // 先把每段的弦角算出来（纯数学，不碰 DOM）：木板要它，绳段也要它
   const angs = [];
   for (let k = 0; k < segs.length; k += 1){
     const xTop = k === 0 ? 0 : nodes[k - 1].x;
     const xBot = k < n ? nodes[k].x : tailNode.x;
-    angs[k] = Math.atan2(xBot - xTop, segs[k].h) * 57.2958;
+    angs[k] = Math.atan2(xBot - xTop, segs[k].span) * 57.2958;
   }
 
   for (let i = 0; i < n; i += 1){
     const s = nodes[i];
-    if (Math.abs(s.x) > 0.12 || Math.abs(s.v) > 1.2) live = true;   // 阈值取肉眼看不出的量级
-    const tilt = baseTilt(i);
+    if (Math.abs(s.x) > 0.3 || Math.abs(s.v) > 2 || Math.abs(s.rt || 0) > 0.06) live = true;
+    const tilt = baseTilt(i) + (s.rt || 0);
     const el = plankEls[i];
-    if (el) el.style.transform =
-      'translate3d(' + s.x.toFixed(2) + 'px,0,0) rotate(' + tilt + 'deg)';
+    if (el){
+      /* 倾角是绕板顶中点转的，孔在板中下方 27px 处，转一点孔就会横移
+         -27·sin θ。这里把这段位移补回平移里，板子看起来就是「绕着两个孔
+         在摆」，绳始终从孔心穿过，不会从孔边蹭出去。 */
+      const comp = 27 * Math.sin(tilt / 57.2958);
+      el.style.transform =
+        'translate3d(' + (s.x + comp).toFixed(2) + 'px,0,0) rotate(' + tilt.toFixed(2) + 'deg)';
+    }
   }
 
   for (let k = 0; k < segs.length; k += 1){
     const seg = segs[k];
     const xTop = k === 0 ? 0 : nodes[k - 1].x;
-    const tf = 'translate3d(' + xTop.toFixed(2) + 'px,0,0) rotate(' + angs[k].toFixed(2) + 'deg)';
+    const tf = 'translate3d(' + xTop.toFixed(2) + 'px,0,0) rotate(' + angs[k].toFixed(3) + 'deg)';
     seg.els[0].style.transform = tf;
     seg.els[1].style.transform = tf;
   }
@@ -1528,15 +1650,29 @@ function frame(t){
   lastT = t;
   if (dt > 0.1) dt = 0.1;   // 切后台再回来，别让一次大 dt 把积分打爆
   accT += dt;
+
+  // 放出还没到时间的延迟冲量（沿绳往下的传播），只要还有没放完的，循环就不能停
+  const now = performance.now();
+  let pending = false;
+  for (let i = 0; i < nodes.length; i += 1){
+    const s = nodes[i];
+    if (!s.qv) continue;
+    if (now >= s.qd){ s.v += s.qv; s.qv = 0; } else pending = true;
+  }
+
   let steps = 0;
   while (accT >= FIXED && steps < 6){ stepPhysics(FIXED); accT -= FIXED; steps += 1; }
-  if (paint()) rafId = requestAnimationFrame(frame);
+  const live = paint();
+  if (live || pending) rafId = requestAnimationFrame(frame);
   else settle();
 }
 
 /* 停稳：归零、撤掉图层、停掉 rAF。静止时这里不该再有任何每帧开销 */
 function settle(){
-  for (let i = 0; i < nodes.length; i += 1){ nodes[i].x = 0; nodes[i].v = 0; }
+  for (let i = 0; i < nodes.length; i += 1){
+    const s = nodes[i];
+    s.x = 0; s.v = 0; s.rt = 0; s.qv = 0;
+  }
   tailNode.x = 0; tailNode.v = 0;
   paint();
   awake = false;
@@ -1584,6 +1720,23 @@ document.addEventListener('contextmenu', function(e){ e.preventDefault(); });
    原生滚动一旦被插一脚，就只剩「完全不能滚」这一个结果。
    滚轮一律交给 WebKit 自己处理，页面侧不再干预。 */
 document.addEventListener('click', function(){ ctx.style.display = 'none'; });
+
+/* 点屏幕任何位置都算「点进输入框」。
+   input 现在撑满整个 .well，绝大多数点都能命中；但四周还有 16px 的内衬、
+   以及上下两端的圆角，落在那里就是 .well 本身，光标进不来。
+   这里补一句：命中 .well 但不是 input 时，把焦点交给 input，光标放到末尾。 */
+(function(){
+  const well = document.querySelector('.well');
+  const input = document.getElementById('phrase');
+  if (!well || !input) return;
+  well.addEventListener('mousedown', function(e){
+    if (e.target === input) return;
+    e.preventDefault();               // 别让浏览器把刚拿到的焦点又收回
+    input.focus();
+    const n = input.value.length;
+    try { input.setSelectionRange(n, n); } catch (_){}
+  });
+})();
 
 function setSys(text){ document.getElementById('sysline').textContent = text; }
 
@@ -1670,11 +1823,24 @@ window.dshSwing = function(v){
   const dv = Math.max(-4000, Math.min(4000, v - lastWinV));
   lastWinV = v;
   if (!dv) return;
-  // 惯性冲量：单位是 px/s。dv 是这一小段时间里窗口速度的变化，
-  // 系数把「手抖一下」量级（几百 px/s 的速度突变）换算成几 px 的可见位移。
-  const imp = Math.max(-120, Math.min(120, -dv * 0.04));
+  /* 惯性冲量：单位是 px/s。
+     系数 0.04 → 0.16：原来一次拖窗只换来 4px 的位移，看着像「被碰了一下」，
+     不是摆。0.16 配上下面的新阻尼，快到 500px/s 的拖动差不多 8~12px 的摆幅。 */
+  const imp = Math.max(-180, Math.min(180, -dv * 0.12));
   for (let i = 0; i < nodes.length; i += 1){
-    nodes[i].v += imp * (0.86 + ((i * 7) % 5) / 14);   // 极小的个体差异，破掉完全同步
+    const s = nodes[i];
+    const vv = imp * (0.86 + ((i * 7) % 5) / 14);   // 极小的个体差异，破掉完全同步
+    /* 冲量沿绳往下传：越靠下越晚收到。
+       原来所有质量点在同一帧同时被推，整列就像一个刚体在平移；
+       这是「晃动太假」的另一半原因。按 y 距离给一个几十毫秒的延迟，
+       看起来才像从挂杆一路甩下去。 */
+    const delay = (i * (PH + GAP)) / WAVE;
+    if (delay < 8){
+      s.v += vv;
+    } else {
+      s.qv = (s.qv || 0) + vv;
+      s.qd = now + delay;
+    }
   }
   tailNode.v += imp * 0.75;
   wake();
