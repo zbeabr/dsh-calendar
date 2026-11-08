@@ -487,8 +487,8 @@ body{
 .plank .bevel{
   position:absolute;inset:0;border-radius:3px;pointer-events:none;
   box-shadow:
-    inset 0 1px 0 rgba(255,222,175,.55),
-    inset 0 2px 2px rgba(255,215,160,.18),
+    inset 0 1px 0 rgba(255,222,175,.34),
+    inset 0 2px 2px rgba(255,215,160,.12),
     inset 0 -2px 0 rgba(40,20,6,.62),
     inset 2px 0 3px rgba(45,22,6,.35),
     inset -2px 0 3px rgba(45,22,6,.35);
@@ -864,9 +864,36 @@ function rngOf(seed){
   return function(){ s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
 }
 
+/* 一条顺纹的线 = 主体暗线 + 贴着它往上 0.9px 的一条极淡高光。
+   只画暗线的时候，木头看着像「印刷上去的条纹布」；补上这半边高光，
+   才读得出是「一层被划开的纤维」。采样点只算一次，两条线共用。 */
+function strokeLine(ctx, x0, w, y, wave, alpha, lw){
+  const N = 22;
+  const xs = [], ys = [];
+  for (let k = 0; k <= N; k += 1){
+    const px = x0 + (w * k) / N;
+    xs.push(px); ys.push(y + wave(px));
+  }
+  ctx.beginPath(); ctx.moveTo(xs[0], ys[0]);
+  for (let k = 1; k <= N; k += 1) ctx.lineTo(xs[k], ys[k]);
+  ctx.strokeStyle = 'rgba(48,21,5,' + alpha.toFixed(3) + ')';
+  ctx.lineWidth = lw; ctx.stroke();
+
+  ctx.beginPath(); ctx.moveTo(xs[0], ys[0] - 0.9);
+  for (let k = 1; k <= N; k += 1) ctx.lineTo(xs[k], ys[k] - 0.9);
+  ctx.strokeStyle = 'rgba(255,226,180,' + (alpha * 0.34).toFixed(3) + ')';
+  ctx.lineWidth = Math.max(0.4, lw * 0.85); ctx.stroke();
+}
+
 function drawPlank(ctx, x0, y0, w, h, seed){
   const R = rngOf(seed);
-  const hue = 18 + R() * 8, sat = 44 + R() * 13, lit = 29 + R() * 3;
+  /* 每块板都要有自己的「身份」。上一版只给了 8° 色相、3% 明度的摆动，
+     16 条铺到屏幕上就是同一块木头 —— 用户的原话是「第一块和第二块看着一样」。
+     真木地板装出来深浅交错，15% 明度差、10° 色相差在真木头里非常常见。 */
+  const hue = 16 + R() * 14;
+  const sat = 39 + R() * 20;
+  const lit = 25 + R() * 12;
+  const kind = R();          // 决定这块板是直纹 / 山纹 / 波纹，见 ③
 
   /* ① 底色：上亮下暗（光从上方来）。同一批木料，色差要有但只能很小 */
   const base = ctx.createLinearGradient(0, y0, 0, y0 + h);
@@ -886,44 +913,69 @@ function drawPlank(ctx, x0, y0, w, h, seed){
     ctx.translate(cx, cy);
     ctx.scale(rx, ry);
     const rg = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-    rg.addColorStop(0, dark ? 'rgba(38,17,3,.20)' : 'rgba(255,216,164,.15)');
-    rg.addColorStop(0.55, dark ? 'rgba(38,17,3,.08)' : 'rgba(255,216,164,.05)');
+    rg.addColorStop(0, dark ? 'rgba(38,17,3,.32)' : 'rgba(255,216,164,.24)');
+    rg.addColorStop(0.55, dark ? 'rgba(38,17,3,.12)' : 'rgba(255,216,164,.08)');
     rg.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = rg;
     ctx.fillRect(-1, -1, 2, 2);
     ctx.restore();
   }
 
-  /* ③ 年轮：三件事缺一不可 ——
-     间距用 R()*R()（多数贴得近、少数离得远，才有疏密）；
-     每条板的基准疏密不同（有的一片宽纹、一片密纹）；
-     整块板共用一条低频波浪：真木纹是同一组年轮被剖开，相邻的线必须「一起弯」。
-     各弯各的，出来就是一堆平行直线 —— 上一版最假的地方就在这。 */
-  const density = 0.55 + R() * 1.55;
-  const wA = 1.1 + R() * 3.2, wL = 250 + R() * 470, wP = R() * 6.283;
-  const wave = function(px){
-    const t = (px - x0) / wL * 6.283 + wP;
-    return Math.sin(t) * wA + Math.sin(t * 3.1 + 1.2) * wA * 0.22;
-  };
-  let y = y0 - 6 + R() * 8;
-  while (y < y0 + h + 6){
-    const amp = 0.25 + R() * 1.7 + (R() > 0.78 ? 1.8 + R() * 3 : 0);
-    const dark = R() > 0.3;
-    const a = 0.05 + R() * 0.26;
-    const sh = (R() - 0.5) * 2.2;
-    const g = 0.35 + amp * 0.5;       // 这条线跟随全局波的强度
-    ctx.beginPath();
-    for (let k = 0; k <= 16; k += 1){
-      const px = x0 + (w * k) / 16;
-      const py = y + sh + wave(px) * g;
-      if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  /* ③ 年轮：真木头按锯法分三种纹型，混着铺才有「一堆不同的板」——
+        · 直纹（四开料）：线几乎平行，整块共用一条极缓的长波
+        · 山纹（平切料）：以板外一点为圆心的同心弧，中间拱起、两端收紧
+        · 波纹（带脂）：正弦叠二次谐波，局部打卷
+     间距用 R()*R()（多数贴得近、少数离得远），线宽 0.4~1.6，每条都配一道高光。
+     这样 54px 高的板子上才「看得见一条一条的纹」。
+     上一版二十多条细线挤在一起，缩到屏幕上就糊成一块均匀的横纹布。 */
+  const density = 0.9 + R() * 1.1;
+  if (kind < 0.34){
+    /* ---- 直纹 ---- */
+    const wA = 0.6 + R() * 2.0, wL = 420 + R() * 520, wP = R() * 6.283;
+    const wave = function(px){
+      const t = (px - x0) / wL * 6.283 + wP;
+      return Math.sin(t) * wA + Math.sin(t * 2.7 + 1.2) * wA * 0.25;
+    };
+    let y = y0 - 5 + R() * 8;
+    while (y < y0 + h + 5){
+      const sh = (R() - 0.5) * 1.8;
+      strokeLine(ctx, x0, w, y + sh, wave, 0.12 + R() * 0.3, 0.4 + R() * 1.1);
+      y += (2.6 + R() * R() * 11) * density;
     }
-    ctx.strokeStyle = dark
-      ? 'rgba(56,25,6,' + a.toFixed(3) + ')'
-      : 'rgba(255,214,158,' + (a * 0.6).toFixed(3) + ')';
-    ctx.lineWidth = 0.3 + R() * (amp > 2 ? 1.6 : 1.1);
-    ctx.stroke();
-    y += (1.4 + R() * R() * 8.5) * density;
+  } else if (kind < 0.74){
+    /* ---- 山纹 ---- */
+    const cx = x0 + w * (0.22 + R() * 0.56);
+    const cy = y0 - h * (1.1 + R() * 2.4);          // 弧心在板外上方，所以弧顶朝上隆起
+    let r = y0 - cy - 2 + R() * 3;                  // 第一条弧正好贴着板顶
+    while (cy + r < y0 + h + 5){
+      const half = Math.atan2(w * 0.72, Math.max(40, r));
+      const a = 0.1 + R() * 0.26;
+      const lw = 0.45 + R() * 1.15;
+      const a0 = -Math.PI / 2 - half, a1 = -Math.PI / 2 + half;
+      ctx.beginPath(); ctx.arc(cx, cy, r, a0, a1);
+      ctx.strokeStyle = 'rgba(50,22,5,' + a.toFixed(3) + ')';
+      ctx.lineWidth = lw; ctx.stroke();
+      // 内侧 0.9px 的淡高光：和直线一样，只有暗弧就像铅笔画的拱门
+      ctx.beginPath(); ctx.arc(cx, cy, Math.max(2, r - 0.9), a0, a1);
+      ctx.strokeStyle = 'rgba(255,226,180,' + (a * 0.34).toFixed(3) + ')';
+      ctx.lineWidth = Math.max(0.4, lw * 0.85); ctx.stroke();
+      r += (1.9 + R() * R() * 7.5) * density;
+    }
+  } else {
+    /* ---- 波纹 ---- */
+    const a1 = 1.4 + R() * 3.4, l1 = 150 + R() * 240;
+    const a2 = R() * 1.6, l2 = 46 + R() * 70;
+    const p1 = R() * 6.283, p2 = R() * 6.283;
+    const wave = function(px){
+      const x = px - x0;
+      return Math.sin(x / l1 * 6.283 + p1) * a1 + Math.sin(x / l2 * 6.283 + p2) * a2;
+    };
+    let y = y0 - 5 + R() * 8;
+    while (y < y0 + h + 5){
+      const sh = (R() - 0.5) * 1.4;
+      strokeLine(ctx, x0, w, y + sh, wave, 0.1 + R() * 0.3, 0.4 + R() * 1.1);
+      y += (2.4 + R() * R() * 10) * density;
+    }
   }
 
   /* ④ 导管孔：成簇的沿纹短划。撒得均匀就变噪点，成簇才像木材的管胞。
@@ -961,7 +1013,7 @@ function drawPlank(ctx, x0, y0, w, h, seed){
   if (R() > 0.4){
     const cx = x0 + 70 + R() * (w - 140);
     const cy = y0 + h * (0.28 + R() * 0.44);
-    const rad = 2.6 + R() * 4.6;
+    const rad = 3.2 + R() * 6.2;
     const flat = 0.34 + R() * 0.2;
 
     // 绕流：周围的纹理被疤顶开，上下各几条弯线
@@ -1011,11 +1063,11 @@ function drawPlank(ctx, x0, y0, w, h, seed){
   /* ⑦ 边缘倒角：刨过的木边不是一条线，是一个窄弧面 ——
      最上面一条锐高光 → 一段渐暗的弧 → 底下一条暗线。
      只画 1px 亮线，边缘看着就是刀切的。 */
-  ctx.fillStyle = 'rgba(255,238,206,.42)';
+  ctx.fillStyle = 'rgba(255,238,206,.22)';
   ctx.fillRect(x0, y0, w, 1);
   const tg = ctx.createLinearGradient(0, y0, 0, y0 + 3.5);
-  tg.addColorStop(0, 'rgba(255,232,196,.48)');
-  tg.addColorStop(0.22, 'rgba(255,224,182,.18)');
+  tg.addColorStop(0, 'rgba(255,232,196,.34)');
+  tg.addColorStop(0.22, 'rgba(255,224,182,.13)');
   tg.addColorStop(1, 'rgba(255,212,166,0)');
   ctx.fillStyle = tg;
   ctx.fillRect(x0, y0, w, 3.5);
@@ -1027,11 +1079,15 @@ function drawPlank(ctx, x0, y0, w, h, seed){
   ctx.fillStyle = bo;
   ctx.fillRect(x0, y0 + h - 7, w, 7);
 
-  /* ⑧ 清漆反光：一道斜的宽高光。上过漆的木头才有，没有这层就是块干柴 */
-  const vg = ctx.createLinearGradient(x0, y0, x0 + w * 0.55, y0 + h);
+  /* ⑧ 清漆反光：一道斜的宽高光。上过漆的木头才有，没有这层就是块干柴。
+     方向随机 —— 同一批板全是「左亮右暗」，一列排下来就是同一张贴图重复。 */
+  const rev = R() > 0.5;
+  const vg = rev
+    ? ctx.createLinearGradient(x0 + w, y0, x0 + w * 0.45, y0 + h)
+    : ctx.createLinearGradient(x0, y0, x0 + w * 0.55, y0 + h);
   vg.addColorStop(0, 'rgba(255,244,222,0)');
-  vg.addColorStop(0.3, 'rgba(255,244,222,.05)');
-  vg.addColorStop(0.46, 'rgba(255,244,222,.016)');
+  vg.addColorStop(0.3, 'rgba(255,244,222,.075)');
+  vg.addColorStop(0.46, 'rgba(255,244,222,.02)');
   vg.addColorStop(1, 'rgba(255,244,222,0)');
   ctx.fillStyle = vg;
   ctx.fillRect(x0, y0, w, h);
