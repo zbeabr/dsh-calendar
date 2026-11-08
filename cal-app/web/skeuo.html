@@ -371,7 +371,12 @@ body{
    以前是一整张画好就不动的静态 SVG：木板被甩得乱晃，绳子纹丝不动，
    两样东西根本不是一个物体。拆开之后每段绳子的两端分别挂在相邻两块木板上，
    木板一动，绳子就跟着倾斜 —— 这才是「串在绳上的木板」该有的样子。 */
-.ropes{position:absolute;inset:0;pointer-events:none;z-index:0}
+/* 绳子单独一层，压在木板之上。
+   原来 z-index:0，木板（z-index 由 .slot 给）盖在绳上：木板那条
+   `0 9px 16px rgba(24,14,5,.42)` 的投影正好落在下方 0~25px，
+   把间隙里绳子的上半截压暗 —— 于是「板内那段绳亮、板外那段绳暗」，
+   又成了两截。提到木板之上，这一段就不受它影响了。 */
+.ropes{position:absolute;inset:0;pointer-events:none;z-index:1}
 /* 麻绳：三股左捻（Z 捻）。
    之前做错的地方：用两组相反方向的斜纹交叉，结果出来是「编织网/弹簧」。
    捻绳的本质是**单向的平行股带**——三股往同一个方向拧，股与股之间是深沟。
@@ -389,11 +394,13 @@ body{
   /* 不设圆角：方口才能和下一段咬合。圆头只给整根绳的起止两端，
      中间段一律加圆头，就是 28 根各自独立的小棒。 */
   background:
-    /* ① 圆柱受光：亮带偏左，两侧入暗（半透明，压在股带上） */
+    /* ① 圆柱受光：亮带偏左，两侧入暗（半透明，压在股带上）。
+       两侧不能压成死黑 —— 8px 宽的绳上 0%/100% 各占 1px，
+       rgba(8,4,1,.74) 会把绳子读成「一条带子加两道黑描边」。 */
     linear-gradient(90deg,
-      rgba(8,4,1,.74) 0%, rgba(24,14,4,.44) 12%,
-      rgba(255,240,210,.04) 32%, rgba(255,248,225,.15) 48%,
-      rgba(255,240,210,.04) 64%, rgba(24,14,4,.44) 88%, rgba(6,3,1,.78) 100%),
+      rgba(22,13,5,.60) 0%, rgba(34,21,8,.36) 14%,
+      rgba(255,240,210,.03) 34%, rgba(255,246,220,.13) 48%,
+      rgba(255,240,210,.03) 64%, rgba(34,21,8,.36) 86%, rgba(18,10,3,.62) 100%),
     /* ② 纤维：沿股方向的极细毛纹，比股密得多 */
     repeating-linear-gradient(var(--a),rgba(255,242,214,.13) 0 .4px,transparent .4px 1.15px),
     /* ③ 三股捻带：一条亮股 → 缓降 → 一条深沟，周期 3.2px。
@@ -434,28 +441,39 @@ body{
   content:"";position:absolute;left:0;right:0;bottom:0;height:26px;border-radius:0 0 4px 4px;
   background:linear-gradient(180deg,transparent,rgba(10,5,1,.4) 46%,rgba(8,4,1,.72));
 }
-/* 木板穿孔里的绳节：上下两段绳子在这里真正接上。
-   没有这一段，孔里是空的，两根绳就成了「各插一半进木头」——
-   孔是木板上唯一能看到绳子穿过的地方，它必须是实的。 */
+/* 木板穿孔里的绳节。
+   ── 2026-11-08 第二次重做：从「孔里的塞子」改成「木板前面那段绳」 ──
+   之前的做法是「绳子只在孔里露一小截」：一段绳伸进木板 10px 就被木头盖住，
+   孔到这里再冒出来。54px 高的板上，孔只有 10.8px 内径 —— 结果的观感是
+   一串「绳结」穿在板上，而不是一根绳。用户的原话：「绳子根本不像一根」。
+   现在这一段改成整块板高（56px）、叠在木板之上：绳子从挂杆到最底完全连续，
+   铜环只是压在绳上（z-index 低于它），孔壁不再把绳子切断。 */
 .rope-core{
-  position:absolute;top:50%;width:6.5px;height:26px;
-  margin-top:-13px;margin-left:-3.25px;transform-origin:50% 50%;
+  position:absolute;top:50%;width:8px;height:56px;
+  margin-top:-28px;margin-left:-4px;transform-origin:50% 50%;
+  z-index:3;
   background:
     linear-gradient(90deg,
-      rgba(8,4,1,.8) 0%, rgba(24,14,4,.46) 12%,
-      rgba(255,240,210,.04) 32%, rgba(255,248,225,.16) 48%,
-      rgba(255,240,210,.04) 64%, rgba(24,14,4,.46) 88%, rgba(6,3,1,.82) 100%),
+      rgba(22,13,5,.60) 0%, rgba(34,21,8,.36) 14%,
+      rgba(255,240,210,.03) 34%, rgba(255,246,220,.13) 48%,
+      rgba(255,240,210,.03) 64%, rgba(34,21,8,.36) 86%, rgba(18,10,3,.62) 100%),
     repeating-linear-gradient(var(--a,38deg),rgba(255,242,214,.13) 0 .4px,transparent .4px 1.15px),
     repeating-linear-gradient(var(--a,38deg),
       #a68d5e 0 .85px, #907a51 .85px 1.7px, #6b5735 1.7px 2.35px,
-      #3f3019 2.35px 2.95px, #5f4c2b 2.95px 3.2px);
-  /* 两端渐隐，钻进孔壁里，不留平口 */
-  mask-image:linear-gradient(180deg,transparent 0,#000 30%,#000 70%,transparent 100%);
-  -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 30%,#000 70%,transparent 100%);
+      #3f3019 2.35px 2.95px, #5f4c2b 2.95px 3.2px),
+    repeating-linear-gradient(180deg,rgba(255,236,200,.05) 0 7px,rgba(20,10,2,.12) 7px 15px);
+  /* 内阴影必须和 .rope-seg 一模一样，否则孔口处「粗一圈」。
+     外阴影不能加：那圈暗晕会让板内那段看着比间隙里宽 0.7px，
+     又是「两截绳」的观感。 */
+  box-shadow:
+    inset -1px 0 1px rgba(0,0,0,.42),
+    inset 1px 0 1px rgba(255,228,185,.18);
 }
 .rope-core.l{left:36px}
-.rope-core.r{left:auto;right:36px;margin-left:0;margin-right:-3.25px;--a:-38deg}
-.slot{position:relative;height:82px;z-index:1}   /* 54 板 + 28 透明间隙 */
+.rope-core.r{left:auto;right:36px;margin-left:0;margin-right:-4px;--a:-38deg}
+/* z-index 必须留在 auto：设成 1 会建立层叠上下文，把 .rope-core 和 .grommet
+   一起关在木板下面，「绳在木板前面」就做不成了。 */
+.slot{position:relative;height:82px}   /* 54 板 + 28 透明间隙 */
 .plank{
   position:absolute;left:0;top:0;width:100%;height:54px;
   border-radius:3px;
@@ -516,6 +534,8 @@ body{
 .grommet{
   position:absolute;top:50%;left:36px;width:20px;height:20px;
   margin-top:-10px;margin-left:-10px;border-radius:50%;
+  /* 铜环压在绳段之上、但低于 .rope-core —— 绳子才是「从这里过去」的那条线 */
+  z-index:2;
   /* 从圆心往外一次性排好：孔 → 内缘(翻边向下弯，暗) → 环面(渐渐起亮) →
      外翻边(最亮的一条窄环) → 外缘暗线。顺序错了立刻变硬币贴纸。 */
   background:
@@ -552,8 +572,11 @@ body{
 .grommet::after{
   content:"";position:absolute;inset:4.6px;border-radius:50%;
   background:
-    /* 穿过孔的绳：不能被木头整个盖住，否则绳子看着是断的 */
-    linear-gradient(90deg,transparent 0 31%,#4a3014 31% 45%,#8d6630 45% 56%,#3a2410 56% 69%,transparent 69% 100%),
+    /* 孔底就是孔底，这里绝对不能再画一根「细绳」。
+       原来这里有两条竖直色带冒充穿过的绳：宽 4.1px、颜色 #8d6630（偏黄）；
+       真正的绳子是 .rope-core，宽 8px、颜色 #a68d5e（亚麻灰土黄）。
+       两截宽度差一倍、色相也不同，孔里就成了「一节细绳接一节粗绳」——
+       这是「绳子不是一根」最直接的来源。 */
     radial-gradient(circle at 34% 28%,
       #7d5824 0%, #523913 16%, #2c1c08 36%, #140b03 58%, #070302 78%, #030201 100%);
   box-shadow:
@@ -1390,6 +1413,18 @@ function rigSync(){
   plankEls = list.map(function(el){ return el.querySelector('.plank'); });
   coreEls = list.map(function(el){ return el.querySelectorAll('.rope-core'); });
   placeWood();   // 顺序变了，哪块用哪条纹理要重算
+
+  /* 孔里那截绳节的捻纹，必须和上下段共用同一套「页面绝对 y」相位。
+     不设的话每块板的绳节都从自己顶端重新起纹，相邻两段的股带就错开半格 ——
+     这段现在有整块板高、叠在木板前面，错半格是最显眼的接缝。
+     core 高 56、居中于 27，所以顶部在板顶 -1。 */
+  for (let i = 0; i < list.length; i += 1){
+    const cs = coreEls[i];
+    if (!cs || !cs.length) continue;
+    const yCore = (list[i].offsetTop || 0) - 1;
+    const bp = '0 ' + (-yCore) + 'px';
+    for (let k = 0; k < cs.length; k += 1) cs[k].style.backgroundPosition = bp;
+  }
   nodes = order.map(function(uid, i){
     let s = pen.get(uid);
     if (!s){ s = { x: 0, v: 0, L: 0.2 }; pen.set(uid, s); }
