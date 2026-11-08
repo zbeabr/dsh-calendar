@@ -174,10 +174,19 @@ export function cachedCalendarNames() {
 
 const DEAD_PATH = join(CONFIG_DIR, 'pending.dead.json');
 const LOCK_PATH = `${QUEUE_PATH}.lock`;
-/** 拿锁最多等多久。临界区只是读几 KB 再写回去，正常几十毫秒。 */
-const LOCK_WAIT_MS = 5000;
-/** 锁文件超过这个年龄就当持有者已经崩了，抢过来。 */
-const LOCK_STALE_MS = 15000;
+/**
+ * 拿锁最多等多久。临界区只是读几 KB 再写回去，正常几十毫秒就轮到。
+ * 但「正常」不能当上限用：慢盘上单次建文件就要 400ms（实测工作区目录），
+ * 一次入队在锁里要做 4~5 次文件操作，8 个进程排队就会超过 5s，
+ * 后到的进程直接报「队列正被占用」——数据没丢，但用户白等一场。
+ */
+const LOCK_WAIT_MS = 15000;
+/**
+ * 锁文件超过这个年龄就当持有者已经崩了，抢过来。
+ * 必须明显大于 LOCK_WAIT_MS：否则等待方会在持有者还活着、只是慢的时候把锁抢走，
+ * 于是两个进程同时进临界区，那才是真正会丢数据的路径。
+ */
+const LOCK_STALE_MS = 60000;
 
 /** 队列文件读不出来时抛这个。调用方据此决定是「报错」还是「另存后重建」。 */
 export class QueueCorruptError extends Error {
