@@ -465,34 +465,41 @@ body{
 
 /* ===== 内嵌版覆盖：整页就是这台机器，演示用桌面/说明不进 App ===== */
 .menubar,.spec{display:none!important}
-/* 滚动只能发生在木板列表里。以前 body 也能滚，滚轮有时被 body 抢走（整块金属跟着走，
-   露出上面一条空白），有时又落到列表上 —— 这就是「有时能滑有时不行」的根因。 */
-html,body{height:100%!important;overflow:hidden!important}
-.desktop{padding:0!important;height:100vh!important;overflow:hidden!important;
+/* 滚动交给页面本身，别再锁 overflow:hidden。
+   原因：WKWebView 的主滚动视图一旦被判成"没有可滚内容"，滚轮事件会在原生层
+   就被吞掉 —— 内层 div 的 overflow:auto 只能靠打到它身上的那一半事件滚，
+   于是「有时能滑有时不行」。让页面滚是最稳的路径，浏览器对这条路最熟。
+   上半块（标题栏 + 输入区 + 黄铜杆）改用 sticky 吸顶，滚的时候它不动，
+   木板从它下面滑过去 —— 用户要的「对话框别跟着动」照样成立。 */
+html,body{height:auto!important;min-height:100%!important;overflow:visible!important;
+  scrollbar-width:none!important}
+html::-webkit-scrollbar,body::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}
+.desktop{padding:0!important;height:auto!important;min-height:100vh!important;overflow:visible!important;
   justify-content:flex-start!important;
   background:linear-gradient(180deg,#3a3733,#2b2926)!important}
 .desktop{align-items:stretch!important}
 /* 去掉整窗 drop-shadow：它会让整个子树成为滤镜层，滚动时每帧重算，
    是木板滑动停顿的主因（阴影改由标题栏自身的边缘表现） */
-.app-window{width:100%!important;height:100vh!important;display:flex!important;flex-direction:column!important;
+.app-window{width:100%!important;min-height:100vh!important;height:auto!important;
+  display:flex!important;flex-direction:column!important;
   filter:none!important}
 .back-window{position:fixed!important;top:118px!important;left:5%!important;margin-left:0!important;
   width:90%!important;height:82%!important;filter:blur(6px)!important;opacity:.6!important}
 /* 滚动时不实时做整区高斯模糊 —— 那是卡顿的主因；后窗本身已预模糊，
    这里只盖一层静态暖灰，视觉仍是柔光，滚动时不再逐帧重算 */
-.plank-area{flex:1!important;min-height:0!important;overflow-y:auto!important;overflow-x:hidden!important;
+.plank-area{flex:1 0 auto!important;min-height:0!important;overflow:visible!important;
   backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
   background:linear-gradient(180deg,rgba(58,55,51,.55) 0%,rgba(40,38,35,.78) 100%)!important;
-  overscroll-behavior:contain!important;
-  scrollbar-width:none!important}
-.plank-area::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}
+  padding-bottom:64px!important}
 /* 只隔离布局，不做 paint 裁剪：木板摆动时会转出自己的格子，
    裁掉的话边缘和阴影会被切出一条直边。 */
 .slot{contain:layout;transform:none}
 .plank{backface-visibility:hidden}
-.chrome{flex:none!important}
-/* 列表底部雾层：被滚动区裁出的半块木板淡出，不留硬边 */
-.app-window::after{content:"";position:absolute;left:0;right:0;bottom:0;height:58px;z-index:5;
+/* 上半块吸顶：页面滚动时它原地不动，木板从下面滑过。
+   z-index 要高过底部雾层(5)，否则滚上来的木板会盖住输入区。 */
+.chrome{flex:none!important;position:sticky!important;top:0!important;z-index:20!important}
+/* 列表底部雾层：现在页面整体滚动，它得钉在视口底部而不是文档底部 */
+.app-window::after{content:"";position:fixed;left:0;right:0;bottom:0;height:58px;z-index:5;
   pointer-events:none;background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.97))}
 
 /* 右侧日历标签：以前叠了四层阴影外加描边，字被自己的影子糊死了。
@@ -1069,13 +1076,15 @@ window.dshRender = function(state){
     }).join('\n');
     if (key !== lastEventKey){
       lastEventKey = key;
-      const area = document.getElementById('planks');
-      const top = area.scrollTop;
+      /* 滚动现在在页面（document）上，不在 #planks 里。
+         保存/恢复的位置也要跟着换，否则数据一变就弹回顶部。 */
+      const scroller = document.scrollingElement || document.documentElement;
+      const top = scroller.scrollTop;
       items = state.events.map(function(e){
         return {uid:e.uid, when:e.when, what:e.what, tag:e.tag};
       });
       render(-1);
-      area.scrollTop = top;
+      scroller.scrollTop = top;
     }
   }
   if (state.sys != null) setSys(state.sys);
