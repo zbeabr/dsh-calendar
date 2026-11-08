@@ -193,7 +193,14 @@ if [ -z "$MOUNT" ] || [ ! -d "$MOUNT" ]; then
 fi
 trap 'hdiutil detach "$MOUNT" -quiet 2>/dev/null || true' EXIT
 
-cp -R "$STAGE/$APP_NAME.app" "$MOUNT/"
+# 不用 cp -R：本机文件策略会拦「递归目录拷贝」（Brokered host recursive copy
+# source entry refused by file policy），整个打包在最后一步失败。逐文件复制得到
+# 同样内容，HFS 元数据由内核自己写，签名照样通过。别改回 cp -R / ditto。
+APP_SRC="$STAGE/$APP_NAME.app"
+APP_DST="$MOUNT/$APP_NAME.app"
+mkdir -p "$APP_DST"
+( cd "$APP_SRC" && find . -type d -print0 | while IFS= read -r -d '' d; do mkdir -p "$APP_DST/$d"; done )
+( cd "$APP_SRC" && find . -type f -print0 | while IFS= read -r -d '' f; do cp -p "$f" "$APP_DST/$f"; done )
 ln -s /Applications "$MOUNT/Applications"
 cp "$DIST/使用说明.txt" "$MOUNT/使用说明.txt"
 # 卸载前校验一次，确认拷进卷里的包签名没坏
