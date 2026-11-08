@@ -1575,39 +1575,14 @@ function showCtx(x, y, uid){
 }
 document.addEventListener('contextmenu', function(e){ e.preventDefault(); });
 
-/* ── 滚动兜底 ──
-   实测：页面 scrollHeight 1135 / clientHeight 720，脚本设 scrollTop 能滚 300，
-   说明布局和可滚高度都对。但真实滚轮打到窗口上时偶发「怎么都滑不动」，
-   那是事件在原生层被丢掉，Web 这边根本收不到，靠 CSS 修不了。
-   策略：先不动手。只有「连续三次滚轮之后 scrollTop 一点没变，而且当时
-   并不在顶部/底部边界」才判定为原生滚动坏了，从第四次起由页面自己接管。
-   正常情况下一次都不会接管，也不会有一帧延迟或惯性丢失。 */
-(function(){
-  let tries = 0, takeover = false;
-  function scroller(){ return document.scrollingElement || document.documentElement; }
-  addEventListener('wheel', function(e){
-    const se = scroller();
-    const max = se.scrollHeight - se.clientHeight;
-    if (max <= 1) return;                       // 没有可滚内容，交给默认行为
-    const step = e.deltaY * (e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? se.clientHeight : 1));
-    if (takeover){
-      e.preventDefault();
-      se.scrollTop = Math.max(0, Math.min(max, se.scrollTop + step));
-      return;
-    }
-    const atEdge = (se.scrollTop <= 0 && step < 0) || (se.scrollTop >= max - 1 && step > 0);
-    if (atEdge) return;                         // 到顶/到底本来就不动，不算坏
-    const before = se.scrollTop;
-    setTimeout(function(){
-      if (Math.abs(scroller().scrollTop - before) < 0.5){
-        tries += 1;
-        if (tries >= 3) takeover = true;
-      } else {
-        tries = 0;
-      }
-    }, 60);
-  }, {passive:false});
-})();
+/* ── 关于滚动，这里刻意没有任何 JS ──
+   2026-11-08 曾在这里加过一段「连续三次滚不动就由页面接管」的兜底：
+   takeover 之后 preventDefault 掉原生滚动，再手动写 scrollTop 补偿。
+   结果是把滚动彻底锁死 —— 因为 WKWebView 的原生滚动层和 document
+   .scrollingElement.scrollTop 不同步，preventDefault 立刻生效、手写补偿
+   却不生效，而且 takeover 是单向的，一旦触发就再也回不去。
+   原生滚动一旦被插一脚，就只剩「完全不能滚」这一个结果。
+   滚轮一律交给 WebKit 自己处理，页面侧不再干预。 */
 document.addEventListener('click', function(){ ctx.style.display = 'none'; });
 
 function setSys(text){ document.getElementById('sysline').textContent = text; }
