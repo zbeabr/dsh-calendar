@@ -672,6 +672,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var skeuoWebView: WKWebView?
     private var skeuoSyncTimer: Timer?
     private var skeuoLastPayload = ""
+    /// 最近一次识别出的胶囊，原样镜像一份推给拟物界面。
+    /// 只读镜像：玻璃版的胶囊绘制与产品逻辑一行没动。
+    private var lastChips: [[String: String]] = []
     private var appearanceMenuItem: NSMenuItem?
     /// 日历名 → 颜色，给每条日程配左侧色条
     private var calendarColors: [String: NSColor] = [:]
@@ -2025,6 +2028,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     // MARK: 识别胶囊
 
     private func renderChips(_ chips: [(text: String, kind: String)]) {
+        // 拟物界面用同一份识别结果（含「没识别出来」被清空的这一次），不另算一遍
+        lastChips = chips.map { ["text": $0.text, "kind": $0.kind] }
         guard let row = chipRow else { return }
         row.subviews.forEach { $0.removeFromSuperview() }
         var x: CGFloat = 0
@@ -4287,8 +4292,19 @@ extension NSColor {
 // 切外观只换 contentView，不重建控件、不碰数据、不改任何产品逻辑。
 
 /// 标题栏拖动层：避开左侧自绘红绿灯和右侧状态灯，其余区域拖真窗口。
+///
+/// 不用 `performDrag(with:)`：它会把主线程交给系统拖动循环，期间一个事件都拿不到，
+/// 木板只能在开始那一瞬间「统一晃一下」（用户说的死板）。这里自己跟鼠标，就能每 40ms
+/// 把横向速度推给页面，让每块木板按真实速度滞后、反向、过冲、回摆。
 final class SkeuoDragView: NSView {
-    var onDrag: (() -> Void)?
+    /// 横向速度，px/s。
+    var onDrag: ((CGFloat) -> Void)?
+
+    private var startMouse = NSPoint.zero
+    private var lastMouse = NSPoint.zero
+    private var startOrigin = NSPoint.zero
+    private var lastTime: TimeInterval = 0
+    private var lastSent: TimeInterval = 0
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         if point.x > 100 && point.x < bounds.width - 160 { return self }
@@ -4296,8 +4312,34 @@ final class SkeuoDragView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        onDrag?()
-        window?.performDrag(with: event)
+        guard let window else { return }
+        window.makeKeyAndOrderFront(nil)
+        startMouse = NSEvent.mouseLocation
+        lastMouse = startMouse
+        startOrigin = window.frame.origin
+        lastTime = ProcessInfo.processInfo.systemUptime
+        lastSent = 0
+    }
+
+    // AppKit 会把拖动事件继续送给收到 mouseDown 的那个视图，所以这里能逐帧拿到位移；
+    // 不用 performDrag（它交给系统拖动循环，期间拿不到速度），也不用 nextEvent 自取事件
+    // （取不到时会阻塞主线程，窗户直接卡住）。
+    override func mouseDragged(with event: NSEvent) {
+        guard let window else { return }
+        let point = NSEvent.mouseLocation
+        window.setFrameOrigin(NSPoint(x: startOrigin.x + (point.x - startMouse.x),
+                                      y: startOrigin.y + (point.y - startMouse.y)))
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let dt = max(1.0 / 240.0, now - lastTime)
+        let dx = point.x - lastMouse.x
+        lastMouse = point
+        lastTime = now
+        // 每帧都推会给 WebView 灌几百次 JS 调用，40ms 一次已经够顺
+        if now - lastSent > 0.04 {
+            lastSent = now
+            onDrag?(CGFloat(dx) / CGFloat(dt))
+        }
     }
 }
 
@@ -4344,8 +4386,10 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         let drag = SkeuoDragView(frame: NSRect(x: 0, y: bounds.height - barHeight,
                                                width: bounds.width, height: barHeight))
         drag.autoresizingMask = [.width, .minYMargin]
-        drag.onDrag = { [weak self] in
-            self?.skeuoWebView?.evaluateJavaScript("window.dshSwing()") { _, _ in }
+        drag.onDrag = { [weak self] speed in
+            guard let web = self?.skeuoWebView else { return }
+            let v = Int(max(-2000, min(2000, speed)))
+            web.evaluateJavaScript("window.dshSwing(\(v))") { _, _ in }
         }
         container.addSubview(drag)
 
@@ -4408,6 +4452,7 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         let state: [String: Any] = [
             "events": events,
             "sys": sys,
+            "chips": lastChips,
             "status": ["online": !offline && !forceOffline, "modelOnline": modelOnline],
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: state, options: []),

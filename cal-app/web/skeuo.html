@@ -185,14 +185,43 @@ body{
 }
 /* 输入区：凿进同一块金属板的凹槽，不是浮在上面的独立圆角面板 */
 .compose{position:relative;z-index:2;padding:10px 14px 0}
+/* 识别出的关键词：玻璃版那排胶囊的拟物对应物 —— 一颗颗压进金属的黄铜小牌。
+   以前拟物版只有一句 SYS 文字，用户看不出「到底认成了什么」，这是补上的那排。 */
+.chips{
+  position:relative;z-index:2;display:none;flex-wrap:nowrap;align-items:center;
+  gap:6px;margin-top:9px;min-height:22px;overflow:hidden;
+}
+.chips.on{display:flex}
+.chip{
+  --c:#6b5a2e;
+  flex:none;display:inline-block;height:22px;line-height:22px;padding:0 10px;
+  border-radius:11px;max-width:170px;vertical-align:middle;
+  font-family:ui-monospace,"SF Mono",Menlo,monospace;
+  font-size:10.5px;font-weight:600;letter-spacing:.3px;
+  color:#f6ecd2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  background:linear-gradient(180deg,rgba(255,255,255,.22),rgba(0,0,0,.30)),var(--c);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.42),
+    inset 0 -1px 0 rgba(0,0,0,.52),
+    0 1px 2px rgba(0,0,0,.5);
+  text-shadow:0 1px 0 rgba(0,0,0,.6);
+}
+.chip.k-title{--c:#8a6a20}
+.chip.k-time{--c:#1f6b3a}
+.chip.k-location{--c:#1b5e6e}
+.chip.k-repeat{--c:#5a3d7a}
+.chip.k-tag{--c:#7a5a2c}
+.chip.k-alarm{--c:#7d3a24}
 .compose-label{
   font-size:10.5px;letter-spacing:.6px;color:#f0efeb;
   text-shadow:0 1px 1px rgba(0,0,0,.55);margin-bottom:7px;
 }
-.compose-row{display:flex;gap:10px;align-items:stretch}
-/* 老式电脑终端屏：仍是凿进同一块金属板的凹槽，只是里面换成墨绿磷光屏 */
+.compose-row{display:flex;gap:10px;align-items:center}
+/* 老式电脑终端屏：仍是凿进同一块金属板的凹槽，只是里面换成墨绿磷光屏。
+   高度对齐玻璃版那个 68pt 的输入框（原来只有 54，看着像条缝）。 */
 .well{
-  flex:1;position:relative;border-radius:4px;padding:14px 14px 13px;min-height:54px;
+  flex:1;position:relative;border-radius:4px;padding:0 16px;min-height:94px;
+  display:flex;align-items:center;
   background:
     radial-gradient(130% 150% at 50% -25%,rgba(80,220,130,.14),transparent 62%),
     linear-gradient(180deg,#07160d 0%,#0a1d11 55%,#06120a 100%);
@@ -219,7 +248,7 @@ body{
   position:relative;z-index:1;
   width:100%;border:0;background:transparent;outline:none;
   font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Courier New",monospace;
-  font-size:13px;letter-spacing:.6px;
+  font-size:14px;line-height:1.45;letter-spacing:.6px;
   color:#8dffab;caret-color:#8dffab;
   text-shadow:
     0 0 4px rgba(90,255,140,.85),
@@ -228,7 +257,7 @@ body{
 }
 .well input::placeholder{color:#3c7a52;text-shadow:none}
 .add-btn{
-  width:66px;border-radius:6px;border:1px solid #565656;cursor:pointer;
+  width:66px;height:46px;border-radius:6px;border:1px solid #565656;cursor:pointer;
   font:inherit;font-size:12px;font-weight:600;color:#333;
   background:linear-gradient(180deg,#fafafa,#d2d2d2 55%,#adadad);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.95),0 2px 3px rgba(0,0,0,.35);
@@ -390,6 +419,11 @@ body{
 .plank:hover .del{opacity:1}
 .plank.new{animation:hang .6s cubic-bezier(.2,1.4,.4,1)}
 @keyframes hang{0%{transform:translateY(-26px) rotate(-3deg);opacity:0}60%{transform:rotate(1.4deg);opacity:1}100%{transform:rotate(0)}}
+/* 摘下的一块自己掉落淡出，其它木板原地不动 */
+.slot.out{transition:transform .3s cubic-bezier(.4,0,.7,1),opacity .3s ease;pointer-events:none;
+  transform:translateY(-22px) rotate(-8deg);opacity:0}
+/* 摆动期间由 JS 逐帧写角度，这里必须撤掉过渡，否则两套插值互相打架，看起来反而一顿一顿 */
+.swinging .plank{transition:none}
 /* 轻拟物对照：纯色木板，用来直接对比材质差别 */
 .light-mode .plank .noise,
 .light-mode .plank .blotch,
@@ -417,10 +451,17 @@ body{
 
 /* ===== 内嵌版覆盖：整页就是这台机器，演示用桌面/说明不进 App ===== */
 .menubar,.spec{display:none!important}
-.desktop{padding:0!important;min-height:100vh!important;justify-content:flex-start!important;
+/* 滚动只能发生在木板列表里。以前 body 也能滚，滚轮有时被 body 抢走（整块金属跟着走，
+   露出上面一条空白），有时又落到列表上 —— 这就是「有时能滑有时不行」的根因。 */
+html,body{height:100%!important;overflow:hidden!important}
+.desktop{padding:0!important;height:100vh!important;overflow:hidden!important;
+  justify-content:flex-start!important;
   background:linear-gradient(180deg,#3a3733,#2b2926)!important}
 .desktop{align-items:stretch!important}
-.app-window{width:100%!important;height:100vh!important;display:flex!important;flex-direction:column!important}
+/* 去掉整窗 drop-shadow：它会让整个子树成为滤镜层，滚动时每帧重算，
+   是木板滑动停顿的主因（阴影改由标题栏自身的边缘表现） */
+.app-window{width:100%!important;height:100vh!important;display:flex!important;flex-direction:column!important;
+  filter:none!important}
 .back-window{position:fixed!important;top:118px!important;left:5%!important;margin-left:0!important;
   width:90%!important;height:82%!important;filter:blur(6px)!important;opacity:.6!important}
 /* 滚动时不实时做整区高斯模糊 —— 那是卡顿的主因；后窗本身已预模糊，
@@ -428,24 +469,26 @@ body{
 .plank-area{flex:1!important;min-height:0!important;overflow-y:auto!important;overflow-x:hidden!important;
   backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
   background:linear-gradient(180deg,rgba(58,55,51,.55) 0%,rgba(40,38,35,.78) 100%)!important;
+  overscroll-behavior:contain!important;
   scrollbar-width:none!important}
 .plank-area::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}
-/* 每块木板独立合成层：滚动只移动图层，不重绘 feTurbulence 纹理 */
-.slot{will-change:transform;transform:translateZ(0)}
-.plank{will-change:transform;backface-visibility:hidden}
+/* 只隔离布局，不做 paint 裁剪：木板摆动时会转出自己的格子，
+   裁掉的话边缘和阴影会被切出一条直边。 */
+.slot{contain:layout;transform:none}
+.plank{backface-visibility:hidden}
 .chrome{flex:none!important}
 /* 列表底部雾层：被滚动区裁出的半块木板淡出，不留硬边 */
 .app-window::after{content:"";position:absolute;left:0;right:0;bottom:0;height:58px;z-index:5;
   pointer-events:none;background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.97))}
 
-/* 右侧日历标签：深木纹上最容易被吃掉的一档字，单独放大提亮并压暗底衬 */
-.plank .tag{font-size:12px!important;font-weight:600!important;color:#f5dcab!important;
-  opacity:1!important;letter-spacing:.3px!important;padding:3px 8px!important;border-radius:3px!important;
-  -webkit-text-stroke:.4px rgba(26,11,3,.75)!important;
-  text-shadow:0 -1px 0 rgba(16,6,2,.98),0 1px 0 rgba(255,230,178,.72),
-              0 2px 3px rgba(14,6,2,.8),0 0 2px rgba(38,15,3,.9)!important;
-  background:linear-gradient(90deg,rgba(34,16,5,0),rgba(34,16,5,.46) 18%,
-             rgba(34,16,5,.46) 82%,rgba(34,16,5,0))!important}
+/* 右侧日历标签：以前叠了四层阴影外加描边，字被自己的影子糊死了。
+   现在靠「压暗的底衬 + 干净的单层落影」拉对比，不再用重阴影硬撑立体。 */
+.plank .tag{font-size:12px!important;font-weight:600!important;color:#fbeccb!important;
+  opacity:1!important;letter-spacing:.3px!important;padding:3px 9px!important;border-radius:3px!important;
+  -webkit-text-stroke:0!important;
+  text-shadow:0 1px 1px rgba(12,5,1,.85)!important;
+  background:linear-gradient(90deg,rgba(26,12,4,0),rgba(26,12,4,.62) 16%,
+             rgba(26,12,4,.62) 84%,rgba(26,12,4,0))!important}
 
 /* 木纹改成预烘焙贴图：滚动时不再逐帧算 feTurbulence，这是卡顿的根治 */
 .plank{background-repeat:no-repeat;background-size:100% 216px}
@@ -569,6 +612,8 @@ body{
           </div>
           <button class="add-btn" id="add">挂上</button>
         </div>
+        <!-- 识别结果：玻璃版那排胶囊在这里变成黄铜小牌，让用户一眼看出「认成了什么」 -->
+        <div class="chips" id="chips"></div>
         <!-- 系统提示单独放一块细长的小液晶屏，不挤在主屏里 -->
         <div class="lcd-strip">
           <span class="tag">SYS</span>
@@ -689,32 +734,159 @@ let items = bridged ? [] : [
   {uid:'demo4', when:'11/21 周六', what:'送孩子上学 · 07:30', tag:'家庭'}
 ];
 
+function baseTilt(i){ return i % 2 ? 0.35 : -0.3; }
+
+/* 一块木板 = 一个 slot，按 uid 增量更新。
+   以前是「每次状态变化整列拆掉重建」：点一下删除，整列木板一起重新挂一遍（用户说的
+   「所有木板诡异的一起动」），滚动位置也跟着归零。现在只动真正变了的那一块。 */
+const slotOf = new Map();
+
+function makeSlot(it, index){
+  const slot = document.createElement('div');
+  slot.className = 'slot';
+  slot.dataset.uid = it.uid;
+  slot.innerHTML =
+    '<div class="plank" style="transform:rotate(' + baseTilt(index) + 'deg)' +
+      ';background-image:url(wood-sprite.png);background-position:0 -' + ((index % 4) * PH) + 'px">' +
+      '<div class="bevel"></div><div class="edge"></div>' +
+      '<span class="grommet l"></span><span class="grommet r"></span>' +
+      '<div class="txt"><span class="when"></span><span class="what"></span><span class="tag"></span></div>' +
+      '<button class="del" title="摘下这块木板">×</button>' +
+    '</div>';
+  fillSlot(slot, it);
+  slot.querySelector('.del').addEventListener('click', function(e){
+    e.stopPropagation();
+    if (bridged) { post({type:'delete', uid:it.uid}); }
+    else { items = items.filter(function(x){ return x.uid !== it.uid; }); render(-1); }
+  });
+  slot.addEventListener('contextmenu', function(e){
+    e.preventDefault();
+    if (bridged) showCtx(e.clientX, e.clientY, it.uid);
+  });
+  return slot;
+}
+
+/* 只改三个文字节点，不碰结构 */
+function fillSlot(slot, it){
+  slot.querySelector('.when').textContent = it.when == null ? '' : it.when;
+  slot.querySelector('.what').textContent = it.what == null ? '' : it.what;
+  slot.querySelector('.tag').textContent = it.tag == null ? '' : it.tag;
+}
+
 function render(newIndex){
   const area = document.getElementById('planks');
-  area.querySelectorAll('.slot').forEach(function(e){ e.remove(); });
-  items.forEach(function(it, i){
-    const slot = document.createElement('div');
-    slot.className = 'slot';
-    slot.innerHTML =
-      '<div class="plank' + (i === newIndex ? ' new' : '') + '" style="transform:rotate(' + (i % 2 ? 0.35 : -0.3) + 'deg)' +
-        ';background-image:url(wood-sprite.png);background-position:0 -' + ((i % 4) * PH) + 'px">' +
-        '<div class="bevel"></div><div class="edge"></div>' +
-        '<span class="grommet l"></span><span class="grommet r"></span>' +
-        '<div class="txt"><span class="when">' + esc(it.when) + '</span><span class="what">' + esc(it.what) +
-        '</span><span class="tag">' + esc(it.tag) + '</span></div>' +
-        '<button class="del" title="摘下这块木板">×</button>' +
-      '</div>';
-    slot.querySelector('.del').addEventListener('click', function(){
-      if (bridged) { post({type:'delete', uid:it.uid}); }
-      else { items.splice(i, 1); render(-1); }
-    });
-    slot.addEventListener('contextmenu', function(e){
-      e.preventDefault();
-      if (bridged) showCtx(e.clientX, e.clientY, it.uid);
-    });
+  const wanted = new Set(items.map(function(it){ return it.uid; }));
+
+  // 消失的：让这一块自己掉落淡出，别的木板不受影响
+  slotOf.forEach(function(slot, uid){
+    if (wanted.has(uid)) return;
+    slotOf.delete(uid);
+    pen.delete(uid);
+    // 先量位置，再脱离文档流（顺序反了 offsetTop 会读到 0）；
+    // 然后挪到列表末尾：留着原位置会打乱下面按序号插入的木板。
+    const top = slot.offsetTop || 0;
+    slot.style.position = 'absolute';
+    slot.style.left = '0';
+    slot.style.width = '100%';
+    slot.style.top = top + 'px';
     area.appendChild(slot);
+    slot.classList.add('out');
+    setTimeout(function(){ slot.remove(); }, 300);
   });
+
+  items.forEach(function(it, i){
+    let slot = slotOf.get(it.uid);
+    if (!slot){
+      slot = makeSlot(it, i);
+      slotOf.set(it.uid, slot);
+      if (i === newIndex) slot.querySelector('.plank').classList.add('new');
+    } else {
+      fillSlot(slot, it);
+    }
+    // 顺序可能变（新的挂最上面），挪到该在的位置即可，不重建
+    const ref = area.children[i + 1] || null;
+    if (ref !== slot) area.insertBefore(slot, ref);
+  });
+
   drawRopes(items.length);
+}
+
+/* 识别结果：玻璃版那排胶囊的拟物对应物 */
+function renderChips(list){
+  const box = document.getElementById('chips');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!list || !list.length){ box.classList.remove('on'); return; }
+  list.forEach(function(c){
+    const s = document.createElement('span');
+    s.className = 'chip k-' + (c.kind || 'tag');
+    s.textContent = c.text == null ? '' : c.text;
+    box.appendChild(s);
+  });
+  box.classList.add('on');
+  // 放不下的直接去掉：宁可少一颗，也不要露出一颗被切掉一半的
+  const max = box.clientWidth - 2;
+  Array.prototype.slice.call(box.children).forEach(function(el){
+    if (el.offsetLeft + el.offsetWidth > max) el.remove();
+  });
+}
+
+/* ---------- 悬挂木板的摆动：真单摆，不是统一晃一下 ----------
+   每块木板 θ'' = -(g/L)·sinθ - c·θ'，requestAnimationFrame 逐帧积分。
+   摆长、阻尼、增益按编号错开，两块相邻木板连方向都相反，所以不会「整列一起动」。
+   拖窗口时 Swift 会持续推来横向速度 —— 相当于支点被来回抽动：
+   木板滞后、反向、过冲、回摆，都是一个挂着的东西该有的反应。 */
+const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const pen = new Map();            // uid -> {a, v, len, damp, gain}
+let rafId = 0, prevT = 0;
+
+function stateOf(uid, index){
+  let s = pen.get(uid);
+  if (!s){
+    s = { a: 0, v: 0,
+          len: 0.82 + ((index * 37) % 11) / 26,
+          damp: 1.55 + ((index * 13) % 7) / 12,
+          gain: 0.9 + ((index * 29) % 9) / 14 };
+    pen.set(uid, s);
+  }
+  return s;
+}
+
+function tick(t){
+  rafId = 0;
+  if (!prevT) prevT = t;
+  const dt = Math.min(0.032, (t - prevT) / 1000);   // 掉帧时别让积分炸掉
+  prevT = t;
+  let live = false;
+  document.querySelectorAll('.plank').forEach(function(p, i){
+    const slot = p.closest('.slot');
+    if (!slot) return;
+    const s = stateOf(slot.dataset.uid, i);
+    const acc = -(9.8 / (s.len * 0.062)) * Math.sin(s.a) - s.damp * s.v;
+    s.v += acc * dt;
+    s.a += s.v * dt;
+    if (Math.abs(s.a) < 0.0016 && Math.abs(s.v) < 0.05){
+      s.a = 0; s.v = 0;
+      p.style.transform = 'rotate(' + baseTilt(i) + 'deg)';
+    } else {
+      live = true;
+      p.style.transform = 'rotate(' + (baseTilt(i) + s.a * 57.2958).toFixed(2) + 'deg)';
+    }
+  });
+  if (live) rafId = requestAnimationFrame(tick);
+  else { prevT = 0; document.body.classList.remove('swinging'); }
+}
+
+function kick(force){
+  if (reduced || !force) return;
+  document.body.classList.add('swinging');
+  document.querySelectorAll('.plank').forEach(function(p, i){
+    const slot = p.closest('.slot');
+    if (!slot) return;
+    const s = stateOf(slot.dataset.uid, i);
+    s.v += force * s.gain * (i % 2 ? 1 : -1);
+  });
+  if (!rafId) rafId = requestAnimationFrame(tick);
 }
 
 /* 右键顺延：与玻璃模式同一套后端动作 */
@@ -771,6 +943,8 @@ document.querySelectorAll('.lamps .lamp').forEach(function(el, i){
 /* Swift → WebView：真实日程、系统提示、连接/模型状态 */
 let lastEventKey = '';
 window.dshRender = function(state){
+  /* 识别结果先更新：它每敲一个字都可能变，和木板列表无关 */
+  if (state.chips) renderChips(state.chips);
   /* 状态文案每 0.6 秒就可能变，但日程没变时绝不能重建木板：
      重建会丢滚动位置并重画全部 feTurbulence，滚动就会一顿一顿 */
   if (state.events){
@@ -803,13 +977,14 @@ window.dshRender = function(state){
 };
 window.dshSys = setSys;
 
-/* 原生窗口拖动时让木板轻摆一下 */
-window.dshSwing = function(){
-  document.querySelectorAll('.plank').forEach(function(p, i){
-    p.style.transform = 'rotate(' + ((i % 2 ? 1 : -1) * 1.1).toFixed(2) + 'deg)';
-    setTimeout(function(){ p.style.transform = 'rotate(' + (i % 2 ? 0.35 : -0.3) + 'deg)'; }, 430);
-  });
+/* 原生窗口拖动时：Swift 每帧推来横向速度，这里换算成角速度冲量。
+   没有参数（老版本调用）时给一个固定轻推。 */
+window.dshSwing = function(v){
+  const speed = typeof v === 'number' ? v : 0;
+  const force = Math.max(-1.5, Math.min(1.5, speed / 900));
+  kick(force || 0.55);
 };
+window.dshChips = renderChips;
 
 render(-1);
 </script>
