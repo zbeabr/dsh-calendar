@@ -358,7 +358,7 @@ body{
   background:linear-gradient(90deg,rgba(70,45,10,.12),rgba(70,45,10,.85),rgba(70,45,10,.12));
   box-shadow:0 1px 0 rgba(255,244,210,.45);
 }
-.rail .rivet.l{left:26px}.rail .rivet.r{right:26px}
+.rail .rivet.l{left:30px}.rail .rivet.r{right:30px}   /* 中心 36 = 绳子的 x，绳子看起来是系在铆钉上的 */
 /* ---------- 列表区：木板间隙是后方窗口的高斯模糊，不再是硬透明 ---------- */
 /* 后方文字如果被原样透上来会抢木板刻字的注意力，所以先虚化再压一层暖灰 */
 .plank-area{
@@ -379,8 +379,15 @@ body{
    圆柱那层必须是半透明叠在最上面：要是实色放在底层，会把股带整个盖死。 */
 .rope-seg{
   --a:38deg;   /* 捻纹角度：越陡越像拧紧的绳 */
-  position:absolute;width:8px;margin-left:-4px;transform-origin:50% 0;
-  border-radius:4px;
+  --ext:10px;  /* 上下各多伸进木板多少，用来把接缝藏到木头底下（JS 按段改写） */
+  position:absolute;width:8px;margin-left:-4px;
+  /* 旋转原点定在「孔」的高度，不是元素顶端。
+     元素的上下各多出一截钻进相邻木板的下面；木板不透明又压在绳子之上，
+     于是每段绳子的两个断口（旋转造成的台阶、楔形缺口）正好落在看不见的地方。
+     这就是「绳子是一根连着的」而不是「一截截短棍」的关键。 */
+  transform-origin:50% var(--ext);
+  /* 不设圆角：方口才能和下一段咬合。圆头只给整根绳的起止两端，
+     中间段一律加圆头，就是 28 根各自独立的小棒。 */
   background:
     /* ① 圆柱受光：亮带偏左，两侧入暗（半透明，压在股带上） */
     linear-gradient(90deg,
@@ -392,16 +399,16 @@ body{
     /* ③ 三股捻带：一条亮股 → 缓降 → 一条深沟，周期 3.2px。
        颜色要压成亚麻的灰土黄，偏黄一点就变成铜丝了。 */
     repeating-linear-gradient(var(--a),
-      #bfa67c 0 .85px,
-      #a98f63 .85px 1.7px,
-      #7f6842 1.7px 2.35px,
-      #4e3d24 2.35px 2.95px,
-      #75603c 2.95px 3.2px),
+      #a68d5e 0 .85px,
+      #907a51 .85px 1.7px,
+      #6b5735 1.7px 2.35px,
+      #3f3019 2.35px 2.95px,
+      #5f4c2b 2.95px 3.2px),
     /* ④ 捻得松紧不匀：沿绳长方向的极轻明暗起伏 */
     repeating-linear-gradient(180deg,rgba(255,236,200,.05) 0 7px,rgba(20,10,2,.12) 7px 15px);
+  /* 不给每段加投影：投影一断开，绳子立刻变成一截一截。
+     绳子本来就贴着木板，投不出明显影子，省掉这一层反而干净。 */
   box-shadow:
-    1px 1px 1px rgba(0,0,0,.5),
-    2px 3px 6px rgba(0,0,0,.28),
     inset -1px 0 1px rgba(0,0,0,.42),
     inset 1px 0 1px rgba(255,228,185,.18);
 }
@@ -416,14 +423,38 @@ body{
   filter:blur(.5px);
   opacity:.42;
 }
-/* 两端入孔：绳子钻进铜环，孔口会把它压暗。
-   不加这一层，两段绳子就是「被剪断」的——断口平得像塑料。 */
-.rope-seg::after{
-  content:"";position:absolute;inset:0;border-radius:4px;
-  background:linear-gradient(180deg,
-    rgba(10,5,1,.58) 0%, rgba(10,5,1,.14) 6%, transparent 15%,
-    transparent 85%, rgba(10,5,1,.14) 94%, rgba(10,5,1,.58) 100%);
+/* 只有整根绳的头尾才「收口」：顶端从挂杆底下钻出来，末端垂尽自然收住。
+   以前每一段两端都压暗，结果每一段都像被剪断的短绳 —— 收口只能出现在
+   整根绳的尽头，中间绝对不能有。 */
+.rope-seg.cap-top::after{
+  content:"";position:absolute;left:0;right:0;top:0;height:10px;
+  background:linear-gradient(180deg,rgba(8,4,1,.82),rgba(8,4,1,.2) 60%,transparent);
 }
+.rope-seg.cap-bot::after{
+  content:"";position:absolute;left:0;right:0;bottom:0;height:26px;border-radius:0 0 4px 4px;
+  background:linear-gradient(180deg,transparent,rgba(10,5,1,.4) 46%,rgba(8,4,1,.72));
+}
+/* 木板穿孔里的绳节：上下两段绳子在这里真正接上。
+   没有这一段，孔里是空的，两根绳就成了「各插一半进木头」——
+   孔是木板上唯一能看到绳子穿过的地方，它必须是实的。 */
+.rope-core{
+  position:absolute;top:50%;width:6.5px;height:26px;
+  margin-top:-13px;margin-left:-3.25px;transform-origin:50% 50%;
+  background:
+    linear-gradient(90deg,
+      rgba(8,4,1,.8) 0%, rgba(24,14,4,.46) 12%,
+      rgba(255,240,210,.04) 32%, rgba(255,248,225,.16) 48%,
+      rgba(255,240,210,.04) 64%, rgba(24,14,4,.46) 88%, rgba(6,3,1,.82) 100%),
+    repeating-linear-gradient(var(--a,38deg),rgba(255,242,214,.13) 0 .4px,transparent .4px 1.15px),
+    repeating-linear-gradient(var(--a,38deg),
+      #a68d5e 0 .85px, #907a51 .85px 1.7px, #6b5735 1.7px 2.35px,
+      #3f3019 2.35px 2.95px, #5f4c2b 2.95px 3.2px);
+  /* 两端渐隐，钻进孔壁里，不留平口 */
+  mask-image:linear-gradient(180deg,transparent 0,#000 30%,#000 70%,transparent 100%);
+  -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 30%,#000 70%,transparent 100%);
+}
+.rope-core.l{left:36px}
+.rope-core.r{left:auto;right:36px;margin-left:0;margin-right:-3.25px;--a:-38deg}
 .slot{position:relative;height:82px;z-index:1}   /* 54 板 + 28 透明间隙 */
 .plank{
   position:absolute;left:0;top:0;width:100%;height:54px;
@@ -468,9 +499,15 @@ body{
   background:linear-gradient(180deg,#5c3415,#3a1f0b 60%,#281405);
   box-shadow:0 2px 3px rgba(0,0,0,.4);
 }
+/* 端面是被切开的木纤维断面：密、乱、以暗为主。
+   原来是一道等距的亮齿（1px 亮 / 4px 空），放大看就是把塑料梳子。 */
 .plank .edge::after{
   content:"";position:absolute;inset:0;border-radius:0 0 3px 3px;
-  background:repeating-linear-gradient(90deg,rgba(255,205,145,.10) 0 1px,transparent 1px 4px);
+  background:
+    /* 两个互质周期的暗纹叠在一起，破坏等距感 */
+    repeating-linear-gradient(90deg,rgba(22,10,2,.28) 0 1px,transparent 1px 2.4px),
+    repeating-linear-gradient(90deg,rgba(255,206,150,.09) 0 .7px,transparent .7px 5.3px),
+    linear-gradient(180deg,rgba(255,214,160,.14),transparent 52%,rgba(0,0,0,.34));
 }
 /* 黄铜鸡眼扣：不是一颗「小金圆点」，是一片被压进木头里的翻边铜环。
    真实感全靠这个判读顺序，缺一层就塌：
@@ -513,7 +550,7 @@ body{
 }
 /* 孔：孔壁左上被照亮一段铜色、右下全黑；孔口内缘有一道翻边反光 */
 .grommet::after{
-  content:"";position:absolute;inset:5.6px;border-radius:50%;
+  content:"";position:absolute;inset:4.6px;border-radius:50%;
   background:
     /* 穿过孔的绳：不能被木头整个盖住，否则绳子看着是断的 */
     linear-gradient(90deg,transparent 0 31%,#4a3014 31% 45%,#8d6630 45% 56%,#3a2410 56% 69%,transparent 69% 100%),
@@ -620,7 +657,9 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{width:0!important;height:0!impor
 .plank-area{flex:1 0 auto!important;min-height:0!important;overflow:visible!important;
   backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
   background:linear-gradient(180deg,rgba(58,55,51,.55) 0%,rgba(40,38,35,.78) 100%)!important;
-  padding-bottom:64px!important}
+  /* 顶部留够一段：第一块木板上边要能看见绳子从铜杆后面垂下来，
+     不留这段，第一块板就像直接焊在杆上 */
+  padding-top:32px!important;padding-bottom:64px!important}
 /* 只隔离布局，不做 paint 裁剪：木板摆动时会转出自己的格子，
    裁掉的话边缘和阴影会被切出一条直边。 */
 .slot{contain:layout;transform:none}
@@ -641,8 +680,10 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{width:0!important;height:0!impor
   background:linear-gradient(90deg,rgba(26,12,4,0),rgba(26,12,4,.62) 16%,
              rgba(26,12,4,.62) 84%,rgba(26,12,4,0))!important}
 
-/* 木纹改成预烘焙贴图：滚动时不再逐帧算 feTurbulence，这是卡顿的根治 */
-.plank{background-repeat:no-repeat;background-size:100% 216px}
+/* 木纹改成预烘焙贴图：滚动时不再逐帧算 feTurbulence，这是卡顿的根治。
+   启动时先用旧的 4 条顶着，程序化那 16 条烘焙好之后自动换上。 */
+.plank{background-image:url(wood-sprite.png);background-repeat:no-repeat;background-size:100% 216px}
+html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
 .plank .base,.plank .noise,.plank .blotch,.plank .rings,.plank .knot{display:none!important}
 /* 断网 / 模型未接入：亮红灯，仍按 2.6s 呼吸 */
 .led.red{--halo:rgba(255,84,64,.86);--halo2:rgba(235,45,32,.4)}
@@ -805,6 +846,231 @@ function measureW(){
 measureW();
 window.addEventListener('resize', function(){ measureW(); render(-1); });
 
+/* ---------- 木纹：程序化生成 16 条 ----------
+   以前是 4 张循环贴图：13 块木板里同一张要出现三四次，而且纹路几乎是等距平行线，
+   一眼就是「贴图」。真木材的成因是四样东西叠出来的，缺一样就滑向塑料：
+     ① 年轮 —— 间距疏密不均，深浅交替，幅度沿长度起伏
+     ② 导管孔 —— 成簇的沿纹短划，不是均匀噪点
+     ③ 结疤 —— 一半的板有，带晕和绕流，这是「这一块木头」的身份
+     ④ 色斑 + 清漆反光 —— 大片低频色差、一道斜向宽高光
+   每条用不同种子，16 条互不重样；贴图在首屏之后异步烘焙，不挡启动。 */
+const WOOD_TILES = 16;
+let woodTiles = 4;               // 新贴图就绪前先按旧的 4 条算索引
+const wood = { url: null };
+
+function hsl(h, s, l){ return 'hsl(' + h.toFixed(1) + ',' + s.toFixed(1) + '%,' + l.toFixed(1) + '%)'; }
+function rngOf(seed){
+  let s = seed >>> 0;
+  return function(){ s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+function drawPlank(ctx, x0, y0, w, h, seed){
+  const R = rngOf(seed);
+  const hue = 18 + R() * 8, sat = 44 + R() * 13, lit = 29 + R() * 3;
+
+  /* ① 底色：上亮下暗（光从上方来）。同一批木料，色差要有但只能很小 */
+  const base = ctx.createLinearGradient(0, y0, 0, y0 + h);
+  base.addColorStop(0, hsl(hue, sat, lit + 6));
+  base.addColorStop(0.42, hsl(hue, sat, lit + 2.5));
+  base.addColorStop(0.78, hsl(hue - 1.5, sat + 3, lit - 1));
+  base.addColorStop(1, hsl(hue - 3, sat + 6, lit - 5));
+  ctx.fillStyle = base;
+  ctx.fillRect(x0, y0, w, h);
+
+  /* ② 大尺度色斑：低频、大片、极淡。没有它，木纹就是一层均匀的条纹布 */
+  for (let i = 0; i < 6; i += 1){
+    const cx = x0 + R() * w, cy = y0 + R() * h;
+    const rx = w * (0.08 + R() * 0.26), ry = h * (0.28 + R() * 0.8);
+    const dark = R() > 0.42;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(rx, ry);
+    const rg = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    rg.addColorStop(0, dark ? 'rgba(38,17,3,.20)' : 'rgba(255,216,164,.15)');
+    rg.addColorStop(0.55, dark ? 'rgba(38,17,3,.08)' : 'rgba(255,216,164,.05)');
+    rg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(-1, -1, 2, 2);
+    ctx.restore();
+  }
+
+  /* ③ 年轮：三件事缺一不可 ——
+     间距用 R()*R()（多数贴得近、少数离得远，才有疏密）；
+     每条板的基准疏密不同（有的一片宽纹、一片密纹）；
+     整块板共用一条低频波浪：真木纹是同一组年轮被剖开，相邻的线必须「一起弯」。
+     各弯各的，出来就是一堆平行直线 —— 上一版最假的地方就在这。 */
+  const density = 0.55 + R() * 1.55;
+  const wA = 1.1 + R() * 3.2, wL = 250 + R() * 470, wP = R() * 6.283;
+  const wave = function(px){
+    const t = (px - x0) / wL * 6.283 + wP;
+    return Math.sin(t) * wA + Math.sin(t * 3.1 + 1.2) * wA * 0.22;
+  };
+  let y = y0 - 6 + R() * 8;
+  while (y < y0 + h + 6){
+    const amp = 0.25 + R() * 1.7 + (R() > 0.78 ? 1.8 + R() * 3 : 0);
+    const dark = R() > 0.3;
+    const a = 0.05 + R() * 0.26;
+    const sh = (R() - 0.5) * 2.2;
+    const g = 0.35 + amp * 0.5;       // 这条线跟随全局波的强度
+    ctx.beginPath();
+    for (let k = 0; k <= 16; k += 1){
+      const px = x0 + (w * k) / 16;
+      const py = y + sh + wave(px) * g;
+      if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = dark
+      ? 'rgba(56,25,6,' + a.toFixed(3) + ')'
+      : 'rgba(255,214,158,' + (a * 0.6).toFixed(3) + ')';
+    ctx.lineWidth = 0.3 + R() * (amp > 2 ? 1.6 : 1.1);
+    ctx.stroke();
+    y += (1.4 + R() * R() * 8.5) * density;
+  }
+
+  /* ④ 导管孔：成簇的沿纹短划。撒得均匀就变噪点，成簇才像木材的管胞。
+     必须够黑、够长 —— 上一版太淡，等于没有。 */
+  for (let c = 0; c < 13; c += 1){
+    const cx = x0 + R() * w, cy = y0 + R() * h;
+    const spreadX = 14 + R() * 80, spreadY = 2.5 + R() * 8;
+    for (let i = 0; i < 20; i += 1){
+      const px = cx + (R() - 0.5) * spreadX * 2;
+      const py = cy + (R() - 0.5) * spreadY * 2;
+      if (py < y0 + 1.5 || py > y0 + h - 1.5) continue;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + 3 + R() * 13, py + (R() - 0.5) * 1.2);
+      ctx.strokeStyle = 'rgba(26,11,2,' + (0.1 + R() * 0.26).toFixed(3) + ')';
+      ctx.lineWidth = 0.7 + R() * 0.9;
+      ctx.stroke();
+    }
+  }
+
+  /* ④b 沿纹的光泽起伏（猫眼）：抛光木在光下会顺着纹理一条条明暗交替。
+     少了这一层，纹理再细也是一张哑光的纸。 */
+  for (let i = 0; i < 5; i += 1){
+    const gy = y0 + R() * h;
+    const gh = 1.6 + R() * 6;
+    const gg = ctx.createLinearGradient(0, gy - gh, 0, gy + gh);
+    gg.addColorStop(0, 'rgba(255,236,200,0)');
+    gg.addColorStop(0.5, 'rgba(255,236,200,' + (0.02 + R() * 0.04).toFixed(3) + ')');
+    gg.addColorStop(1, 'rgba(255,236,200,0)');
+    ctx.fillStyle = gg;
+    ctx.fillRect(x0, gy - gh, w, gh * 2);
+  }
+
+  /* ⑤ 结疤：约六成的板有。位置随机，带暗晕和绕流 —— 有疤才有身份 */
+  if (R() > 0.4){
+    const cx = x0 + 70 + R() * (w - 140);
+    const cy = y0 + h * (0.28 + R() * 0.44);
+    const rad = 2.6 + R() * 4.6;
+    const flat = 0.34 + R() * 0.2;
+
+    // 绕流：周围的纹理被疤顶开，上下各几条弯线
+    for (let k = -3; k <= 3; k += 1){
+      if (!k) continue;
+      const yy = cy + k * (rad * flat + 3.2);
+      const lift = (3 - Math.abs(k)) * 2.3;
+      ctx.beginPath();
+      ctx.moveTo(cx - rad * 7, yy);
+      ctx.quadraticCurveTo(cx, yy - lift, cx + rad * 7, yy);
+      ctx.strokeStyle = 'rgba(44,21,6,.2)';
+      ctx.lineWidth = 0.7;
+      ctx.stroke();
+    }
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(1, flat);
+    const halo = ctx.createRadialGradient(0, 0, rad * 0.4, 0, 0, rad * 3.4);
+    halo.addColorStop(0, 'rgba(22,9,2,.56)');
+    halo.addColorStop(1, 'rgba(26,11,2,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(0, 0, rad * 3.4, 0, Math.PI * 2); ctx.fill();
+    for (let k = 4; k >= 1; k -= 1){
+      ctx.beginPath();
+      ctx.arc(0, 0, rad * k * 0.62, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(34,15,3,' + (0.09 + (4 - k) * 0.075).toFixed(3) + ')';
+      ctx.lineWidth = k === 1 ? 1.3 : 0.85;
+      ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(0, 0, rad * 0.34, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(26,11,2,.7)'; ctx.fill();
+    ctx.restore();
+  }
+
+  /* ⑥ 使用痕迹：几道极淡的划痕，走向顺纹 */
+  for (let i = 0; i < 5; i += 1){
+    const px = x0 + R() * w, py = y0 + 3 + R() * (h - 6);
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px + 18 + R() * 110, py + (R() - 0.5) * 2.4);
+    ctx.strokeStyle = 'rgba(255,238,206,' + (0.018 + R() * 0.045).toFixed(3) + ')';
+    ctx.lineWidth = 0.45;
+    ctx.stroke();
+  }
+
+  /* ⑦ 边缘倒角：刨过的木边不是一条线，是一个窄弧面 ——
+     最上面一条锐高光 → 一段渐暗的弧 → 底下一条暗线。
+     只画 1px 亮线，边缘看着就是刀切的。 */
+  ctx.fillStyle = 'rgba(255,238,206,.42)';
+  ctx.fillRect(x0, y0, w, 1);
+  const tg = ctx.createLinearGradient(0, y0, 0, y0 + 3.5);
+  tg.addColorStop(0, 'rgba(255,232,196,.48)');
+  tg.addColorStop(0.22, 'rgba(255,224,182,.18)');
+  tg.addColorStop(1, 'rgba(255,212,166,0)');
+  ctx.fillStyle = tg;
+  ctx.fillRect(x0, y0, w, 3.5);
+
+  const bo = ctx.createLinearGradient(0, y0 + h - 7, 0, y0 + h);
+  bo.addColorStop(0, 'rgba(28,13,3,0)');
+  bo.addColorStop(0.6, 'rgba(28,13,3,.2)');
+  bo.addColorStop(1, 'rgba(24,11,2,.62)');
+  ctx.fillStyle = bo;
+  ctx.fillRect(x0, y0 + h - 7, w, 7);
+
+  /* ⑧ 清漆反光：一道斜的宽高光。上过漆的木头才有，没有这层就是块干柴 */
+  const vg = ctx.createLinearGradient(x0, y0, x0 + w * 0.55, y0 + h);
+  vg.addColorStop(0, 'rgba(255,244,222,0)');
+  vg.addColorStop(0.3, 'rgba(255,244,222,.05)');
+  vg.addColorStop(0.46, 'rgba(255,244,222,.016)');
+  vg.addColorStop(1, 'rgba(255,244,222,0)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(x0, y0, w, h);
+}
+
+/* 哪块木板用哪条纹理：按 uid 取哈希，而不是按行号。
+   按行号的话，删掉一块会让下面所有木板整体换纹理，看着像闪了一下。 */
+function woodSlotOf(uid){
+  const s = String(uid);
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i += 1){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h % woodTiles;
+}
+
+function placeWood(){
+  for (let i = 0; i < plankEls.length; i += 1){
+    const el = plankEls[i];
+    if (el) el.style.backgroundPosition = '0 ' + (-woodSlotOf(order[i] || ('i' + i)) * PH) + 'px';
+  }
+}
+
+function buildWood(){
+  const w = 1024, h = PH * WOOD_TILES;
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  for (let t = 0; t < WOOD_TILES; t += 1){
+    drawPlank(ctx, 0, t * PH, w, PH, 20261108 + t * 7919);
+  }
+  cv.toBlob(function(blob){
+    if (!blob) return;
+    wood.url = URL.createObjectURL(blob);
+    woodTiles = WOOD_TILES;
+    document.documentElement.style.setProperty('--wood', 'url(' + wood.url + ')');
+    document.documentElement.classList.add('wood16');
+    placeWood();   // 索引从 4 条换成 16 条，重新贴一遍
+  }, 'image/png');
+}
+
 const bridged = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.dsh);
 function post(o){ if (bridged) window.webkit.messageHandlers.dsh.postMessage(o); }
 function esc(t){
@@ -868,6 +1134,7 @@ function knotSVG(i){
 const ropeBox = document.getElementById('ropes');
 let segs = [];            // [{els:[左,右], top, h}]
 let plankEls = [];        // 与 nodes 一一对应的 .plank 元素
+let coreEls = [];         // 与 nodes 一一对应的穿孔内绳节 [左, 右]
 
 function buildRopes(){
   const area = document.getElementById('planks');
@@ -892,14 +1159,25 @@ function buildRopes(){
   }
   gaps.push([lastTop + PH, bottom]);
 
-  gaps.forEach(function(g){
+  const EXT = 10;
+  gaps.forEach(function(g, gi){
     const h = Math.max(2, g[1] - g[0]);
+    const first = gi === 0, last = gi === gaps.length - 1;
+    const up = first ? 12 : EXT;   // 首段向上钻到挂杆背后，看起来是从杆子底下出来的
+    const dn = last ? 0 : EXT;
+    const top = g[0] - up;
+    // 捻纹必须按「页面绝对 y」对齐。不这么做，每一段的斜纹都从自己顶端
+    // 重新开始，相邻两段的股带相位对不上 —— 一眼就看得出是拼起来的。
+    const bgPos = '0 ' + (-top) + 'px';
+    const cls = 'rope-seg' + (first ? ' cap-top' : '') + (last ? ' cap-bot' : '');
     const els = [36, right].map(function(x){
       const el = document.createElement('div');
-      el.className = 'rope-seg';
+      el.className = cls;
       el.style.left = x + 'px';
-      el.style.top = g[0] + 'px';
-      el.style.height = h + 'px';
+      el.style.top = top + 'px';
+      el.style.height = (h + up + dn) + 'px';
+      el.style.setProperty('--ext', up + 'px');
+      el.style.backgroundPosition = bgPos;
       ropeBox.appendChild(el);
       return el;
     });
@@ -930,9 +1208,10 @@ function makeSlot(it, index){
   slot.dataset.uid = it.uid;
   slot.innerHTML =
     '<div class="plank" style="transform:rotate(' + baseTilt(index) + 'deg)' +
-      ';background-image:url(wood-sprite.png);background-position:0 -' + ((index % 4) * PH) + 'px">' +
+      ';background-position:0 -' + (woodSlotOf(it.uid) * PH) + 'px">' +
       '<div class="bevel"></div><div class="edge"></div>' +
       '<span class="grommet l"></span><span class="grommet r"></span>' +
+      '<span class="rope-core l"></span><span class="rope-core r"></span>' +
       '<div class="txt"><span class="when"></span><span class="what"></span><span class="tag"></span></div>' +
       '<button class="del" title="摘下这块木板">×</button>' +
     '</div>';
@@ -1053,6 +1332,8 @@ function rigSync(){
   const list = Array.prototype.slice.call(area.querySelectorAll('.slot:not(.out)'));
   order = list.map(function(el){ return el.dataset.uid; });
   plankEls = list.map(function(el){ return el.querySelector('.plank'); });
+  coreEls = list.map(function(el){ return el.querySelectorAll('.rope-core'); });
+  placeWood();   // 顺序变了，哪块用哪条纹理要重算
   nodes = order.map(function(uid, i){
     let s = pen.get(uid);
     if (!s){ s = { x: 0, v: 0, L: 0.2 }; pen.set(uid, s); }
@@ -1089,19 +1370,43 @@ function stepPhysics(dt){
 /* 整帧唯一碰 DOM 的地方：只写 transform */
 function paint(){
   let live = false;
-  for (let i = 0; i < nodes.length; i += 1){
+  const n = nodes.length;
+
+  // 先把每段的倾角算出来（纯数学，不碰 DOM）：木板要它，孔里的绳节也要它
+  const angs = [];
+  for (let k = 0; k < segs.length; k += 1){
+    const xTop = k === 0 ? 0 : nodes[k - 1].x;
+    const xBot = k < n ? nodes[k].x : tailNode.x;
+    angs[k] = Math.atan2(xBot - xTop, segs[k].h) * 57.2958;
+  }
+
+  for (let i = 0; i < n; i += 1){
     const s = nodes[i];
     if (Math.abs(s.x) > 0.12 || Math.abs(s.v) > 1.2) live = true;   // 阈值取肉眼看不出的量级
+    const tilt = baseTilt(i);
     const el = plankEls[i];
     if (el) el.style.transform =
-      'translate3d(' + s.x.toFixed(2) + 'px,0,0) rotate(' + baseTilt(i) + 'deg)';
+      'translate3d(' + s.x.toFixed(2) + 'px,0,0) rotate(' + tilt + 'deg)';
+    // 孔里的绳节跟着上下两段的平均角度转。固定成垂直的话，绳子一斜，
+    // 孔口那里就露出一个折角 —— 正是「绳子断在孔里」的观感来源。
+    const cores = coreEls[i];
+    if (cores && cores.length){
+      const aUp = angs[i], aDn = angs[i + 1];
+      let mid = 0;
+      if (aUp != null && aDn != null) mid = (aUp + aDn) / 2;
+      else if (aUp != null) mid = aUp;
+      else if (aDn != null) mid = aDn;
+      // 减掉木板自身的倾角：.plank 已经转过了，绳节是它的子元素
+      const ctf = 'rotate(' + (mid - tilt).toFixed(2) + 'deg)';
+      cores[0].style.transform = ctf;
+      cores[1].style.transform = ctf;
+    }
   }
+
   for (let k = 0; k < segs.length; k += 1){
     const seg = segs[k];
     const xTop = k === 0 ? 0 : nodes[k - 1].x;
-    const xBot = k < nodes.length ? nodes[k].x : tailNode.x;
-    const ang = Math.atan2(xBot - xTop, seg.h) * 57.2958;
-    const tf = 'translate3d(' + xTop.toFixed(2) + 'px,0,0) rotate(' + ang.toFixed(2) + 'deg)';
+    const tf = 'translate3d(' + xTop.toFixed(2) + 'px,0,0) rotate(' + angs[k].toFixed(2) + 'deg)';
     seg.els[0].style.transform = tf;
     seg.els[1].style.transform = tf;
   }
@@ -1260,6 +1565,10 @@ window.dshSwing = function(v){
 window.dshChips = renderChips;
 
 render(-1);
+
+/* 首屏先出来，再烘焙木纹：16 条纹理有几千笔路径，不能挡在启动路径上。
+   烘焙好之后 placeWood() 会把已经画出来的木板重新贴一遍。 */
+setTimeout(buildWood, 80);
 </script>
 </body>
 </html>
