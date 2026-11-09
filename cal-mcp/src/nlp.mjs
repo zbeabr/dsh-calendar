@@ -17,6 +17,22 @@ const PERIOD_HOUR = {
 const PERIOD = '(?:凌晨|早上|早晨|上午|中午|正午|午后|下午|傍晚|晚上|夜里|夜间|今晚|今早|明晚|明早|明晨)';
 
 /**
+ * 口语里的单字缩略时段词：「晚八点」「早八点」「午十二点」「夜十点」。
+ * 它们只在**后面紧跟钟点**时才算时间词 —— 「晚饭」「早点」「夜宵」「午后」
+ * 都是普通词，绝不能把「晚」当成 19:00 削掉。
+ * 所以单独定义 CLOCK_PERIOD 给钟点解析用，不塞进 PERIOD（PERIOD 还负责裸时段词
+ * 和标题清洗，加单字会误伤「明天晚饭」）。
+ */
+const SHORT_PERIOD = '(?:晚|早|午|夜)';
+const CLOCK_NUM = '(?:\\d{1,2}|[零一二两三四五六七八九十]{1,3})';
+const CLOCK_PERIOD = `(?:${PERIOD}|${SHORT_PERIOD}(?=\\s*${CLOCK_NUM}\\s*[点时:：]))`;
+/** 单字时段词归一化成同义的完整词，直接复用 applyPeriod / NIGHT_PERIOD 的既有规则。 */
+const PERIOD_ALIAS = { 晚: '晚上', 早: '早上', 午: '中午', 夜: '夜里' };
+function normalizePeriod(period) {
+  return PERIOD_ALIAS[period] ?? period;
+}
+
+/**
  * 分钟：阿拉伯数字、半、一刻、三刻，以及中文数字（四十、四十五、零五）。
  * 「半/一刻/三刻」必须排在中文数字前面，「一刻」否则会被读成 1。
  */
@@ -149,7 +165,9 @@ function parseDate(text, now) {
   // 但整段都要从标题里剔掉，否则「三五」会粘在标题上（「三五健身」）。
   // 日期仍按第一个星期几算，语义与「只认带每的写法」的取舍一致。
   // 多天之间只认连写或「和/、」，不跨空格：否则「下周三 一点」里的「一」会被连着吃掉。
-  if ((match = /(?<![\d一二两三四五六七八九十])(下下个?|下个?|本|这|这个)?\s*(?:周|星期|礼拜)\s*(?:周|星期|礼拜)?\s*([一二三四五六日天七](?:(?:和|、|,|，)?(?:周|星期|礼拜)?[一二三四五六日天七])*)/u.exec(text))) {
+  // 连写的第二个字后面若紧跟「点/时/:」，它其实是钟点数字（「下周三七点」的「七」），
+  // 不是星期几 —— 吞掉它整句会掉成全天日程，带时长时甚至直接报错。
+  if ((match = /(?<![\d一二两三四五六七八九十])(下下个?|下个?|本|这|这个)?\s*(?:周|星期|礼拜)\s*(?:周|星期|礼拜)?\s*([一二三四五六日天七](?:(?:和|、|,|，)?(?:周|星期|礼拜)?[一二三四五六日天七](?!\s*[点时:：]))*)/u.exec(text))) {
     const prefix = match[1] ?? '';
     const targetDay = WEEKDAY[match[2][0]];
     const today = startOfDay(now);
@@ -310,7 +328,8 @@ function parseRepeat(text) {
       // 「每两周周一和周三」：间隔后面的星期几也得一起认。
       // 以前只返回 INTERVAL，BYDAY 丢掉，「周一和周三」还留在标题里。
       const rest = text.slice(match.index + match[0].length);
-      const chunkRe = new RegExp(`^\\s*(?:的|个)?\\s*((?:周|星期|礼拜)?\\s*${WEEKDAY_CHAR}(?:(?:\\s*(?:${DAY_SEP}|${DAY_RANGE})\\s*(?:周|星期|礼拜)?\\s*)?${WEEKDAY_CHAR})*)`, 'u');
+      // 星期字符后面紧跟钟点标记时是「每两周周三七点」的「七」（钟点），不是星期几。
+      const chunkRe = new RegExp(`^\\s*(?:的|个)?\\s*((?:周|星期|礼拜)?\\s*${WEEKDAY_CHAR}(?:(?:\\s*(?:${DAY_SEP}|${DAY_RANGE})\\s*(?:周|星期|礼拜)?\\s*)?${WEEKDAY_CHAR}(?!\\s*[点时:：]))*)`, 'u');
       const chunkMatch = chunkRe.exec(rest);
       let days = [];
       let extra = '';
@@ -354,7 +373,8 @@ function parseRepeat(text) {
     return { freq: 'WEEKLY', byday: ['SA', 'SU'], days: [6, 7], matched: match[0] };
   }
   // 「每周三和周五」「每周二、四」「每周一到周五」「每周一三五」
-  const chunk = `${WEEKDAY_CHAR}(?:(?:\\s*(?:${DAY_SEP}|${DAY_RANGE})\\s*(?:周|星期|礼拜)?\\s*)?${WEEKDAY_CHAR})*`;
+  // 同样要挡住「每周三七点」：「七」是钟点，不能被读成「周三 + 周日」。
+  const chunk = `${WEEKDAY_CHAR}(?:(?:\\s*(?:${DAY_SEP}|${DAY_RANGE})\\s*(?:周|星期|礼拜)?\\s*)?${WEEKDAY_CHAR}(?!\\s*[点时:：]))*`;
   if ((match = new RegExp(`每(?:个)?\\s*(?:周|星期|礼拜)\\s*(${chunk})`, 'u').exec(text))) {
     const days = expandDayChunk(match[1]);
     if (days.length) {
@@ -451,9 +471,11 @@ function applyPeriod(hour, period) {
 const NIGHT_PERIOD = /(?:晚上|今晚|明晚|夜里|夜间|深夜)/u;
 
 function parseClock(text) {
-  const match = new RegExp(`(${PERIOD})?\\s*(\\d{1,2}|[零一二两三四五六七八九十]{1,3})\\s*(?:点|时|:)\\s*(${MINUTE})?\\s*[分整]?`, 'u').exec(text);
+  const match = new RegExp(`(${CLOCK_PERIOD})?\\s*(\\d{1,2}|[零一二两三四五六七八九十]{1,3})\\s*(?:点|时|:)\\s*(${MINUTE})?\\s*[分整]?`, 'u').exec(text);
   if (!match) return undefined;
-  const period = match[1];
+  // 「晚十二点」归一化成「晚上十二点」，才能命中 NIGHT_PERIOD 推到次日零点；
+  // 「早八点」「午十二点」「夜十点」同理走 applyPeriod 的既有分支。
+  const period = normalizePeriod(match[1]);
   let hour = cnToNumber(match[2]);
   if (hour === undefined || Number.isNaN(hour)) return undefined;
 
@@ -640,7 +662,9 @@ function extendRoom(phrase, end) {
  * 多个候选时取最靠右的那个，因为真正的介词短语通常在时间后面。
  */
 function parseInlinePlace(text) {
-  const re = /(?:在|到|去)\s*(?![\d一二两三四五六七八九十]{1,3}\s*[点时])([^，,。；;、\s]{2,30})/gu;
+  // 负向断言必须含冒号：否则「…到9:30在图书馆里…」里的「到9:30」会被当成
+  // 介词引出的地点，整段被读成「9:30在图书馆」。冒号式钟点以前漏在 [点时] 之外。
+  const re = /(?:在|到|去)\s*(?![\d一二两三四五六七八九十]{1,3}\s*[点时:：])([^，,。；;、\s]{2,30})/gu;
   const hits = [];
   let found;
   while ((found = re.exec(text)) !== null) hits.push(found);
@@ -696,6 +720,62 @@ function parseLocation(text) {
 }
 
 /**
+ * 方位词后缀：「在图书馆里学习」的「里」是状语的一部分，既不是地名也不是标题。
+ * 返回该从标题里剔掉的那截，没有则空串。
+ *
+ * 「上」后面接「课/班/网…」时是动词（上课/上班），不是方位词；
+ * 「中文 / 内部 / 下午」同理。用负向断言挡住，免得削掉半个词。
+ */
+const PLACE_TAIL = new RegExp(
+  '^(?:'
+    + '里(?:面|边|头)?'
+    + '|中(?:间)?(?!文|国|心|午|年|央|医|药|学|考|秋|旬|级|层|途|止|奖)'
+    + '|内(?!部|容|心|衣|科|行|政|陆|地|存|外)'
+    + '|外(?:面|边|头)?'
+    + '|旁边|旁'
+    + '|这儿|这里|那儿|那里|这边|那边'
+    + '|上面|上边|上头|上(?!课|班|网|学|线|门|车|山|楼|床|台|岗|进|任|市|映|诉|访|述|升|涨|海|午|座|厕|机|船|菜|货|架|锁|弦|香|供|报|当|辈|面|边|头)'
+    + '|下面|下边|下头|下(?!午|班|课|楼|车|雨|雪|单|载|降|棋|来|去|面|边|头)'
+    + ')', 'u');
+
+function placeTail(rest, location = '') {
+  // 地名本身以方位词收尾（「家里」「楼下」）时，后面再跟「面/边/头」
+  // 是同一个方位词的下半截：「家里面」不该把「面」留在标题里。
+  if (/[里上中内外下]$/u.test(location)) {
+    const half = /^(?:面|边|头)/u.exec(rest);
+    if (half) return half[0];
+  }
+  return PLACE_TAIL.exec(rest)?.[0] ?? '';
+}
+
+/**
+ * 把地点短语后面（或显式地点串内部）的方位词并进 matched，供 strip 一起删掉。
+ *
+ * ① 「地点：图书馆里自习」「@图书馆里自习」：PLACE 贪婪把动作也吞进了 location，
+ *    要把 location 切回「图书馆」、matched 截到方位词为止，把「自习」还给标题。
+ * ② 「在图书馆里学习」：方位词紧跟在原文地点片段之后，直接加进 matched。
+ */
+function refineLocation(text, part) {
+  const end = landmarkEnd(part.location);
+  if (end >= 2 && end < part.location.length) {
+    const tail = placeTail(part.location.slice(end), part.location.slice(0, end));
+    if (tail) {
+      const keep = end + tail.length;
+      part.matched = part.matched.slice(0, part.matched.length - (part.location.length - keep));
+      part.location = part.location.slice(0, end);
+      return;
+    }
+  }
+  const chars = part.matched.replace(/\s+/gu, '').split('')
+    .map((char) => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!chars.length) return;
+  const hit = new RegExp(chars.join('\\s*'), 'u').exec(text);
+  if (!hit) return;
+  const tail = placeTail(text.slice(hit.index + hit[0].length), part.location);
+  if (tail) part.matched += tail;
+}
+
+/**
  * Pull a calendar / tag name out of the sentence.
  *
  * 支持的写法（`names` 是已知日历名，用于「裸名字」识别）：
@@ -710,7 +790,21 @@ export function parseCalendarTag(text, names = []) {
 
   // #标签
   let match = /#\s*([^\s#，,。;；:：]+)/u.exec(text);
-  if (match) return { calendar: match[1], matched: match[0] };
+  if (match) {
+    const raw = match[1];
+    // 「#学习半个小时」「#工作明天」：标签后面没空格、直接跟了时长/时间词时，
+    // 那截不属于日历名。整个吞掉会写到「学习半个小时」这个不存在的日历上去。
+    // 已知日历名优先按前缀精确切；未知名字按常见时长/时间词兜着切。
+    let name = raw;
+    const exact = known.find((candidate) => raw.startsWith(candidate) && raw.length > candidate.length);
+    if (exact) name = exact;
+    else {
+      const tail = /(?:半|[一两二三四五六七八九十]{1,3}|\d+(?:\.\d+)?)\s*个?\s*(?:小时|钟头|分钟)|用时|用了|花费|大概|大约|预计|约|提前|提醒|明天|今日|今天|后天|晚上|下午|上午|早上|中午/u.exec(raw);
+      if (tail && tail.index > 0) name = raw.slice(0, tail.index);
+    }
+    // matched 保持原文整段：那截时长本来也不该留在标题里，strip 会一起删掉。
+    return { calendar: name, matched: match[0] };
+  }
 
   // 标签：工作 / 分类: 工作
   match = /(?:标签|分类|类别)\s*[:：]?\s*([^\s，,。;；]{1,12})/u.exec(text);
@@ -823,7 +917,12 @@ export function parseEvent(input, now = new Date(), options = {}) {
   const calendar = calPart?.calendar;
 
   const locPart = parseLocation(text);
-  if (locPart) pieces.push({ text: locPart.matched, kind: 'location' });
+  if (locPart) {
+    // 方位词「里/上/中/内」是地点状语的尾巴，不是标题也不是地名：
+    // 并进 matched 让 strip 一起删掉，显式地点串里被吞掉的动作还给标题。
+    refineLocation(text, locPart);
+    pieces.push({ text: locPart.matched, kind: 'location' });
+  }
   const location = locPart?.location;
 
   const alarm = parseAlarm(text);
@@ -918,7 +1017,7 @@ export function parseEvent(input, now = new Date(), options = {}) {
   // 结束侧允许带日期词（「今晚十点到明天凌晨一点」），否则整段区间认不出来，
   // 结束时间会退化成默认 1 小时、标题里还留一截「到明天一点」。
   const rangeRe = new RegExp(
-    `(${PERIOD})?\\s*(\\d{1,2}|[零一二两三四五六七八九十]{1,3})\\s*(?:点|时|:)\\s*(${MINUTE})?\\s*[分整]?\\s*(?:到|至|-|~|—|–)\\s*(明天|明日|明早|明晚|后天|次日|翌日|今天|今日|今晚)?\\s*(${PERIOD})?\\s*(\\d{1,2}|[零一二两三四五六七八九十]{1,3})\\s*(?:点|时|:)?\\s*(${MINUTE})?`,
+    `(${CLOCK_PERIOD})?\\s*(\\d{1,2}|[零一二两三四五六七八九十]{1,3})\\s*(?:点|时|:)\\s*(${MINUTE})?\\s*[分整]?\\s*(?:到|至|-|~|—|–)\\s*(明天|明日|明早|明晚|后天|次日|翌日|今天|今日|今晚)?\\s*(${CLOCK_PERIOD})?\\s*(\\d{1,2}|[零一二两三四五六七八九十]{1,3})\\s*(?:点|时|:)?\\s*(${MINUTE})?`,
     'u',
   );
   const range = rangeRe.exec(timeText);
@@ -1001,7 +1100,8 @@ export function parseEvent(input, now = new Date(), options = {}) {
       };
       if (range[5]) {
         // An explicit end period wins: "晚上11点到凌晨1点".
-        const periodHour = applyPeriod(endClock.hour, range[5]);
+        // 结束侧也可能是单字缩略（「晚八点到晚十点」），照样归一化。
+        const periodHour = applyPeriod(endClock.hour, normalizePeriod(range[5]));
         end = at(endDayOffset, periodHour);
         if (end <= start) end = at(endDayOffset + 1, periodHour);
       } else {
@@ -1125,7 +1225,9 @@ export function parseEvent(input, now = new Date(), options = {}) {
   // 写成 24 小时制的（10:00 到 11:00）一个字都不许动：用户已经说得很精确了。
   const MORNING_HINT = /(上课|早课|早读|升旗|晨跑|站会|起床|早餐|早饭)/u;
   const LATE_GRACE = 30 * 60 * 1000;
-  const saidPeriod = new RegExp(PERIOD, 'u').test(timeText);
+  // 用 CLOCK_PERIOD 而不是 PERIOD：说了「晚八点」就是明说了时段，不该再被
+  // 12 小时制消歧 / 凌晨兜底推走；「晚饭」则不算，避免把普通词当成明说时段。
+  const saidPeriod = new RegExp(CLOCK_PERIOD, 'u').test(timeText);
   const explicitClock = /\d{1,2}\s*:\s*\d{2}/u.test(timeText);
   if (!datePart.matched && !repeatInfo && !saidPeriod && !explicitClock && !startDayOffset
     && !MORNING_HINT.test(text)) {

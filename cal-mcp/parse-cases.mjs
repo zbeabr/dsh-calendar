@@ -269,6 +269,44 @@ const CASES = [
   ['明天 会议室 开会', '会议室开会', undefined, undefined, '11-05 00:00-00:00', false],
   // 保护：真的独立成词的「日程」仍然要剥掉
   ['明天 日程 排一下', '排一下', undefined, undefined, '11-05 00:00-00:00', false],
+
+  // ---- 2026-11-10 用户实测报的三句 + 同类回归 ----
+  // 曾经的两个真错误：①「明天晚八点四十」被读成 08:40（差 12 小时），标题还剩个「晚」；
+  // ②「在宿舍里/在图书馆里」切出地点后，方位词「里」粘到标题上变成「里睡觉」「里学习」。
+  // 这里写死期望值，避免以后有人重刷蓝本快照把 bug 一起刷掉。
+  ['明天晚八点四十到九点半做暑假作业五在图书馆。', '做暑假作业五', '图书馆', undefined, '11-05 20:40-21:30', false],
+  ['中午在宿舍里睡觉#学习', '睡觉', '宿舍', '学习', '11-05 12:00-13:00', true],
+  ['明天下午在图书馆里学习半个小时', '学习', '图书馆', undefined, '11-05 14:00-14:30', false],
+  ['明天晚八点到九点半 看剧', '看剧', undefined, undefined, '11-05 20:00-21:30', false],
+  ['晚八点到晚十点 打游戏', '打游戏', undefined, undefined, '11-04 20:00-22:00', false],
+  ['明天晚十二点 抢票', '抢票', undefined, undefined, '11-06 00:00-01:00', false],
+  ['明天早七点半 跑步', '跑步', undefined, undefined, '11-05 07:30-08:30', false],
+  ['明天夜十点 遛狗', '遛狗', undefined, undefined, '11-05 22:00-23:00', false],
+  ['明天午十二点 吃饭', '吃饭', undefined, undefined, '11-05 12:00-13:00', false],
+  // 「到9:30」是冒号钟点，不是介词「到」引出的地点
+  ['明天晚8:40到9:30在图书馆里写作业', '写作业', '图书馆', undefined, '11-05 20:40-21:30', false],
+  ['明天三点在教室里上课', '上课', '教室', undefined, '11-05 15:00-16:00', false],
+  ['明天三点在操场上跑步', '跑步', '操场', undefined, '11-05 15:00-16:00', false],
+  ['明天八点在操场上上课', '上课', '操场', undefined, '11-05 08:00-09:00', false],
+  ['明天上午在图书馆里面自习', '自习', '图书馆', undefined, '11-05 09:00-10:00', false],
+  ['明天在教室中自习', '自习', '教室', undefined, '11-05 00:00-00:00', false],
+  // 显式「地点：」写得太长时，动作要还给标题，不能连着吞进地点
+  ['明天下午三点 地点：图书馆里自习', '自习', '图书馆', undefined, '11-05 15:00-16:00', false],
+  ['明天下午三点 @图书馆里自习', '自习', '图书馆', undefined, '11-05 15:00-16:00', false],
+  // 反例：单字时段词只在后面紧跟钟点时才成立；「晚饭/早点/内部」这些词一个字都不许削
+  ['明天晚饭', '晚饭', undefined, undefined, '11-05 00:00-00:00', false],
+  ['明天晚八点吃晚饭', '吃晚饭', undefined, undefined, '11-05 20:00-21:00', false],
+  ['明天在公司内部开会', '内部开会', '公司', undefined, '11-05 00:00-00:00', false],
+
+  // ---- 深度扫描另挖出的一类：「下周三七点」的「七」被当成连写的第二个星期几 ----
+  // 现象：整句退化成全天日程（标题还烂成「下周看剧」），带时长时直接报错。
+  ['下周三七点到九点看剧', '看剧', undefined, undefined, '11-11 07:00-09:00', false],
+  ['下周三七点看剧', '看剧', undefined, undefined, '11-11 07:00-08:00', false],
+  ['下周三七点半开会', '开会', undefined, undefined, '11-11 07:30-08:30', false],
+  ['下周三七点到九点看剧在操场上 #生活半个小时', '看剧', '操场', '生活', '11-11 07:00-09:00', false],
+  // 重复规则里同样的吞字：「每周三七点」不该变成每周三 + 周日
+  ['每周三七点开会', '开会', undefined, undefined, '11-11 07:00-08:00', true, 'WEEKLY WE'],
+  ['每周三七点到九点开会', '开会', undefined, undefined, '11-11 07:00-09:00', true, 'WEEKLY WE'],
 ];
 
 /**
@@ -297,7 +335,17 @@ const ERRORS = [
 
 let failed = 0;
 for (const [text, title, place, calendar, time, rolled, repeat, when, alarm] of CASES) {
-  const result = parseEvent(text, when ?? NOW, { calendarNames: NAMES });
+  let result;
+  try {
+    result = parseEvent(text, when ?? NOW, { calendarNames: NAMES });
+  } catch (error) {
+    // 本该解析出结果却抛错，也是一条失败，别让整份用例表被一个异常打断。
+    // 该报错的句子放在下面的 ERRORS 里，这里一律按「意外报错」计。
+    failed += 1;
+    console.log(`✗ ${text}`);
+    console.log(`    期望解析出「${time}」，却意外报错：${error.message}`);
+    continue;
+  }
   const actual = {
     title: result.title,
     place: result.location || undefined,
