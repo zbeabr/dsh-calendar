@@ -529,8 +529,10 @@ if (mode === '--show') {
       if (suspicious.test(title)) reasons.push('标题疑似残留时间词');
       // 「去露营」「到公司」是正常动词短语，只有介词后紧跟空白/标点才算残渣
       if (/^[在到去于](?=[\s，,、]|$)|^[的]/u.test(title)) reasons.push('标题以介词/助词开头');
-      // 「吃点好的」以「的」收尾是对的，只报「个的」这种剥离残渣
-      if (/(个的|用时|大概|约|在$)/u.test(title)) reasons.push('标题残留虚词');
+      // 「吃点好的」以「的」收尾是对的，只报「个的」这种剥离残渣。
+      // 「约」单字只在后面跟数字/量词时才像残留（「约两小时」）；
+      // 「里约」「约人」「约定」是正常词，否则每次审计都会有固定误报淹没真问题。
+      if (/(个的|用时|大概|约(?=[一两二三四五六七八九十半\d\s]|$)|在$)/u.test(title)) reasons.push('标题残留虚词');
       const hours = (parsed.end.getTime() - parsed.start.getTime()) / 3600000;
       // 「现在到明天中午」本来就跨十几个小时，不算异常
       if (!/^(从)?现在到/u.test(text) && (hours <= 0 || (hours > 12 && !parsed.allDay))) {
