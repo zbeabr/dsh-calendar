@@ -73,6 +73,8 @@ cp "$ICNS" "$STAGE/Contents/Resources/AppIcon.icns"
 # 全拟物外观：参考稿本体（HTML/CSS/SVG）随包走，WKWebView 直接加载它
 cp "$HERE/web/skeuo.html" "$STAGE/Contents/Resources/skeuo.html"
 cp "$HERE/web/wood-sprite.png" "$STAGE/Contents/Resources/wood-sprite.png"
+# 绳尾是预烘焙位图（web/bake_rope_tail.py 生成），不是 CSS 画的渐变
+cp "$HERE/web/rope-tail.png" "$STAGE/Contents/Resources/rope-tail.png"
 printf 'APPL????' > "$STAGE/Contents/PkgInfo"
 
 # ── 后端随包走：App 首次启动时把这块装到 ~/.local，用户就不用再跑 install.sh。
@@ -120,6 +122,7 @@ install_file "$STAGE/Contents/PkgInfo" "$TARGET/Contents/PkgInfo"
 install_file "$STAGE/Contents/Resources/AppIcon.icns" "$TARGET/Contents/Resources/AppIcon.icns"
 install_file "$STAGE/Contents/Resources/skeuo.html" "$TARGET/Contents/Resources/skeuo.html"
 install_file "$STAGE/Contents/Resources/wood-sprite.png" "$TARGET/Contents/Resources/wood-sprite.png"
+install_file "$STAGE/Contents/Resources/rope-tail.png" "$TARGET/Contents/Resources/rope-tail.png"
 
 # 后端同样逐个覆写：engine 里的文件少，但每次升级都可能增删，按相对路径对齐。
 if [ -d "$ENGINE_DST" ]; then

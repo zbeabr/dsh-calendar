@@ -314,3 +314,88 @@ frame = (100, 686, 500, 34) + AppKit 自带 hitTest
 - 用户当前实际打开的是哪一份 `.app` 无法从进程侧确认（沙箱内 `ps` 不可用，
   `pgrep` 无常驻进程）。本机 `~/Applications/DSH 日历.app` 为 build 28；
   `dist/` 下另有 build 1–9 历史包，按红线未动
+
+---
+
+## 第十二轮：绳尾改预烘焙贴图 / 玻璃模式组字态提示词重叠（2026-11-09，build 29）
+
+改 `cal-app/web/skeuo.html`、`cal-app/App.swift`、`cal-app/build.sh`、
+`cal-app/Info.plist`；新增 `cal-app/web/bake_rope_tail.py` 与 `rope-tail.png`。
+后端、产品写入/删除链路、UI 切换均未改；`dist/` 历史发行包一个没动。
+
+### 一、绳尾「太假」：从 CSS 假图改成预烘焙位图
+
+旧版 `.rope-tail` 是纯 CSS：一个 `.whip` 圆角矩形 + 三层
+`repeating-linear-gradient` 斜线当「散纤维」，真机放大后就是
+**一个方块 + 一排等距竖线，像刷子**。这跟之前调研的结论正相反 ——
+拟物时代的有机形状（散开的麻纤维）本来就是美术画好、烘焙成位图再贴上去的，
+运行时用渐变拼不出来。
+
+新增 `bake_rope_tail.py`：只用标准库（zlib / struct / math / random）手写
+带透明通道的 RGBA PNG，4x 超采样抗锯齿、固定随机种子，**逐字节可复现**。
+形状迭代了四版，前两版的失败都记在脚本注释里：
+
+1. 麻线结画成覆盖整个矩形的 8 圈 → 叠成「砖墙」；纤维从同一点放射 → 像烟花
+2. 贴图顶部自己又画了一段绳身 → 捻纹相位与 CSS `.rope-seg` 对不上，
+   接起来是「上面细密斜纹、下面粗斜条」，一眼两截绳
+3. 贴图顶部 0..7px 全透明，让 CSS 绳段自己延伸到结的位置；结改成绕圆柱的
+   弧线（两端上弯、边缘收透明）；三股实体段 + 每股散出的短纤维
+4. 实体段缩短减淡（否则收成三根尖爪），纤维 4→6 根/股、更细、长度差更大，
+   渐隐提前，另撒 9 根极细毛刺
+
+接入方式：`.rope-tail` 用 `background-image:url('rope-tail.png')`，
+`top = tailEnd - 9`（让结正好箍住绳段末端，不留空隙），右侧 `scaleX(-1)`
+镜像避免两根绳像同一张贴图复制品。`build.sh` **两处**都要加：
+stage 里打包，以及后半段那份逐文件 `install_file` 清单 ——
+只加前者会让签名清单含该文件、装机包里却没有，
+直接报 `sealed resource missing`（第一次构建确实踩到了）。
+
+### 二、Liquid Glass 输入框：组字态提示词重叠
+
+**复现（修复前原始输出）**：
+
+```
+GLASS BEFORE       string=""      marked=false placeholderHidden=false
+GLASS MARKED       string="nihao" marked=true  placeholderHidden=false
+GLASS MARKED+0.2   string="nihao" marked=true  placeholderHidden=false
+```
+
+玻璃版的提示词是手画的 `NSTextField`，不是系统 placeholder；
+它只在 `inputChanged()` 里按 `input?.string.isEmpty` 隐藏，而
+`inputChanged()` 由 `textDidChange` 触发。**中文输入法组字阶段不触发
+`textDidChange`**：拼音已经画在框里、`hasMarkedText()` 为 true、
+`string` 也已经有值，但通知没来 → 提示词不撤 → 两行字重叠；
+等选字上屏才终于触发，用户看到的正是「要输入文字后才会消失」。
+
+修法：`ComposeTextView` 重写 `setMarkedText` / `unmarkText`，
+加 `onTextPresenceChange` 回调；新增 `syncInputPlaceholder()` 统一判定
+`!string.isEmpty || hasMarkedText()`，在组字开始/取消、
+`textDidChange`（放在 `isHighlighting` guard **之前**）、
+`textDidBeginEditing`、`controlTextDidChange`、`inputChanged`、
+`clearAll`、DEMO 注入、构建输入框时全部走这一处。
+空态仍正常显示提示词。
+
+### 三、自检开关（仅 `--snapshot` 生效）
+
+- `DSH_CAL_SNAP_GLASS_MARKED=1`：玻璃模式下模拟输入法组字态，
+  逐帧打印 `string` / `marked` / `placeholderHidden` 并截图
+- 其余沿用 `DSH_CAL_SNAP_JS` / `SCROLL_BOTTOM` / `CLICK` / `CLICK_APP` / `WAIT`
+
+### 四、验证（亲手跑过）
+
+- 玻璃组字态修复后：`GLASS MARKED ... placeholderHidden=true`，
+  真机截图只有拼音 `nihao`、提示词消失、无重叠；空态截图提示词仍正常显示
+- 绳尾：滚到底真机截图放大 2 倍，麻线结与蓬松散纤维清晰、与绳身衔接自然；
+  无白底；贴图挂载探针确认 `rope-tail.png` 已加载、两根分别镜像
+- 贴图脚本重跑一次 md5 与交付 PNG 一致；源码与装机
+  `skeuo.html` / `wood-sprite.png` / `rope-tail.png` 三组 md5 全部一致
+- 双架构 `swiftc -typecheck` 通过；三时区 `npm test` 全绿
+  （168+39+24+20+305）；`build.sh` 成功；`codesign -v --deep --strict` 通过；
+  `x86_64 arm64`
+
+### 五、验证边界
+
+- 组字态是用 `setMarkedText` 模拟的，与真人用中文输入法敲拼音、翻候选、
+  Esc 取消组字的手感仍有差别，**未当成人手验证**
+- 绳尾贴图在浏览器预览与真机 WKWebView 都看过，但缩放比例、深色外观下的
+  观感未逐一人工核对；呼吸动感、滚动手感、减少动态效果开关仍未人工验证

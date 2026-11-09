@@ -583,10 +583,26 @@ final class LocalModel {
 /// （属性字符串里的色是解析过的实色，不会自己跟着外观变）。
 final class ComposeTextView: NSTextView {
     var onAppearanceChange: (() -> Void)?
+    /// 文本「看起来有没有内容」发生变化的回调。
+    /// 中文输入法的组字态不触发 textDidChange：拼音已经画在框里、
+    /// hasMarkedText() 为 true，但 textStorage 的正式内容仍是空的，
+    /// 于是手画的占位 label 不隐藏，拼音和提示词叠在一起。
+    /// 组字开始 / 组字取消都得单独通知一次。
+    var onTextPresenceChange: (() -> Void)?
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         onAppearanceChange?()
+    }
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        onTextPresenceChange?()
+    }
+
+    override func unmarkText() {
+        super.unmarkText()
+        onTextPresenceChange?()
     }
 }
 
@@ -1133,7 +1149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 }
                 if let demo = ProcessInfo.processInfo.environment["DSH_CAL_DEMO_TEXT"], !demo.isEmpty {
                     self.input?.stringValue = demo
-                    self.placeholderLabel?.isHidden = true
+                    self.syncInputPlaceholder()
                     if ProcessInfo.processInfo.environment["DSH_CAL_DEMO_ADD"] == "1" {
                         self.addEvent()
                     } else {
@@ -1221,6 +1237,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
         let textView = ComposeTextView(frame: NSRect(x: 0, y: 0, width: textWidth, height: 68))
         textView.delegate = self
+        // 组字态也要同步占位提示，不能只靠 textDidChange（见 ComposeTextView）
+        textView.onTextPresenceChange = { [weak self] in self?.syncInputPlaceholder() }
         // 系统外观切深浅时，文本里那些实色要重算一遍
         textView.onAppearanceChange = { [weak self] in
             DispatchQueue.main.async { self?.applyHighlight() }
@@ -1250,7 +1268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         placeholder.frame = NSRect(x: 16, y: 54, width: textWidth - 20, height: 20)
         card.addSubview(placeholder)
         self.placeholderLabel = placeholder
-        placeholder.isHidden = !savedDraft.isEmpty
+        syncInputPlaceholder()
 
         let add = GlassButton(frame: NSRect(x: contentWidth - 14 - 74, y: 29, width: 74, height: 34))
         add.title = "添加"
@@ -1773,9 +1791,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
     // MARK: 输入与预览
 
-    func controlTextDidChange(_ notification: Notification) { inputChanged() }
+    /// 占位提示该不该显示：只看「框里有没有可见内容」。
+    /// 组字态（拼音 / 候选）虽然还不是正式文本，但已经画在输入框里了，
+    /// 这时必须把提示词撤掉，否则两行字叠在一起 —— 用户反馈的
+    /// 「一开始输入时提示词不消失、要输入文字后才消失」就是这个。
+    private func syncInputPlaceholder() {
+        guard let tv = input else { return }
+        let hasVisibleText = !(tv.string.isEmpty) || tv.hasMarkedText()
+        placeholderLabel?.isHidden = hasVisibleText
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        syncInputPlaceholder()
+        inputChanged()
+    }
 
     func textDidChange(_ notification: Notification) {
+        syncInputPlaceholder()          // 不受 isHighlighting 影响，上色时也要同步
         // 上色会改 textStorage，别让它再触发一次解析
         guard !isHighlighting else { return }
         inputChanged()
@@ -1783,6 +1815,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
     func textDidBeginEditing(_ notification: Notification) {
         inputCard?.focused = true
+        syncInputPlaceholder()
     }
 
     func textDidEndEditing(_ notification: Notification) {
@@ -1799,7 +1832,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     }
 
     private func inputChanged() {
-        placeholderLabel?.isHidden = !(input?.string.isEmpty ?? true)
+        syncInputPlaceholder()
         parseWork?.cancel()
         // 改了文字就重新识别标签，让句子里的标签重新生效
         manualOverride = false
@@ -2310,7 +2343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     @objc private func clearAll() {
         input?.stringValue = ""
         resetPreview(message: "")
-        placeholderLabel?.isHidden = false
+        syncInputPlaceholder()
         statusLabel?.stringValue = ""
         statusLabel?.textColor = .secondaryLabelColor
         if let input { window.makeFirstResponder(input) }
@@ -2607,6 +2640,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                     afterJS(finish)
                 }
             } else {
+                // 自检开关（仅 --snapshot）：模拟中文输入法的「组字态」，
+                // 用来核对 placeholderLabel 在拼音已显示、文字未上屏时有没有及时隐藏。
+                let env = ProcessInfo.processInfo.environment
+                if env["DSH_CAL_SNAP_GLASS_MARKED"] == "1", let tv = self.input {
+                    NSApp.activate(ignoringOtherApps: true)
+                    self.window?.makeKeyAndOrderFront(nil)
+                    self.window?.makeFirstResponder(tv)
+                    let state = {
+                        "string=\(tv.string.debugDescription) marked=\(tv.hasMarkedText()) "
+                        + "placeholderHidden=\(self.placeholderLabel?.isHidden ?? false)"
+                    }
+                    self.probeLog("GLASS BEFORE " + state())
+                    tv.setMarkedText("nihao", selectedRange: NSRange(location: 5, length: 0),
+                                     replacementRange: NSRange(location: NSNotFound, length: 0))
+                    self.probeLog("GLASS MARKED " + state())
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        self.probeLog("GLASS MARKED+0.2 " + state())
+                        self.renderSnapshot(to: path)
+                        NSApp.terminate(nil)
+                    }
+                    return
+                }
                 self.renderSnapshot(to: path)
                 NSApp.terminate(nil)
             }

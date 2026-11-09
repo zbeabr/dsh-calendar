@@ -868,23 +868,22 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
   border:1px solid #6b4715;
   box-shadow:0 1px 2px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.7);
 }
-/* ⑤ 绳尾：最后一段只垂到末板下方 68px，收口缠一道麻线结，再散出纤维 */
-.rope-tail{position:absolute;width:19px;height:27px;margin-left:-9.5px;pointer-events:none;z-index:1}
-.rope-tail .whip{
-  position:absolute;left:3px;top:0;width:13px;height:10px;border-radius:2px;
-  background:repeating-linear-gradient(90deg,#9a8052 0 1.2px,#544122 1.2px 2.4px),
-             linear-gradient(180deg,#b19763,#54401f);
-  box-shadow:inset 0 1px 1px rgba(255,238,200,.38),0 1px 3px rgba(0,0,0,.7);
+/* ⑤ 绳尾：改用预烘焙位图，不再是 CSS 画的「矩形块 + 等距竖线」。
+   拟物时代的资产本来就是美术画好、烘焙成位图再贴上去的；上一版用
+   repeating-linear-gradient 拼散纤维，出来像刷子，一眼假。
+   rope-tail.png 由 web/bake_rope_tail.py 生成（4x 超采样、透明通道、
+   固定随机种子），顶部 0..7px 保持透明，让 CSS 绳段自己延伸到结的位置，
+   所以不会出现「上面细密斜纹、下面粗斜条」两截绳。 */
+.rope-tail{
+  position:absolute;width:28px;height:46px;margin-left:-14px;
+  pointer-events:none;z-index:1;
+  background-image:url('rope-tail.png');
+  background-repeat:no-repeat;background-size:28px 46px;
+  /* 贴图自带明暗，只补一点落地阴影，别再叠滤镜把细节糊掉 */
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.45));
 }
-.rope-tail .fray{
-  position:absolute;left:1px;top:9px;width:17px;height:18px;
-  background:repeating-linear-gradient(72deg,#b99c68 0 1px,transparent 1px 3px),
-             repeating-linear-gradient(94deg,#9c8255 0 .8px,transparent .8px 2.7px),
-             repeating-linear-gradient(112deg,#7c653f 0 .8px,transparent .8px 3.4px);
-  mask-image:linear-gradient(180deg,#000 0%,rgba(0,0,0,.85) 42%,transparent 100%);
-  -webkit-mask-image:linear-gradient(180deg,#000 0%,rgba(0,0,0,.85) 42%,transparent 100%);
-  opacity:.95;
-}
+/* 两根绳末端不该一模一样：右边镜像一下，避免像贴图复制品 */
+.rope-tail.flip{transform:scaleX(-1)}
 /* ② 二次确认：凿进同一块拉丝金属的小铭牌，按钮沿用「挂上」那套立体金属钮 */
 .confirm{position:fixed;inset:0;z-index:200;display:none;align-items:center;justify-content:center;
   background:rgba(14,11,8,.62)}
@@ -1487,7 +1486,7 @@ function buildRopes(){
   const leftX = inset + 36;
   const rightX = Math.max(60, W - inset - 36);
   const lastTop = list[n - 1].offsetTop || 0;
-  // ⑤ 绳尾：末段只垂到最后一板下方 68px 就收口，打结、散纤维。
+  // ⑤ 绳尾：末段只垂到最后一板下方 76px 就收口，下面接预烘焙的绳尾贴图。
   //   以前一直拖到文档底部，滚到底只看见一根没完没了的绳，尾巴反而看不见。
   const TAIL = 76;
   const tailEnd = lastTop + PH + TAIL;
@@ -1541,13 +1540,14 @@ function buildRopes(){
     });
     segs.push({ els: els, h: h, span: Math.max(8, anchorBot - anchorTop) });
   });
-  // 两根绳的末端：缠一道麻线结 + 散开几根纤维，收口只在整根绳的尽头出现
-  [leftX, rightX].forEach(function(x){
+  // 两根绳的末端：贴上预烘焙的绳尾位图。贴图顶部 0..7px 是透明的，
+  // 结大约落在贴图 y=7..11，所以整个 div 要往上挪 9px，让结正好箍住
+  // CSS 绳段的末端（tailEnd）；否则绳身和结之间会露出几像素背景。
+  [leftX, rightX].forEach(function(x, i){
     const t = document.createElement('div');
-    t.className = 'rope-tail';
+    t.className = 'rope-tail' + (i === 1 ? ' flip' : '');
     t.style.left = x + 'px';
-    t.style.top = (tailEnd - 4) + 'px';
-    t.innerHTML = '<span class="whip"></span><span class="fray"></span>';
+    t.style.top = (tailEnd - 9) + 'px';
     ropeBox.appendChild(t);
   });
 }
