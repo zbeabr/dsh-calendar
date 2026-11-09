@@ -671,6 +671,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var skeuoContainer: NSView?
     /// 滚轮事件监视器 + 合批缓冲，见 installScrollForwarder()
     private var scrollMonitor: Any?
+    /// 拟物模式点击兜底监视器，见 installSkeuoFocusGuard()
+    private var focusGuard: Any?
     private var scrollAccum: CGFloat = 0
     private var scrollTimer: Timer?
     private var skeuoWebView: WKWebView?
@@ -2546,38 +2548,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 let extraWait = env["DSH_CAL_SNAP_WAIT"].flatMap(Double.init) ?? 0
                 func withClick(_ run: @escaping () -> Void) {
                     guard let spec = clickSpec, let win = self.window else { run(); return }
-                    let parts = spec.split(separator: ",").compactMap { Double($0) }
-                    guard parts.count == 2 else { run(); return }
                     let h = win.contentView?.bounds.height ?? 720
-                    let inWindow = NSPoint(x: parts[0], y: h - CGFloat(parts[1]))
-                    let onScreen = win.convertPoint(toScreen: inWindow)
-                    let screenH = NSScreen.screens.first?.frame.height ?? 0
-                    let cg = CGPoint(x: onScreen.x, y: screenH - onScreen.y)
-                    // 命令行启动的进程不是 key window，先激活，否则第一击只会被用来激活窗口
+                    // 支持 "x,y|x,y|..."：一次快照里连续点多个位置，逐点记录命中视图
+                    // 与页面实际收到的事件，用来定位「哪一段 x 被原生层吞了」。
+                    let pts: [NSPoint] = spec.split(separator: "|").compactMap { pair in
+                        let a = pair.split(separator: ",").compactMap { Double($0) }
+                        guard a.count == 2 else { return nil }
+                        return NSPoint(x: a[0], y: h - CGFloat(a[1]))
+                    }
+                    guard !pts.isEmpty else { run(); return }
                     NSApp.activate(ignoringOtherApps: true)
                     win.makeKeyAndOrderFront(nil)
-                    let hit = win.contentView?.hitTest(inWindow)
-                    self.probeLog("CLICK at=\(spec) windowPoint=\(inWindow) screen=\(cg) "
-                        + "hitView=\(hit.map { String(describing: type(of: $0)) } ?? "nil")")
-                    // 直接交给窗口分发：NSWindow.sendEvent 会自己做 hitTest 再派给命中的视图，
-                    // 这正是真实鼠标事件走的那条路。NSApp.postEvent 从 CGEvent 转出来的事件
-                    // window 为 nil，实测会被队列丢掉，测不出点击是否到达页面。
                     let ts = ProcessInfo.processInfo.systemUptime
-                    for type in [NSEvent.EventType.leftMouseDown, NSEvent.EventType.leftMouseUp] {
-                        guard let ne = NSEvent.mouseEvent(with: type, location: inWindow,
-                                                          modifierFlags: [], timestamp: ts,
-                                                          windowNumber: win.windowNumber, context: nil,
-                                                          eventNumber: 0, clickCount: 1,
-                                                          pressure: type == .leftMouseDown ? 1 : 0)
-                        else { continue }
-                        win.sendEvent(ne)
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                        web?.evaluateJavaScript("JSON.stringify({clicks:window.__clicks||[],on:document.getElementById('confirm').classList.contains('on')})") { res, _ in
-                            self.probeLog("CLICK AFTER \(String(describing: res))")
+                    var idx = 0
+                    func step() {
+                        guard idx < pts.count else { run(); return }
+                        let inWindow = pts[idx]; idx += 1
+                        let hit = win.contentView?.hitTest(inWindow)
+                        self.probeLog("CLICK[\(idx)] css=\(Int(inWindow.x)),\(Int(h - inWindow.y)) "
+                            + "hitView=\(hit.map { String(describing: type(of: $0)) } ?? "nil")")
+                        // DSH_CAL_SNAP_CLICK_APP=1 时走 NSApp.sendEvent：
+                        // 本地事件监视器只在 NSApp 的分发链上执行，直接 win.sendEvent
+                        // 会绕过它，测不到 installSkeuoFocusGuard() 那半边。
+                        let viaApp = ProcessInfo.processInfo.environment["DSH_CAL_SNAP_CLICK_APP"] == "1"
+                        for type in [NSEvent.EventType.leftMouseDown, NSEvent.EventType.leftMouseUp] {
+                            guard let ne = NSEvent.mouseEvent(with: type, location: inWindow,
+                                                              modifierFlags: [], timestamp: ts,
+                                                              windowNumber: win.windowNumber, context: nil,
+                                                              eventNumber: 0, clickCount: 1,
+                                                              pressure: type == .leftMouseDown ? 1 : 0)
+                            else { continue }
+                            if viaApp { NSApp.sendEvent(ne) } else { win.sendEvent(ne) }
                         }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { run() }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            web?.evaluateJavaScript("JSON.stringify({hits:window.__hits||[],guard:window.__guardLog||[],active:(document.activeElement&&document.activeElement.id)})") { res, _ in
+                                self.probeLog("CLICK[\(idx)] PAGE \(String(describing: res))")
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { step() }
+                        }
                     }
+                    step()
                 }
                 let finish = {
                     withClick { self.renderSkeuoSnapshot(to: path) { NSApp.terminate(nil) } }
@@ -4842,20 +4852,14 @@ final class SkeuoDragView: NSView {
     private var lastTime: TimeInterval = 0
     private var lastSent: TimeInterval = 0
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        // 重写 hitTest 会跳过系统自带的 bounds 检查，所以这里必须自己判 y。
-        // 旧版只判 x (100..width-160)、完全不判 y：drag 的 frame 明明只有顶部 34px，
-        // 却把窗口中下部同 x 区间的点击全吞了 —— 输入框点不进、确认卡片按钮点不了，
-        // 而木板右侧的叉叉 (x≈674 > width-160) 反而能点，正是这个区间差造成的。
-        // AppKit 传进来的 point 在不同调用路径下可能是父视图坐标系，也可能是自身坐标系，
-        // 两种都换算一遍，只要有一种确实落在这条标题带内才认领。
-        let fromParent = superview.map { convert(point, from: $0) } ?? point
-        func insideTitleBar(_ p: NSPoint) -> Bool {
-            p.y >= 0 && p.y <= bounds.height
-                && p.x > 100 && p.x < bounds.width - 160
-        }
-        return insideTitleBar(point) || insideTitleBar(fromParent) ? self : nil
-    }
+    // 不重写 hitTest。
+    // 重写会跳过 AppKit 自带的 bounds 检查，必须自己把 point 换算成正确坐标系；
+    // 而不同调用路径下 point 有可能是父视图坐标、也可能是自身坐标，
+    // 一旦换算错了，一条 34px 的标题带就能把窗口中下部整片点击吞掉 ——
+    // 这就是「对话框中间一大块点不了、只有左边能点」反复出现的根子。
+    // 现在直接让 frame 本身只占标题栏中间那一段（见 ensureSkeuoContainer）：
+    // 几何上它就不覆盖输入区，AppKit 默认的 hitTest 自带 bounds 判断，
+    // 没有任何坐标系换算，也不可能再吞掉别的区域的点击。
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
@@ -4907,6 +4911,7 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         if skeuoMode {
             window?.contentView = ensureSkeuoContainer()
             installScrollForwarder()
+            installSkeuoFocusGuard()
             startSkeuoSync()
         } else {
             skeuoSyncTimer?.invalidate()
@@ -4924,6 +4929,40 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
     /// 监视器在事件分发之前执行，不管命中哪个子视图都能拿到，不受 hitTest 结构影响。
     /// 上一版重写容器的 scrollWheel 就吃过这个亏 —— 事件根本到不了那里。
     /// 事件本身继续往下传，不吞、不 preventDefault，页面滚动完全由 JS 做。
+    /// 点击兜底：在事件分发**之前**把焦点交给输入框。
+    /// 本地监视器在 hitTest 之前执行，所以不管原生层最终把点击判给谁，
+    /// 只要落在上半部金属板（.chrome，约 254px 高）内，输入框就能拿到焦点。
+    /// 这是对过去几轮 hitTest 反复出问题的彻底解耦：焦点不再依赖命中测试结果。
+    /// 返回 event 继续正常分发，不吞事件；确认弹层打开时由 JS 侧跳过。
+    private func installSkeuoFocusGuard() {
+        guard focusGuard == nil else { return }
+        focusGuard = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self, self.skeuoMode, let win = self.window,
+                  let web = self.skeuoWebView else { return event }
+            guard event.window == nil || event.window === win else { return event }
+            let bounds = win.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 760, height: 720)
+            // locationInWindow 是 AppKit 坐标（左下原点），换成 CSS 的左上原点。
+            // 窗口可缩放，右/下界都读实时 bounds，不能写死 760。
+            let cssX = event.locationInWindow.x
+            let cssY = bounds.height - event.locationInWindow.y
+            guard cssX >= 0, cssX <= bounds.width, cssY >= 0, cssY < 254 else { return event }
+            // 不碰响应链：点击落到 WebView 后，WKWebView 自己会把焦点交给页面里的 input；
+            // 强行 makeFirstResponder(web) 反而可能抖掉刚放好的光标。
+            // 这里只补一记 JS focus，作为「万一事件没走到页面」的双保险。
+            let js = "(function(x,y){if(window.__guardLog)window.__guardLog.push([Math.round(x),Math.round(y)]);"
+                + "var c=document.getElementById('confirm');"
+                + "if(c&&c.classList.contains('on'))return;"
+                + "var el=document.elementFromPoint(x,y);if(!el)return;"
+                + "if(el.closest&&el.closest('button,a,textarea,.lamps,.status-lamps'))return;"
+                + "var i=document.getElementById('phrase');"
+                + "if(i&&document.activeElement!==i){i.focus();"
+                + "try{i.setSelectionRange(i.value.length,i.value.length);}catch(e){}}})("
+                + String(format: "%.1f,%.1f", cssX, cssY) + ")"
+            web.evaluateJavaScript(js) { _, _ in }
+            return event
+        }
+    }
+
     private func installScrollForwarder() {
         guard scrollMonitor == nil else { return }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
@@ -4975,9 +5014,16 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         container.wantsLayer = true
         container.addSubview(web)
 
+        // 只占标题栏「中间可拖」的那一段：左边 100px 留给红绿灯，右边 160px 留给状态灯。
+        // 这两块本来就该把点击交给 WebView（HTML 里的灯有各自动作），
+        // 现在靠 frame 直接放行，不用再靠 hitTest 判 x 区间。
         let barHeight: CGFloat = 34
-        let drag = SkeuoDragView(frame: NSRect(x: 0, y: bounds.height - barHeight,
-                                               width: bounds.width, height: barHeight))
+        let leftInset: CGFloat = 100
+        let rightInset: CGFloat = 160
+        let drag = SkeuoDragView(frame: NSRect(x: leftInset,
+                                               y: bounds.height - barHeight,
+                                               width: max(80, bounds.width - leftInset - rightInset),
+                                               height: barHeight))
         drag.autoresizingMask = [.width, .minYMargin]
         drag.onDrag = { [weak self] vx, vy in
             guard let web = self?.skeuoWebView else { return }

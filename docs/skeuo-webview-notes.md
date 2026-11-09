@@ -232,3 +232,85 @@ drag 的 frame 明明只有顶部 34px，却把窗口中下部 x∈(100, 600) �
 
 **未验证**：真实人手用鼠标/触控板点按钮、拖窗手感（自检用的是合成事件走同一条
 `sendEvent → hitTest` 链路）、滚动手感、呼吸动感、减少动态效果开关。
+
+---
+
+## 第十一轮：对话框「中间一大块点不了、只能点左边」（2026-11-09，build 28）
+
+只改 `cal-app/App.swift`、`cal-app/web/skeuo.html`、`cal-app/Info.plist`。
+后端、玻璃模式、产品写入/删除链路、UI 切换均未改。**`dist/` 下历史发行包一个没动。**
+
+### 一、先取证：DOM 层完全正常
+
+- 真机 `--hitprobe`：绿屏 1590 个采样点全部命中 `input`，`bad:[]`，`wellRefocus:true`
+- 扩展到 12×5 网格再拍一张：整块绿屏全是 input
+- 11 点真实点击探针（x = 30/80/150/280/380/500/620/660，y=111，外加 y=50/200/300）：
+  **每个点 `hitView=ClickThroughWebView`**，页面收到 mousedown/mouseup/click，`active=phrase`
+
+也就是说 build 27 在当前装机版里是好的。用户看到「只能点左边、中间一大块点不了」
+与更早那版 `x∈(100,600)` 被吞的特征完全吻合；本机上还有 `dist/` 里 build 1–9 的
+历史 `.app`，macOS 可能把启动请求转给已运行旧进程 / 打开旧副本。
+**但不管是不是旧进程，本轮把根子彻底拆掉，不再靠坐标系换算。**
+
+### 二、根因：重写 `hitTest` 这件事本身就是错的
+
+`SkeuoDragView` 之前重写 `hitTest` 是为了让标题栏左右两端（红绿灯 / 状态灯）
+的点击放行给 WebView。重写会**跳过 AppKit 自带的 bounds 检查**，于是必须自己把
+`point` 换算成正确坐标系；而不同调用路径下 point 可能是父视图坐标、也可能是自身
+坐标。一旦换算错，一条 34px 的标题带就能把窗口中下部整片点击吞掉。
+上一轮补了 y 判断，但仍在「猜坐标系」，这类问题会反复回来。
+
+**改法：删掉整个自定义 `hitTest`，让 frame 自己说清楚边界。**
+
+```swift
+// 旧：frame 全宽 760，靠 hitTest 判 x 放行两端
+frame = (0, 686, 760, 34) + 自定义 hitTest
+// 新：frame 只占「中间可拖」那一段，两端天然归 WebView，没有任何坐标系换算
+frame = (100, 686, 500, 34) + AppKit 自带 hitTest
+```
+
+`--hitprobe` 视图树复核：`SkeuoDragView frame=(100.0, 686.0, 500.0, 34.0)`。
+标题栏中部 `CLICK css=380,17 → hitView=SkeuoDragView`（拖窗区没被破坏）。
+
+### 三、再加一层与命中测试完全解耦的兜底
+
+`installSkeuoFocusGuard()`：本地 `leftMouseDown` 监视器，在**事件分发之前**执行，
+不与任何 hitTest 结果挂钩。点击落在上半部金属板（CSS y < 254，x 在实时窗口宽度内）
+时，用 JS 补一记 `input.focus()`（确认弹层打开 / 点按钮 / 状态灯时跳过）。
+不吞事件、不动响应链、不写死窗口尺寸。这样即使将来别的原生层又挡住点击，
+输入框照样能拿到焦点。
+
+顺带修掉探针暴露的一个小毛病：点「新建日程」标签、SYS 屏、灯阵这类不可聚焦
+元素时，浏览器默认会先让 input 失焦、等 click 阶段再补回来，光标闪一下 ——
+看起来就像「点中间没进去」。现在 `focusFrom()` 在已聚焦时也 `preventDefault()`，
+焦点一帧都不丢。
+
+### 四、自检开关（仅 `--snapshot` 生效）
+
+- `DSH_CAL_SNAP_CLICK="x,y|x,y|..."`：连点多个 CSS 坐标，逐点打印 `hitView` 与页面事件
+- `DSH_CAL_SNAP_CLICK_APP=1`：改走 `NSApp.sendEvent`（本地监视器只在这条链上执行），
+  用来验证分发前兜底；直接 `win.sendEvent` 会绕过它，测不到那半边
+- `DSH_CAL_SNAP_JS`、`DSH_CAL_SNAP_WAIT`、`DSH_CAL_SNAP_SCROLL_BOTTOM` 沿用
+
+### 五、验证（亲手跑过）
+
+- **A** `win.sendEvent` 11 点：全 `ClickThroughWebView`；绿屏 8 点全 `focus=phrase`
+- **B** `NSApp.sendEvent` 5 点：`guardLog` 逐点累积 `[[150,111],[380,111],[500,111],[380,50],[380,200]]`，
+  `active=phrase` —— 分发前兜底确实在跑
+- **F** `--hitprobe`：drag frame 收窄正确，DOM 1590 点全 input，`HIT CLICK {"target":"phrase","focused":true}`
+- **G** 确认弹层按钮 `css=416,418`：`click:confirmNo`，弹层被真实点击关闭，截图核对
+- **H** 点标签 `380,50`：mousedown / mouseup / click 三阶段 `focus=phrase` 全程不掉，闪烁消失
+- **D** 标题栏中部 `hitView=SkeuoDragView`（拖窗区保留）
+- **I** 常态真机快照：金属板 / logo / 绿屏 / SYS / 六色灯 / 木板 / 绳尾均正常，无白底错位
+- 双架构 `swiftc -typecheck` 通过；三时区 `npm test` 全绿（168+39+24+20+305）；
+  `build.sh` 成功；`codesign -v --deep --strict` 通过；`x86_64 arm64`；
+  源码与装机 HTML/PNG md5 逐字节一致
+
+### 六、验证边界
+
+- 自检用的是走 `NSWindow.sendEvent` / `NSApp.sendEvent` 的合成事件，与真人手用
+  鼠标/触控板点按钮、拖窗手感仍有差别，**未当成人手验证**
+- 滚动手感、呼吸动感、减少动态效果开关仍未人工验证
+- 用户当前实际打开的是哪一份 `.app` 无法从进程侧确认（沙箱内 `ps` 不可用，
+  `pgrep` 无常驻进程）。本机 `~/Applications/DSH 日历.app` 为 build 28；
+  `dist/` 下另有 build 1–9 历史包，按红线未动

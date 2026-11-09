@@ -2054,8 +2054,12 @@ document.addEventListener('click', function(e){
       if (document.activeElement !== input) input.focus();
       return;
     }
-    if (document.activeElement === input) return;
-    e.preventDefault();               // 别让浏览器把刚拿到的焦点又收回
+    // 已经聚焦时也要 preventDefault：点标签 / SYS 屏 / 灯阵这类不可聚焦元素，
+    // 浏览器默认会先把 input 的焦点收走，等 click 阶段再补回来 —— 光标会闪一下，
+    // 用户看到的就是「点中间没进去」。压住默认行为，焦点一帧都不丢。
+    const already = document.activeElement === input;
+    e.preventDefault();
+    if (already) return;
     input.focus();
     const n = input.value.length;
     try { input.setSelectionRange(n, n); } catch (_){}
