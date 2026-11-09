@@ -399,3 +399,88 @@ GLASS MARKED+0.2   string="nihao" marked=true  placeholderHidden=false
   Esc 取消组字的手感仍有差别，**未当成人手验证**
 - 绳尾贴图在浏览器预览与真机 WKWebView 都看过，但缩放比例、深色外观下的
   观感未逐一人工核对；呼吸动感、滚动手感、减少动态效果开关仍未人工验证
+
+---
+
+## 第十三轮：外观联动 Dock 图标 / 设置页整合（2026-11-09，build 30）
+
+改 `cal-app/App.swift`、`cal-app/build.sh`、`cal-app/Info.plist`；
+新增 `cal-app/make-skeuo-icon.sh`、`cal-app/web/icon-skeuo-1024.png`、
+`CHANGELOG.md`。后端、玻璃模式绘制、产品写入/删除链路、`dist/` 历史包均未改。
+
+### 一、两套图标随外观切换
+
+`cal-app/web/icon-skeuo-1024.png` 是定稿的预烘焙位图（沿用 `Icon.swift`
+原框架几何，材质取自本文件前面几轮的 `.chrome` / `.well` / `.lampcell.on .bulb`）。
+`make-skeuo-icon.sh` 用 `sips` 缩成 10 个标准尺寸 → `iconutil -c icns`
+得到 `AppIconSkeuo.icns`，与玻璃版 `AppIcon.icns` 一起进 `Contents/Resources`。
+
+**build.sh 两处都要加**：stage 里 `cp`，以及后半段逐文件 `install_file` 清单。
+只加前者 → stage 签名清单含该文件、装机包里没有 → `sealed resource missing`
+（第十二轮绳尾贴图已经踩过一次，这次直接按同一条规则做）。
+
+`AppDelegate.applyAppearance()` 增加 `applyAppIcon()`：
+按 `skeuoMode` 从 bundle 取 `AppIconSkeuo.icns` / `AppIcon.icns`，
+`NSImage(contentsOf:)` 读出来赋给 `NSApp.applicationIconImage`。
+启动（`applicationDidFinishLaunching` 758 行）和 `setAppearance()` 都会走，
+所以两种触发路径都覆盖。
+
+**Finder 静态图标换不了**：它由 `CFBundleIconFile` 决定，运行时改 bundle 内
+资源会破坏签名。随外观变的是 Dock / ⌘Tab / 应用切换器。这个边界写进了
+`CHANGELOG.md`，别当已实现。
+
+### 二、设置页在拟物模式下原本根本看不见
+
+迁移入口前先做了真机取证：
+`DSH_CAL_SKEUO=1 DSH_CAL_FORCE_SETUP=settings --snapshot` 拍出来的是
+拟物 WebView（金属板 / 绿屏 / 黄铜杆），**设置页一个控件都没有**。
+原因：`applyAppearance()` 把 `window.contentView` 换成整屏 `skeuoContainer`，
+而 `installContent()` 把设置页加到 `shell.slot`，`shell` 已不在视图树里。
+不修这处，把切换从「窗口」菜单挪进设置页之后，用户切到拟物就再也
+打不开设置页、切不回来。
+
+修法：`openSettings()` 置 `settingsVisible = true`，拟物时临时
+`window.contentView = shell` 并恢复系统红绿灯；`applyAppearance()` 在
+`settingsVisible` 时只换图标、不替换 contentView；`buildMain()` 离开设置页时
+`settingsVisible = false` 再 `applyAppearance()` 复原。
+设置页里的外观开关只存偏好 + 换图标，界面等 `buildMain()` 回主界面时
+无条件复原（哪怕没拨开关，`openSettings()` 也可能临时换过 contentView），
+避免用户填账号密码时整页被换掉。
+
+`--snapshot` 也跟着改：设置页开着时走 `renderSnapshot()` 原生视图，
+否则 `skeuoMode=true` 会去拍一个不在视图树里的 WKWebView，拍不出图。
+
+### 三、窗口菜单
+
+`windowMenu` 里的「切换到全拟物外观」及其分隔线删除，
+`appearanceMenuItem` 属性删除。`toggleAppearance()` 保留为
+`setAppearance(!skeuoMode)` 的薄封装，只给自检脚本用，不再是用户入口。
+帮助文本补了一句外观入口说明。
+
+### 四、自检开关（仅 `--snapshot` 生效）
+
+- `DSH_CAL_ICONPROBE=1`：输出 `skeuoMode`、加载的 `.icns` 资源名与尺寸、
+  `applied`、以及菜单里是否还残留旧外观项（`legacyMenuItem`）
+- `DSH_CAL_APPEARANCE_FLIP=1`：只翻转内存里的 `skeuoMode` 后调
+  `applyAppearance()`，**不写 UserDefaults**，用来在同一进程里验证
+  「切换外观 → 图标同步换」，不会污染本机偏好
+
+### 五、验证（亲手跑过）
+
+- 图标探针：拟物 `skeuoMode=true resource=AppIconSkeuo.icns applied=true
+  legacyMenuItem=false`；玻璃 `resource=AppIcon.icns`，同样 `applied=true /
+  legacyMenuItem=false`
+- 切换探针：同一进程 `AppIcon.icns → AppIconSkeuo.icns`，偏好未被写入
+- 设置页快照：拟物 / 玻璃下均可见，三行开关（全拟物外观 / 输入框染色 /
+  输入框光圈）齐全，「全拟物外观」分别为开 / 关，布局无截断
+- 双架构 typecheck、三时区 `npm test` 全绿（168+39+24+20+305）、
+  `build.sh` 成功、`codesign -v --deep --strict` 通过、`x86_64 arm64`、
+  源码与装机五组资源 md5 逐字节一致
+
+### 六、验证边界
+
+- 真人用鼠标点击 `SoftSwitch` 的手感、「拨开关 → 点保存 → 界面切换」端到端
+  链路未人工验证；自检走的是同一条代码路径与合成事件
+- Dock 图标是运行时 `applicationIconImage`，Finder 静态图标恒为玻璃版
+- 自检过程中本机 `appearanceStyle` 一度被写成 `glass`，已做对照实验
+  排除「打开设置页会写偏好」（前后均为 `skeuo`），并已恢复为 `skeuo`

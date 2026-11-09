@@ -21,6 +21,18 @@ if [ ! -f "$ICNS" ] || [ "$HERE/Icon.swift" -nt "$ICNS" ]; then
   iconutil -c icns "$HERE/icon/AppIcon.iconset" -o "$ICNS"
 fi
 
+# 全拟物外观专用图标：从 web/icon-skeuo-1024.png 这张预烘焙位图生成。
+# 两套 icns 都进 Resources，运行时按外观用 NSApp.applicationIconImage 切换。
+# 注意：这里生成的任何新资源，后半段那份逐文件 install_file 清单也必须同步加，
+# 否则 stage 的签名清单里有、装机包里没有，codesign 会报 sealed resource missing。
+SKEUO_ICNS="$HERE/icon/AppIconSkeuo.icns"
+SKEUO_SRC="$HERE/web/icon-skeuo-1024.png"
+SKEUO_GEN="$HERE/make-skeuo-icon.sh"
+if [ ! -f "$SKEUO_ICNS" ] || [ "$SKEUO_SRC" -nt "$SKEUO_ICNS" ] || [ "$SKEUO_GEN" -nt "$SKEUO_ICNS" ]; then
+  echo "▸ 生成拟物图标…"
+  zsh "$SKEUO_GEN"
+fi
+
 echo "▸ 编译 Swift…"
 # 显式指定最低系统版本，否则 swiftc 会按当前机器的系统版本当底线，
 # 结果就是 Info.plist 写着 14.0、二进制却要求 27 才能跑（改了没测出来那种坑）。
@@ -70,6 +82,7 @@ cp "$BUILD/DSHCalendar" "$STAGE/Contents/MacOS/DSHCalendar"
 chmod +x "$STAGE/Contents/MacOS/DSHCalendar"
 cp "$HERE/Info.plist" "$STAGE/Contents/Info.plist"
 cp "$ICNS" "$STAGE/Contents/Resources/AppIcon.icns"
+cp "$SKEUO_ICNS" "$STAGE/Contents/Resources/AppIconSkeuo.icns"
 # 全拟物外观：参考稿本体（HTML/CSS/SVG）随包走，WKWebView 直接加载它
 cp "$HERE/web/skeuo.html" "$STAGE/Contents/Resources/skeuo.html"
 cp "$HERE/web/wood-sprite.png" "$STAGE/Contents/Resources/wood-sprite.png"
@@ -120,6 +133,7 @@ chmod +x "$TARGET/Contents/MacOS/DSHCalendar"
 install_file "$STAGE/Contents/Info.plist" "$TARGET/Contents/Info.plist"
 install_file "$STAGE/Contents/PkgInfo" "$TARGET/Contents/PkgInfo"
 install_file "$STAGE/Contents/Resources/AppIcon.icns" "$TARGET/Contents/Resources/AppIcon.icns"
+install_file "$STAGE/Contents/Resources/AppIconSkeuo.icns" "$TARGET/Contents/Resources/AppIconSkeuo.icns"
 install_file "$STAGE/Contents/Resources/skeuo.html" "$TARGET/Contents/Resources/skeuo.html"
 install_file "$STAGE/Contents/Resources/wood-sprite.png" "$TARGET/Contents/Resources/wood-sprite.png"
 install_file "$STAGE/Contents/Resources/rope-tail.png" "$TARGET/Contents/Resources/rope-tail.png"

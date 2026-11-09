@@ -706,7 +706,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var parseQueued = ""
     /// 最近一次解析成功时对应的那句话。提交时拿它判断「能不能省掉再解析一遍」。
     private var lastParsedText = ""
-    private var appearanceMenuItem: NSMenuItem?
+    /// 设置页正开着：此时不要替换 contentView —— 拟物模式的整屏 WebView 会把
+    /// 挂在玻璃 shell 里的设置页完全盖住（实测 DSH_CAL_SKEUO=1 + FORCE_SETUP=settings）。
+    /// 外观改动先记下，等 buildMain() 回到主界面再应用。
+    private var settingsVisible = false
     /// 日历名 → 颜色，给每条日程配左侧色条
     private var calendarColors: [String: NSColor] = [:]
     /// 刚写入的那条：列表刷新时闪一下，告诉用户「它真的进去了」
@@ -975,10 +978,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "前置全部窗口", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
-        windowMenu.addItem(.separator())
-        let appearance = windowMenu.addItem(withTitle: "切换到全拟物外观", action: #selector(toggleAppearance), keyEquivalent: "")
-        appearance.target = self
-        appearanceMenuItem = appearance
+        // 外观切换已移到「设置… → 外观」，窗口菜单里不再放这一项。
+        // toggleAppearance 这个 selector 保留给自检脚本，不作为用户入口。
 
         // ── 帮助
         let helpItem = NSMenuItem(title: "帮助", action: nil, keyEquivalent: "")
@@ -1073,6 +1074,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         光圈：⌘⇧G（或设置里「输入框光圈」）在卡片外面绕一圈彩色辉光，
               颜色同一套、慢慢转；敲字和模型在想办法时会亮一下。
         这两样都在「日历 → 设置…（⌘,）」里能开关，状态记在本机。
+        外观：设置里还有「全拟物外观」开关，界面和 Dock 图标一起换；
+              拨完回到主界面生效，避免设置页填到一半被换掉。
 
         识别靠本机规则：先按词表切出日期、时刻、地点、标签，再把剥掉这些片段后剩下的部分当标题。断网也能用。
 
@@ -1084,6 +1087,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     }
 
     @objc private func openSettings() {
+        // 拟物模式的 contentView 是整屏 WKWebView，设置页挂在玻璃 shell 里根本看不见。
+        // 实测过：DSH_CAL_SKEUO=1 + FORCE_SETUP=settings 只会看到木板界面，设置页全被盖住。
+        // 打开设置时临时把 shell 挂回窗口、恢复系统红绿灯；离开设置页再按当前外观复原。
+        settingsVisible = true
+        if skeuoMode { window?.contentView = shell }
+        for kind: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            window?.standardWindowButton(kind)?.isHidden = false
+        }
         let config = readConfigFile()
         buildSetup(
             note: "改完点「保存」。密码留空就沿用钥匙串里已存的那个。",
@@ -1173,6 +1184,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     // MARK: 主界面
 
     private func buildMain() {
+        // 从设置页回来：把 contentView 按（可能刚改过的）外观复原。
+        // 启动时 settingsVisible 为 false，这一支不会走。
+        if settingsVisible {
+            settingsVisible = false
+            // 无条件复原：openSettings() 可能临时把 contentView 换成了 shell，
+            // 即使用户在设置页没拨外观开关，也要按当前 skeuoMode 挂回去。
+            applyAppearance()
+        }
         // ⌘R「重新检查连接」会整块重建主界面，输入框也是新建的。
         // 先把旧控件里没提交的话捞出来，新控件建好后再放回去，别让草稿凭空消失。
         let savedDraft = self.input?.string ?? ""
@@ -1606,7 +1625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         showsAppearance: Bool = false
     ) {
         // 从「设置…」打开时，底下多一块外观开关；首次连接时不需要，留白就好
-        let lift: CGFloat = showsAppearance ? 100 : 0
+        let lift: CGFloat = showsAppearance ? 136 : 0
         let height: CGFloat = 330 + lift
 
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: height))
@@ -1675,16 +1694,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         applyDemoAppearance()
     }
 
-    /// 设置页底部的外观开关。改完立刻存进 UserDefaults，回到主界面就按新设置重建。
+    /// 设置页底部的外观开关。外观这一项只记偏好 + 换 Dock 图标，
+    /// 界面等回到主界面再切（见 settingsAppearanceChanged / buildMain），
+    /// 否则用户还在填账号密码，设置页会「啪」地消失。
     private func buildAppearanceSection(in root: NSView) {
-        let divider = NSBox(frame: NSRect(x: 24, y: 118, width: 512, height: 1))
+        let divider = NSBox(frame: NSRect(x: 24, y: 154, width: 512, height: 1))
         divider.boxType = .separator
         root.addSubview(divider)
 
         let caption = makeLabel("外观", size: 12, weight: .semibold, color: .secondaryLabelColor)
-        caption.frame = NSRect(x: 24, y: 92, width: 120, height: 18)
+        caption.frame = NSRect(x: 24, y: 128, width: 120, height: 18)
         root.addSubview(caption)
 
+        root.addSubview(appearanceRow(
+            title: "全拟物外观",
+            detail: "金属板 / 木板 / 绿磷光屏，Dock 图标同步切换",
+            on: skeuoMode,
+            action: #selector(settingsAppearanceChanged(_:)),
+            y: 94
+        ))
         root.addSubview(appearanceRow(
             title: "输入框染色",
             detail: "按「标题 → 时间 → 地点 → 标签」铺一层渐变",
@@ -1726,6 +1754,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         row.addSubview(toggle)
 
         return row
+    }
+
+    /// 设置页里的外观开关：只存偏好 + 换 Dock 图标，不立刻替换 contentView。
+    /// 界面在 buildMain() 回到主界面时生效；状态栏给一句明确提示。
+    @objc private func settingsAppearanceChanged(_ sender: SoftSwitch) {
+        skeuoMode = sender.on
+        UserDefaults.standard.set(sender.on ? "skeuo" : "glass", forKey: "appearanceStyle")
+        applyAppIcon()
+        setupStatus?.stringValue = sender.on
+            ? "已切到全拟物外观，回到主界面生效。"
+            : "已切到 Liquid Glass 外观，回到主界面生效。"
     }
 
     @objc private func settingsTintChanged(_ sender: SoftSwitch) {
@@ -2567,7 +2606,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             : (demo["DSH_CAL_DEMO_TEXT"]?.isEmpty == false ? 3.0 : 0.6)
         let delay = demo["DSH_CAL_SNAPSHOT_DELAY"].flatMap(Double.init) ?? base
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            if self.skeuoMode {
+            // 自检：DSH_CAL_APPEARANCE_FLIP=1 只翻转内存里的外观（不写 UserDefaults），
+            // 用来在真机上验证「切换外观 → Dock 图标同步换」这条链路，不碰用户偏好。
+            if ProcessInfo.processInfo.environment["DSH_CAL_APPEARANCE_FLIP"] == "1" {
+                self.skeuoMode.toggle()
+                self.applyAppearance()
+            }
+            // 设置页开着时 contentView 是玻璃 shell（拟物模式也会临时挂回来），
+            // 该拍原生视图；走 WKWebView 快照会因为 WebView 不在视图树里而拍不出图。
+            if self.skeuoMode && !self.settingsVisible {
                 // 自检开关，只在 --snapshot 下生效，不改任何产品状态：
                 // · DSH_CAL_SNAP_SCROLL_BOTTOM=1 滚到最底，核对绳尾与底部底色
                 // · DSH_CAL_SNAP_JS="..." 在快照前跑一段 JS，核对选中 / 确认弹层等交互态
@@ -4951,14 +4998,20 @@ final class SkeuoDragView: NSView {
 
 extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
 
-    @objc func toggleAppearance() {
-        skeuoMode.toggle()
-        UserDefaults.standard.set(skeuoMode ? "skeuo" : "glass", forKey: "appearanceStyle")
+    @objc func toggleAppearance() { setAppearance(!skeuoMode) }
+
+    /// 外观设置的唯一出口：存盘、换图标、应用界面。
+    /// 用户入口已改成「设置… → 外观」；这个 selector 保留给自检脚本。
+    func setAppearance(_ skeuo: Bool) {
+        skeuoMode = skeuo
+        UserDefaults.standard.set(skeuo ? "skeuo" : "glass", forKey: "appearanceStyle")
         applyAppearance()
     }
 
     func applyAppearance() {
-        appearanceMenuItem?.title = skeuoMode ? "切换到 Liquid Glass 外观" : "切换到全拟物外观"
+        applyAppIcon()
+        // 设置页开着时只换图标，别替换 contentView —— 否则设置页会瞬间消失。
+        guard !settingsVisible else { return }
         // 拟物模式把系统红绿灯收起来，HTML 里那组旧版立体灯是唯一的一组
         for kind: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
             window?.standardWindowButton(kind)?.isHidden = skeuoMode
@@ -4972,6 +5025,34 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
             skeuoSyncTimer?.invalidate()
             skeuoSyncTimer = nil
             window?.contentView = shell
+        }
+    }
+
+    /// Dock / ⌘Tab / 应用切换器里的图标随外观一起换。
+    ///
+    /// 边界：Finder 里那个静态图标由 Info.plist 的 CFBundleIconFile 决定，
+    /// 运行时改不了（改 bundle 内资源会破坏签名），恒为玻璃版 AppIcon.icns。
+    /// 这里换的是运行时的 NSApp.applicationIconImage。
+    private func applyAppIcon() {
+        let name = skeuoMode ? "AppIconSkeuo" : "AppIcon"
+        guard let url = Bundle.main.url(forResource: name, withExtension: "icns") else {
+            probeLog("ICON ERROR missing resource=\(name).icns")
+            return
+        }
+        guard let image = NSImage(contentsOf: url) else {
+            probeLog("ICON ERROR unreadable=\(url.path)")
+            return
+        }
+        NSApp.applicationIconImage = image
+        if ProcessInfo.processInfo.environment["DSH_CAL_ICONPROBE"] == "1" {
+            let legacy = NSApp.mainMenu?.items.contains { item in
+                item.submenu?.items.contains {
+                    $0.title.contains("切换到") && $0.title.contains("外观")
+                } ?? false
+            } ?? false
+            probeLog("ICON skeuoMode=\(skeuoMode) resource=\(name).icns "
+                + "size=\(image.size.width)x\(image.size.height) "
+                + "applied=\(NSApp.applicationIconImage != nil) legacyMenuItem=\(legacy)")
         }
     }
 
