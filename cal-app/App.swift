@@ -606,7 +606,7 @@ final class ComposeTextView: NSTextView {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NSTextViewDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
     private var window: NSWindow!
     private var calendars: [String] = []
     private var currentCalendar: String = "学习"
@@ -756,6 +756,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         window.hasShadow = true
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.center()
         makeShell()
         applyAppearance()
@@ -858,6 +859,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             self.waitModelThenQuit(lines: lines, deadline: deadline)
         }
+    }
+
+    /// 设置页不是在独立窗口里，而是「同一个窗口换 contentView」。
+    /// 所以点红绿灯关闭时如果不拦，窗口一关就触发下面的「关窗即退出」，
+    /// 用户看到的是「关掉设置，连日历一起没了」。这里截住：只要还在设置页，
+    /// 就回到日历主界面、窗口不关；只有主界面点关闭才真的退出。
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard settingsVisible else { return true }
+        buildMain()      // 内部会把 settingsVisible 置回 false，并按当前外观复原 contentView
+        /* 关闭流程里 window.setContentSize 会被 AppKit 的事务吞掉 ——
+           实测回到日历后窗口仍停在设置页的 560×466，木板按窄窗重排了一遍。
+           挪到下一轮 runloop 再补一次，尺寸才对得上 760×720。 */
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let w = self.window else { return }
+            w.setContentSize(NSSize(width: 760, height: 720))
+            /* 拟物模式下 contentView 是 WebView、不是玻璃 shell，slot 不在视图树里，
+               收不到 autoresize，尺寸会一直停在设置页的 560×466 ——
+               等下次切回玻璃外观，整个主界面就按窄窗排。这里手动对齐。 */
+            let size = w.contentView?.bounds.size ?? NSSize(width: 760, height: 720)
+            self.shell?.frame = NSRect(origin: .zero, size: size)
+            self.slot?.frame = NSRect(origin: .zero, size: size)
+            if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_CLOSE_TEST"] == "1" {
+                self.probeLog("CLOSETEST3 win=\(Int(w.frame.width))x\(Int(w.frame.height)) "
+                    + "content=\(Int(size.width))x\(Int(size.height)) "
+                    + "slot=\(Int(self.slot?.frame.width ?? 0))x\(Int(self.slot?.frame.height ?? 0))")
+            }
+        }
+        return false
     }
 
     /// 关窗就退出 App（Dock 图标一起消失），同时把本地模型进程收掉。
@@ -2606,6 +2635,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             : (demo["DSH_CAL_DEMO_TEXT"]?.isEmpty == false ? 3.0 : 0.6)
         let delay = demo["DSH_CAL_SNAPSHOT_DELAY"].flatMap(Double.init) ?? base
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            // 自检（只在 --snapshot 下生效）：验证「在设置页点关闭 → 回到日历，而不是退出 App」。
+            // openSettings() 会把 contentView 临时换成玻璃 shell，performClose 走 windowShouldClose；
+            // 期望 settingsVisible 被置回 false、contentView 回到 WebView、窗口仍在、进程没退。
+            if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_CLOSE_TEST"] == "1" {
+                self.openSettings()
+                let wasInSettings = self.settingsVisible
+                let beforeView = self.window.flatMap { w in w.contentView.map { String(describing: type(of: $0)) } } ?? "-"
+                self.window?.performClose(nil)
+                let afterView = self.window.flatMap { w in w.contentView.map { String(describing: type(of: $0)) } } ?? "-"
+                self.probeLog("CLOSETEST inSettings=\(wasInSettings) nowInSettings=\(self.settingsVisible) "
+                    + "view=\(beforeView) -> \(afterView) "
+                    + "winVisible=\(self.window?.isVisible ?? false) appAlive=\(NSApp.isRunning)")
+                // 自己控制节奏：默认快照路径会立刻拍完就 terminate，等不到延时里的尺寸修正
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    let ws = self.window?.frame.size ?? .zero
+                    let cs = self.window?.contentView?.frame.size ?? .zero
+                    let ss = self.slot?.frame.size ?? .zero
+                    self.probeLog("CLOSETEST2 win=\(Int(ws.width))x\(Int(ws.height)) "
+                        + "content=\(Int(cs.width))x\(Int(cs.height)) slot=\(Int(ss.width))x\(Int(ss.height))")
+                    self.renderSkeuoSnapshot(to: path) { NSApp.terminate(nil) }
+                }
+                return
+            }
             // 自检：DSH_CAL_APPEARANCE_FLIP=1 只翻转内存里的外观（不写 UserDefaults），
             // 用来在真机上验证「切换外观 → Dock 图标同步换」这条链路，不碰用户偏好。
             if ProcessInfo.processInfo.environment["DSH_CAL_APPEARANCE_FLIP"] == "1" {

@@ -1469,6 +1469,7 @@ function knotSVG(i){
    建绳子只在重排（新增/删除/改窗口大小）时做一次，动画期间只写 transform。 */
 const ropeBox = document.getElementById('ropes');
 let segs = [];            // [{els:[左,右], top, h}]
+let tails = [];           // 两根绳末端的贴图：必须和末段绳同一个旋转中心，否则绳在晃、尾巴钉着
 let plankEls = [];        // 与 nodes 一一对应的 .plank 元素
 
 function buildRopes(){
@@ -1476,6 +1477,7 @@ function buildRopes(){
   const list = Array.prototype.slice.call(area.querySelectorAll('.slot:not(.out)'));
   ropeBox.innerHTML = '';
   segs = [];
+  tails = [];
   const n = list.length;
   if (!n){ ropeBox.style.height = '0px'; return; }
 
@@ -1548,7 +1550,12 @@ function buildRopes(){
     t.className = 'rope-tail' + (i === 1 ? ' flip' : '');
     t.style.left = x + 'px';
     t.style.top = (tailEnd - 9) + 'px';
+    /* 让绳尾绕「末段绳的上锚点」转，和末段绳共用同一个旋转中心。
+       以前它是纯静态的：绳子在摆，结钉在原地不动，最下面看着像断开的。
+       origin 会落在元素上方一个负值处 —— 那正是最后一个穿孔的位置，是有意的。 */
+    t.style.transformOrigin = '50% ' + (holeOf(n - 1) - (tailEnd - 9)).toFixed(2) + 'px';
     ropeBox.appendChild(t);
+    tails.push(t);
   });
 }
 
@@ -1922,6 +1929,9 @@ function paint(){
         'translate3d(' + (s.x + comp).toFixed(2) + 'px,0,0) rotate(' + tilt.toFixed(2) + 'deg)';
     }
   }
+  /* 绳尾还在甩也算「还在动」：否则最后一块板一停，rAF 就断在半路，
+     尾巴悬在空中那一刻会被看见。 */
+  if (Math.abs(tailNode.x) > 0.15 || Math.abs(tailNode.v) > 1.5) live = true;
 
   for (let k = 0; k < segs.length; k += 1){
     const seg = segs[k];
@@ -1929,6 +1939,16 @@ function paint(){
     const tf = 'translate3d(' + xTop.toFixed(2) + 'px,0,0) rotate(' + angs[k].toFixed(3) + 'deg)';
     seg.els[0].style.transform = tf;
     seg.els[1].style.transform = tf;
+  }
+  /* 绳尾跟末段绳走：同一个上锚点、同一个弦角，结就永远箍在绳端上。
+     右侧那根带 .flip 的 scaleX(-1)，这里必须显式补回去 —— 一旦写了 inline
+     transform，类里的镜像就被整条覆盖，两根尾巴会长得一模一样。 */
+  if (tails.length && segs.length){
+    const k = segs.length - 1;
+    const xTop = k === 0 ? 0 : nodes[k - 1].x;
+    const tf = 'translate3d(' + xTop.toFixed(2) + 'px,0,0) rotate(' + angs[k].toFixed(3) + 'deg)';
+    if (tails[0]) tails[0].style.transform = tf;
+    if (tails[1]) tails[1].style.transform = tf + ' scaleX(-1)';
   }
   return live;
 }
