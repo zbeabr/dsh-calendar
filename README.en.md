@@ -68,6 +68,27 @@ It must be an **app-specific password** (looks like `abcd-efgh-ijkl-mnop`), not 
 
 Anything unrecognised is reported as an error instead of being guessed. **A wrong date is worse than a refusal.**
 
+## Two appearances
+
+Same app, two faces. The default is Liquid Glass (the screenshot at the top). **Settings (`⌘,`) → Appearance → Full skeuomorphic** swaps the window for a brass panel with wooden planks hung on hemp rope. The switch only stores a preference and swaps the Dock icon; it applies when you return to the main window. Both faces share the same parser and the same events, so nothing moves when you flip between them.
+
+<p align="center">
+  <img src="docs/screenshots/skeuo-hero.png" width="640" alt="Skeuomorphic appearance: brass panel, green phosphor input screen, six recognition lamps, wooden planks on rope">
+</p>
+
+- **Phosphor screen** — the input is an old terminal screen recessed into the metal panel, scanlines and all.
+- **Six recognition lamps** — title / time / location / repeat / calendar / alarm. A lamp lights up when that part of the sentence has been recognised, so you can see what the parser made of it without reading a row of labels. This replaces the pills of the glass version: no text to read, just which lamps are on.
+- **SYS strip** — a separate little LCD for what was recognised, whether the write went through, and for conflicts or offline warnings.
+- **Planks on rope** — one event per plank, strung on two lengths of hemp rope, with date, title and calendar written on the wood.
+- **It swings** — drag the window and the whole string swings; the impulse travels down the rope, so lower planks lag behind and swing wider. Jiggling the window vertically gets them moving too.
+- **Click to remove** — click a plank to select it, `⌫` to take it down, with a confirmation step in between.
+
+<p align="center">
+  <img src="docs/screenshots/skeuo-detail.png" width="760" alt="Detail: the six recognition lamps and the SYS strip">
+</p>
+
+The skeuomorphic face is a single HTML file (`cal-app/web/skeuo.html`) hosted in a `WKWebView`; wood, rope, brass and phosphor are all drawn in CSS / SVG, with only the wood grain pre-baked into a texture. Switching swaps the `contentView` and nothing else — no controls rebuilt, no product state touched. Its labels are in Chinese, for the same reason the parser is.
+
 ## Known limitations
 
 - One event per sentence; multi-line input only uses the first line
