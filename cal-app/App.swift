@@ -698,6 +698,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 预览出来的时间范围，用来和列表里的日程比冲突
     private var previewStart: Date?
     private var previewEnd: Date?
+    /// 最近一次「解析失败」写进 hintLabel 的文案。成功后按这个值精确清掉，
+    /// 免得打字中间态的报错一直挂在 SYS 栏（见 applyPreview）。
+    private var parseErrorText: String?
     /// 上色时会改动 textStorage，别让它再次触发解析
     private var isHighlighting = false
     /// 调用过模型之后要显示的字，nil 表示还没调用过
@@ -1929,6 +1932,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             // 渐变的颜色和顺序，就是这排胶囊的颜色和顺序
             updateTint(chips.map { $0.kind })
 
+            // 这一句认出来了，就得把「上一句 / 打字中间态」解析失败留下的报错撤掉。
+            // 以前成功分支完全没动 hintLabel，于是 pushSkeuoState 把那条过期错误当 sys
+            // 推给 WebView，JS 再接在识别结果后面 —— 就是「明明认出了 11:35–12:05，
+            // SYS 却还写着『没能从这句话里找到时间』」的样子。按上次失败文案精确清，
+            // 不误伤「已删除 / 美化已开 / 冲突告警」这些别的提示。
+            clearStaleParseHint()
+
             previewStart = ISO.date(payload["start"] as? String ?? "")
             previewEnd = ISO.date(payload["end"] as? String ?? "")
             checkConflict()
@@ -1943,6 +1953,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         }
     }
 
+    /// 只撤掉自己那次解析失败写下的报错，且必须在「这句又认出来了」时才撤。
+    private func clearStaleParseHint() {
+        if let stale = parseErrorText, hintLabel?.stringValue == stale {
+            hintLabel?.stringValue = ""
+            hintLabel?.textColor = .secondaryLabelColor
+        }
+        parseErrorText = nil
+    }
+
     private func resetPreview(message: String, isError: Bool = false) {
         currentSpans = []
         applyHighlight()
@@ -1952,6 +1971,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         previewEnd = nil
         hintLabel?.stringValue = message
         hintLabel?.textColor = isError ? .systemRed : .secondaryLabelColor
+        parseErrorText = (isError && !message.isEmpty) ? message : nil
     }
 
     // MARK: 美化（把输入卡染成胶囊同色的渐变）
@@ -2516,14 +2536,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 // 自检开关，只在 --snapshot 下生效，不改任何产品状态：
                 // · DSH_CAL_SNAP_SCROLL_BOTTOM=1 滚到最底，核对绳尾与底部底色
                 // · DSH_CAL_SNAP_JS="..." 在快照前跑一段 JS，核对选中 / 确认弹层等交互态
+                // · DSH_CAL_SNAP_CLICK="x,y" 发一次真实鼠标点击（CSS 坐标，左上原点），
+                //   用来验证原生命中测试有没有把点击交给 WebView —— JS 派发 click 测不出这半边
+                // · DSH_CAL_SNAP_WAIT=<秒> JS 之后多等一会再拍，给「连续两次解析」留时间
                 let env = ProcessInfo.processInfo.environment
-                let finish = { self.renderSkeuoSnapshot(to: path) { NSApp.terminate(nil) } }
                 let web = self.skeuoWebView
                 let js = env["DSH_CAL_SNAP_JS"]
+                let clickSpec = env["DSH_CAL_SNAP_CLICK"]
+                let extraWait = env["DSH_CAL_SNAP_WAIT"].flatMap(Double.init) ?? 0
+                func withClick(_ run: @escaping () -> Void) {
+                    guard let spec = clickSpec, let win = self.window else { run(); return }
+                    let parts = spec.split(separator: ",").compactMap { Double($0) }
+                    guard parts.count == 2 else { run(); return }
+                    let h = win.contentView?.bounds.height ?? 720
+                    let inWindow = NSPoint(x: parts[0], y: h - CGFloat(parts[1]))
+                    let onScreen = win.convertPoint(toScreen: inWindow)
+                    let screenH = NSScreen.screens.first?.frame.height ?? 0
+                    let cg = CGPoint(x: onScreen.x, y: screenH - onScreen.y)
+                    // 命令行启动的进程不是 key window，先激活，否则第一击只会被用来激活窗口
+                    NSApp.activate(ignoringOtherApps: true)
+                    win.makeKeyAndOrderFront(nil)
+                    let hit = win.contentView?.hitTest(inWindow)
+                    self.probeLog("CLICK at=\(spec) windowPoint=\(inWindow) screen=\(cg) "
+                        + "hitView=\(hit.map { String(describing: type(of: $0)) } ?? "nil")")
+                    // 直接交给窗口分发：NSWindow.sendEvent 会自己做 hitTest 再派给命中的视图，
+                    // 这正是真实鼠标事件走的那条路。NSApp.postEvent 从 CGEvent 转出来的事件
+                    // window 为 nil，实测会被队列丢掉，测不出点击是否到达页面。
+                    let ts = ProcessInfo.processInfo.systemUptime
+                    for type in [NSEvent.EventType.leftMouseDown, NSEvent.EventType.leftMouseUp] {
+                        guard let ne = NSEvent.mouseEvent(with: type, location: inWindow,
+                                                          modifierFlags: [], timestamp: ts,
+                                                          windowNumber: win.windowNumber, context: nil,
+                                                          eventNumber: 0, clickCount: 1,
+                                                          pressure: type == .leftMouseDown ? 1 : 0)
+                        else { continue }
+                        win.sendEvent(ne)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        web?.evaluateJavaScript("JSON.stringify({clicks:window.__clicks||[],on:document.getElementById('confirm').classList.contains('on')})") { res, _ in
+                            self.probeLog("CLICK AFTER \(String(describing: res))")
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { run() }
+                    }
+                }
+                let finish = {
+                    withClick { self.renderSkeuoSnapshot(to: path) { NSApp.terminate(nil) } }
+                }
                 func afterJS(_ run: @escaping () -> Void) {
                     if let js = js, let web = web {
                         web.evaluateJavaScript(js) { _, _ in
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { run() }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25 + extraWait) { run() }
                         }
                     } else { run() }
                 }
@@ -4781,8 +4843,18 @@ final class SkeuoDragView: NSView {
     private var lastSent: TimeInterval = 0
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if point.x > 100 && point.x < bounds.width - 160 { return self }
-        return nil
+        // 重写 hitTest 会跳过系统自带的 bounds 检查，所以这里必须自己判 y。
+        // 旧版只判 x (100..width-160)、完全不判 y：drag 的 frame 明明只有顶部 34px，
+        // 却把窗口中下部同 x 区间的点击全吞了 —— 输入框点不进、确认卡片按钮点不了，
+        // 而木板右侧的叉叉 (x≈674 > width-160) 反而能点，正是这个区间差造成的。
+        // AppKit 传进来的 point 在不同调用路径下可能是父视图坐标系，也可能是自身坐标系，
+        // 两种都换算一遍，只要有一种确实落在这条标题带内才认领。
+        let fromParent = superview.map { convert(point, from: $0) } ?? point
+        func insideTitleBar(_ p: NSPoint) -> Bool {
+            p.y >= 0 && p.y <= bounds.height
+                && p.x > 100 && p.x < bounds.width - 160
+        }
+        return insideTitleBar(point) || insideTitleBar(fromParent) ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {

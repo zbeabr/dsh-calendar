@@ -163,3 +163,72 @@ DOM 从约 200 个节点降到 7 个，运行时噪声运算降到 0。
   5 组用例（首尾相接正反向 / 真重叠 / 秒级抖动 / 完全包含）全 PASS。
   **「先造一个真冲突、再改成不冲突」的端到端场景未在真实日历上复现**，别当已验证
 - 仍未人工验证：真实鼠标点击菜单、真实键盘按键手感、滚动手感、呼吸动感、减少动态效果开关
+
+---
+
+## 第十轮：SYS 误报解析错误 / 确认卡片点不了（2026-11-09，build 27）
+
+只改 `cal-app/App.swift`、`cal-app/Info.plist`。`skeuo.html`、后端、玻璃模式、产品功能全部未动。
+
+### 一、SYS 栏「明明认出了时间却报『没能从这句话里找到时间』」
+
+**不是「没有地点」**。灯阵里地点/重复/提醒灭着是对的，句子里本来就没写。
+
+根子在 Swift：`applyPreview()` 的**成功分支完全没碰 `hintLabel`**，而失败分支
+`resetPreview(message:error, isError:true)` 会把错误写进 `hintLabel`。打字过程中
+某一中间态（例如只写了「吃麻辣烫」）解析失败 → 错误留在 `hintLabel`；随后补上时间、
+解析成功 → 灯阵和 SYS 的识别文字更新了，但那条错误还在。`pushSkeuoState()` 取
+`[agendaNote, statusLabel, hintLabel]` 里第一个非空值当 `sys` 推给 WebView，
+JS 的 `updateSys()` 又把它接在识别文字后面 —— 就成了「`> 吃麻辣烫 · 11:35–12:05 ·
+学习 · 没能从这句话里找到时间…`」。上一轮加的 `clearStaleConflictHint()` 只清
+「这个时间和…」前缀的冲突告警，管不到解析错误。
+
+修法：新增 `parseErrorText` 记住最近一次失败文案；`resetPreview` 只在 `isError` 时记；
+`applyPreview` 成功分支先调 `clearStaleParseHint()` 精确撤掉（按文案相等匹配，
+不误伤「已删除 / 美化已开 / 冲突告警」），再走 `checkConflict()`。
+
+### 二、确认卡片「根本无法点击」
+
+DOM 层完全正常：真机探针 `elementFromPoint` 在「取消」/「摘下」中心分别命中
+`confirmNo` / `confirmYes`，`pointer-events` 都是 `auto`，z-index 200 在最上层。
+
+真正元凶是原生 `SkeuoDragView.hitTest`：
+
+```swift
+// 旧
+if point.x > 100 && point.x < bounds.width - 160 { return self }
+```
+
+重写 `hitTest` 会跳过系统自带的 bounds 检查，而这里**只判 x、完全不判 y**。
+drag 的 frame 明明只有顶部 34px，却把窗口中下部 x∈(100, 600) 的点击全吞了：
+
+- 木板叉叉 x≈674 > 600 → 放行，所以「点叉叉能弹出确认卡片」
+- 确认卡片按钮 x≈416 / 508 落在区间内 → 被吞，所以「卡片点不了」
+- 输入框中部 x≈380 也在区间内 → 这正是更早那轮「对话框只有部分区域能点」的同源问题
+
+修法：`hitTest` 补上 y / bounds 判断。AppKit 传进来的 point 在不同调用路径下可能是
+父视图坐标系或自身坐标系，两种都换算一遍，只有确实落在这条 34px 标题带内才认领；
+标题栏左右两端（红绿灯 / 状态灯）仍按原来的 x 区间放行。
+
+### 三、自检开关补齐（仅 `--snapshot` 生效）
+
+- `DSH_CAL_SNAP_CLICK="x,y"`：用 `NSWindow.sendEvent` 发一次真实鼠标事件
+  （CSS 坐标，左上原点），走完整原生命中测试；日志输出 `hitView` 和点击后的 DOM 状态。
+  注意 `NSApp.postEvent` 从 CGEvent 转出的事件 `window` 为 nil，实测会被队列丢掉，测不出来。
+- `DSH_CAL_SNAP_WAIT=<秒>`：JS 之后多等一会再拍，给「连续两次解析」这类时序留时间。
+
+### 四、验证（亲手跑过）
+
+- 真机 `--hitprobe` 视图树确认没有别的原生覆盖层；DOM 探针确认按钮命中正确
+- `DSH_CAL_SNAP_CLICK="416,418"` 日志：
+  `hitView=ClickThroughWebView`、`CLICK AFTER {"clicks":["del","confirmNo"],"on":false}`
+  —— 命中测试落到 WebView，真实事件命中「取消」并关闭弹层
+- `DSH_CAL_SNAP_CLICK="380,17"`（标题栏中部）：确认拖拽区仍归 `SkeuoDragView`
+- 时序复现：先输入「吃麻辣烫」（CLI 实测返回该报错），2.6s 后改成
+  「中午十一点三十五吃麻辣烫，半小时」（实测 11:35–12:05）。`DSH_CAL_SNAP_WAIT=6`
+  截图里 FINAL 只含识别文字 + 当前真实冲突提示，**不再含「没能从这句话里找到时间」**；
+  SYS 变化日志显示报错出现后被成功解析覆盖
+- 三时区 `npm test` 全绿（168+39+24+20+305）；`build.sh` 成功、签名校验通过
+
+**未验证**：真实人手用鼠标/触控板点按钮、拖窗手感（自检用的是合成事件走同一条
+`sendEvent → hitTest` 链路）、滚动手感、呼吸动感、减少动态效果开关。
