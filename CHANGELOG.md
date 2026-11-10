@@ -4,6 +4,75 @@
 
 ---
 
+## [未发布 · 本地] 真半透明：木板背后换成系统玻璃，透出桌面 — 2026-11-10（build 37）
+
+用户指出上一版「模糊背景」根本看不见后面的东西、和不透明没区别，并问 macOS 27.2
+有没有液态玻璃系统预设。**两条都是对的，上一版是我做错了。**
+
+- 系统确实有预设：SDK 里有 `NSGlassEffectView`（26.0+，`Style.regular/.clear`、
+  `tintColor`、`cornerRadius`，27.0+ 还有交互响应），项目玻璃模式用的
+  `NSVisualEffectView(.underWindowBackground, .behindWindow)` 是更早的系统预设。
+  窗口本身也早就 `isOpaque=false` / `backgroundColor=.clear`。
+- 上一版为什么不是半透明：拟物模式有三层把桌面挡死 —— `underPageBackgroundColor`
+  是不透明深灰，网页 `html/body/.desktop/.plank-area` 也全是不透明深色；
+  所谓「模糊」只是在糊网页自己画的那张假后窗。这次把三层一起让开。
+
+**做法（用户选「只木板背后透明」）**：设置页第 2 行换成「液态玻璃背景」，默认关。
+
+- 原生：`skeuoContainer` 里在 WebView 后面垫一层 `NSVisualEffectView`；
+  开关开时关掉 WKWebView 的 `drawsBackground`（KVC）、`underPageBackgroundColor=.clear`，
+  玻璃层显示。金属上半部 `.chrome` 保持不透明。
+- 网页：`html.liquid-bg` 下 html/body/.desktop 全透明、假后窗 `display:none`、
+  `.plank-area` 只留极淡暖色 tint 并去掉 `backdrop-filter`、底部雾层减弱。
+- 状态仍走 `pushSkeuoState` payload 的 `liquidBackdrop` 字段，页面重载可重放。
+  旧的 `blurBackdrop` 开关/键全部移除，废弃偏好也已在本机清理。
+- `Info.plist` 36→37（短版本仍 1.3.1），`VERSION=1.3.1-37`。
+
+**为什么最终没用 NSGlassEffectView**：实测它是「把 contentView 包进玻璃」的容器，
+contentView 为空时当整窗背景采不到桌面，合成快照里木板缝隙仍是一片黑；
+换成项目玻璃模式已验证的 `NSVisualEffectView(.behindWindow)` 后立刻透出明亮的
+桌面柔光。它更适合小片玻璃控件，不适合整窗垫层。
+
+**快照通道补了一条**：原 `renderSkeuoSnapshot` 用 `web.takeSnapshot()`，
+只导 WKWebView、透明处显示为空，验证不了半透明。新增
+`DSH_CAL_SNAP_COMPOSITE=1` 走 `CGWindowListCreateImage` 拍真实合成窗口（仅在
+--snapshot 自检；编译有一条 macOS 14 deprecated warning，不影响产品）。
+`DSH_CAL_SNAP_GLASS_BG=1` 在玻璃层下垫彩色测试底图并把 blending 改
+`.withinWindow`，用来证明透明链路；产品运行永远采真实桌面。
+
+验证（亲手跑过）：双架构 `swiftc -typecheck` exit=0、拟物页 script 语法 OK、
+`build.sh`、`codesign -v --deep --strict`、`x86_64 arm64`、包内 HTML 与源码
+sha256 一致、三时区 `npm test` 全绿（202+39+24+20+59+36+386）、audit 0/386。
+合成快照探针：
+
+```
+关： class=wood16          bodyBg=rgb(43,41,38)  desktopBgImg=linear-gradient(…)
+     plankAreaBg=rgba(58,55,51,.55)…  backWindowDisplay=block
+开： class=liquid-bg wood16 bodyBg=rgba(0,0,0,0) desktopBgImg=none
+     plankAreaBg=rgba(38,34,30,.1)…    backWindowDisplay=none
+```
+
+关着时缝隙是均匀深灰；打开后是明亮的浅灰白半透明，能看到桌面被系统玻璃柔化。
+自检彩色底图那一版能直接看到彩色条纹被虚化，证明透明链路确实通了。
+帧率（各自独立进程、激活窗口后 rAF 采样 10s）：
+
+```
+关  n=464 avg=17.3ms p95=19.0ms max=224.0ms >33=2
+开  n=481 avg=16.7ms p95=18.0ms max=20.0ms  >33=0
+```
+
+系统原生玻璃比上一版网页 `backdrop-filter` 更省，没有性能退化。
+所有临时 `defaults write` 验证跑完都已 `defaults delete`，默认仍是关。
+
+**三层可回滚**：① 设置页关掉开关即回到原样（默认就是关）；
+② `zsh <会话工作区>/rollback/switch.sh 36` 整包退回上一版（`37` 可切回）；
+③ 本地提交未 push 可 `git revert --no-edit`。四条红线不变。
+
+**未验证**：真人长时间滚动 / 拖窗口手感、不同壁纸与外接屏上的观感、
+设置页真人鼠标点开关手感、玻璃外观模式下此开关的行为（设计上不生效）。
+
+---
+
 ## [未发布 · 本地] 设置页新增「模糊背景」开关 — 2026-11-10（build 36）
 
 **先看效果，默认关闭，随时可退。** 拟物木板背后的背景可以在设置页切成半透明高斯模糊。
