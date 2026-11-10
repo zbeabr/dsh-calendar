@@ -75,7 +75,8 @@
 ### 状态
 
 本地提交，**未 push、未打 tag、未发 Release**；`dist/` 未动。
-本轮 3 笔，累计 `main` 领先 `origin/main` **6 笔**（上一节写的 3 笔已过时）。
+上一轮那 3 笔已经推到 `origin/main`（`f091b0c`），本轮 3 笔使 `main`
+领先 `origin/main` **3 笔**（上一节写的「领先 3 笔」是当时的状态，那 3 笔现已推送）。
 负责 push 的模型仍只需普通 `git push origin main`，四条红线不变：
 不 force、不动已发布 tag（`v1.1.0` … `v1.3.1`）、不新建 tag/Release、不改 `dist/`。
 
