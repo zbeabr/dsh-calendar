@@ -8,9 +8,11 @@
     "dsh-cal": "./cli.mjs"
   },
   "scripts": {
-    "test": "node parse-cases.mjs && node safety-cases.mjs && node caldav-cases.mjs && node llm-guard-cases.mjs && node parse-corpus.mjs",
+    "test": "node parse-cases.mjs && node safety-cases.mjs && node caldav-cases.mjs && node llm-guard-cases.mjs && node calendar-policy-cases.mjs && node calendar-model-cases.mjs && node parse-corpus.mjs",
     "test:llm": "node llm-cases.mjs",
     "test:llm-guard": "node llm-guard-cases.mjs",
+    "test:calendar-policy": "node calendar-policy-cases.mjs",
+    "test:calendar-model": "node calendar-model-cases.mjs",
     "login": "node cli.mjs login",
     "doctor": "node cli.mjs doctor",
     "mcp": "node mcp-server.mjs"

@@ -4,7 +4,8 @@
  */
 
 import { CalDav, CalDavError, newEventUid } from './caldav.mjs';
-import { needsRefine, refineWithModel } from './llm.mjs';
+import { resolveCalendar } from './calendar-policy.mjs';
+import { inferCalendarTag, needsRefine, refineWithModel } from './llm.mjs';
 import { parseEvent, toRrule } from './nlp.mjs';
 import {
   cachedCalendarNames, dequeueEvent, enqueueEvent, markAttempt, readCalendarCache, readConfig, readDeadLetter,
@@ -116,7 +117,23 @@ export async function addEvent(input = {}) {
     : toDate(end, '结束时间');
   if (endDate <= startDate) throw new Error('结束时间必须晚于开始时间');
 
-  const calendarName = calendar ?? config.calendar ?? undefined;
+  // 闭集决策：显式传入的日历 / 句子里的标签 > 本地模型归属 > 默认日历。
+  // 三者都必须精确命中标签库；库外名字绝不写进 CalDAV（旧实现会把
+  // 「#临时」一路透传，等 findCalendar 才报错，甚至被子串模糊静默投错日历）。
+  const known = cachedCalendarNames();
+  let suggestedTag;
+  // 只有完全没有任何显式意图时才问模型。App 预览阶段已经算过归属并传了
+  // --calendar，所以正常写入不会重复调模型；--fast（模型未就绪）也跳过。
+  if (!calendar && !tag && typeof input.text === 'string' && !input.noModel) {
+    suggestedTag = (await inferCalendarTag(input.text, { known }))?.tag;
+  }
+  const decision = resolveCalendar({
+    explicit: calendar ?? tag,
+    suggested: suggestedTag,
+    known,
+    fallback: config.calendar,
+  });
+  const calendarName = decision.calendar;
   const trimmedTitle = String(title).trim();
   const payload = {
     calendar: calendarName,
@@ -167,7 +184,9 @@ export async function addEvent(input = {}) {
       start: startDate.toISOString(),
       end: endDate.toISOString(),
       allDay: Boolean(allDay),
-      tag: tag ?? undefined,
+      tag: decision.calendar ?? undefined,
+      tagSource: decision.source,
+      ...(decision.rejected.length ? { tagRejected: decision.rejected } : {}),
       ...extras,
       // 队列文件坏了但已另存时，这件事必须让用户看见，不能吞掉
       ...(entry.warnings ? { warnings: entry.warnings } : {}),
@@ -186,7 +205,9 @@ export async function addEvent(input = {}) {
     start: startDate.toISOString(),
     end: endDate.toISOString(),
     allDay: Boolean(allDay),
-    tag: tag ?? undefined,
+    tag: decision.calendar ?? undefined,
+    tagSource: decision.source,
+    ...(decision.rejected.length ? { tagRejected: decision.rejected } : {}),
     ...extras,
     summary: `已添加到「${result.calendar}」：${trimmedTitle} ${formatRange(startDate, endDate)}${location ? ` @ ${location}` : ''}`,
   };

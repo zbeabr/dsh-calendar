@@ -16,7 +16,8 @@
  */
 
 import { createInterface } from 'node:readline';
-import { llmConfig, llmLastError, needsRefine, probeModel, refineWithModel } from './src/llm.mjs';
+import { AUTO_CANDIDATES, exactCalendarMatch, resolveCalendar } from './src/calendar-policy.mjs';
+import { inferCalendarTag, llmConfig, llmLastError, needsRefine, probeModel, refineWithModel } from './src/llm.mjs';
 import { parseEvent } from './src/nlp.mjs';
 import { cachedCalendarNames, configPath, KEYCHAIN_SERVICE, readConfig, redact, savePassword, writeConfig } from './src/store.mjs';
 import {
@@ -179,6 +180,31 @@ function nameList(flags) {
 }
 
 /**
+ * 只判断标签归属，不算时间、不写日历。
+ * App 在输入停顿 2 秒后调一次，结果再用 App 侧的白名单复核一遍。
+ */
+async function cmdTag(text, flags) {
+  if (!text) return fail('用法：node cli.mjs tag "明天晚上写作业" [--cals 学习,生活]');
+  const known = nameList(flags);
+  const candidates = AUTO_CANDIDATES.filter((name) => exactCalendarMatch(name, known));
+  const result = candidates.length
+    ? await inferCalendarTag(text, { known, candidates, force: Boolean(flags.llm) })
+    : undefined;
+  const payload = {
+    ok: true,
+    text,
+    tag: result?.tag ?? null,
+    source: result ? 'model' : 'unavailable',
+    candidates,
+    model: result?.model ?? null,
+    note: result ? null : (llmLastError.message ?? '模型未就绪或标签库里没有候选，回落默认日历'),
+  };
+  if (jsonMode) return out(payload);
+  console.log(result ? `标签：${result.tag}（本地模型）` : `标签：未指定（${payload.note}）`);
+  return undefined;
+}
+
+/**
  * 解析但不写入。
  *
  * 默认行为：规则解析 → 如果漏了地点且模型开着，再让模型补（`--fast` 跳过模型，`--llm` 强制用模型）。
@@ -205,6 +231,25 @@ async function cmdParse(text, flags) {
     );
   }
 
+  // parseEvent 忠实反映「用户原文里写了什么」，但给界面/写入用的 calendar
+  // 必须过闭集投影：库外标签（#临时）不能被当成已选中的日历显示出去。
+  // hasExplicitTag 保留纯解析事实，App 据此判断「用户写过标签，模型别顶替」。
+  // --tag 是 App 在「输入停顿 2 秒」后补发的一次解析：同一进程里顺带问一次
+  // 本地模型做标签归属，模型输出仍要过 resolveCalendar 的白名单。
+  let suggested;
+  if (flags.tag && !parsed.calendar) {
+    const candidates = AUTO_CANDIDATES.filter((name) => exactCalendarMatch(name, calendarNames));
+    suggested = candidates.length
+      ? (await inferCalendarTag(text, { known: calendarNames, candidates }))?.tag
+      : undefined;
+  }
+  const decision = resolveCalendar({
+    explicit: parsed.calendar,
+    suggested,
+    known: calendarNames,
+    fallback: undefined,
+  });
+
   const payload = {
     ok: true,
     title: refined?.title ?? parsed.title,
@@ -212,7 +257,9 @@ async function cmdParse(text, flags) {
     end: parsed.end.toISOString(),
     allDay: parsed.allDay,
     location: refined?.location ?? parsed.location ?? null,
-    calendar: parsed.calendar ?? null,
+    calendar: decision.calendar ?? null,
+    hasExplicitTag: Boolean(parsed.calendar),
+    calendarSource: decision.source,
     local: formatRange(parsed.start, parsed.end),
     defaultDuration: parsed.durationAssumed,
     rolled: Boolean(parsed.rolled),
@@ -411,6 +458,7 @@ async function main() {
       return undefined;
     }
     case 'add': return cmdAdd(rest.join(' '), flags);
+    case 'tag': return cmdTag(rest.join(' '), flags);
     case 'update': return cmdUpdate(rest[0], flags);
     case 'query': return cmdQuery(rest.join(' '), flags);
     case 'ls': {

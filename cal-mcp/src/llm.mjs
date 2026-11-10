@@ -12,6 +12,7 @@
  *   openai  —— 任何 OpenAI 兼容接口（豆包 Ark、DeepSeek、OpenAI），需要 apiKey
  */
 
+import { AUTO_CANDIDATES, UNSPECIFIED, exactCalendarMatch, projectModelTag } from './calendar-policy.mjs';
 import { readConfig } from './store.mjs';
 
 export const LLM_DEFAULTS = {
@@ -242,6 +243,79 @@ export function needsRefine(text, ruleResult = {}) {
   // 句子里有介词结构，却没解析出地点。「到」后跟钟点（三点到四点）不算介词。
   if (!ruleResult.location && /(?:在|去)|到(?![一二两三四五六七八九十0-9 ]*[0-9])/u.test(String(text ?? ''))) return true;
   return false;
+}
+
+/**
+ * 让本地模型判断一句话该归到哪个标签。
+ *
+ * 这是**闭集分类**而不是自由生成：提示词里只给出库内确实存在的自动归属候选，
+ * 输出回来后再由 projectModelTag 用代码卡一次白名单。实测 qwen3:8b 在不给候选时
+ * 会吐「饮食」「运动」「健康」「医疗」「作业」「休闲」，全是库外名字 —— 所以
+ * 提示词约束不能当成保证，代码这一层不能省。
+ *
+ * 任何失败（没开、没装、库里没有候选、超时、乱答、给了「未指定」）都返回
+ * undefined，调用方一律回落默认日历。绝不返回库外名字。
+ *
+ * @param {string} text 原句
+ * @param {{ known?: string[], candidates?: string[], force?: boolean }} [options]
+ * @returns {Promise<{ tag: string, source: 'model', model: string } | undefined>}
+ */
+export async function inferCalendarTag(text, options = {}) {
+  const config = llmConfig();
+  if (!config.enabled && !options.force) return undefined;
+  if (typeof text !== 'string' || text.trim() === '') return undefined;
+  if (!config.model) return undefined;
+  if (config.provider !== 'ollama' && !config.apiKey) return undefined;
+
+  const known = Array.isArray(options.known) ? options.known : [];
+  // 候选必须真的在标签库里，否则返回它也违反闭集不变量。
+  const allowed = (Array.isArray(options.candidates) ? options.candidates : AUTO_CANDIDATES)
+    .filter((name) => exactCalendarMatch(name, known));
+  if (allowed.length === 0) {
+    remember('标签库里没有自动归属候选，跳过模型');
+    return undefined;
+  }
+
+  const system = [
+    '你是日历标签分类器。用户说一句日程，判断它属于哪个标签。',
+    `可用的标签只有这些：${allowed.join('、')}。`,
+    '只能输出其中之一；如果实在判断不了，输出「未指定」。',
+    '严禁输出列表之外的任何名字，严禁发明新标签，严禁改写标签名。',
+    '输出一个 JSON 对象，不要解释、不要代码块：',
+    '{"tag":"标签名"} 或 {"tag":"未指定"}',
+    '',
+    '判断依据：上课、作业、复习、考试、论文、自习、看书、图书馆、学习相关 → 学习；',
+    '吃饭、睡觉、运动、买东西、取快递、聚会、看剧、家务、就医等日常 → 生活。',
+  ].join('\n');
+
+  const messages = [
+    { role: 'system', content: system },
+    { role: 'user', content: text },
+  ];
+
+  const controller = new AbortController();
+  // 归属只是给对话框一个提示，不能让一次写入等 25 秒。热态实测 280–470ms。
+  const timeoutMs = Math.max(1000, Math.min(Number(config.timeoutMs) || 25000, 6000));
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const raw = config.provider === 'ollama'
+      ? await callOllama(config, messages, controller.signal)
+      : await callOpenAI(config, messages, controller.signal);
+    const parsed = extractJson(raw);
+    if (!parsed) {
+      remember('模型没返回可解析的标签 JSON');
+      return undefined;
+    }
+    const tag = projectModelTag(parsed.tag ?? parsed.calendar ?? parsed.label, allowed);
+    if (!tag || tag === UNSPECIFIED) return undefined;
+    return { tag, source: 'model', model: `${config.provider}:${config.model}` };
+  } catch (error) {
+    remember(`标签归属失败：${error?.message ?? error}`);
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

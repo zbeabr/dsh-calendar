@@ -261,13 +261,24 @@ export class CalDav {
     return calendars;
   }
 
-  /** Find a calendar by display name (exact, then case-insensitive, then substring). */
-  async findCalendar(name, { create = false } = {}) {
+  /**
+   * Find a calendar by display name (exact, then case-insensitive, then substring).
+   *
+   * exactOnly 给**写入路径**用：只认全等（英文大小写可放宽），禁用 includes 子串。
+   * 旧的宽松匹配下 '课表' 会静默命中「课表-数学」—— 不报错但写错日历，
+   * 比直接报「找不到」更危险。查询/删除/修改仍保留原来的容错。
+   */
+  async findCalendar(name, { create = false, exactOnly = false } = {}) {
     const calendars = await this.listCalendars();
     if (!name) return calendars[0];
     const exact = calendars.find((calendar) => calendar.name === name);
     if (exact) return exact;
     const lower = name.toLowerCase();
+    if (exactOnly) {
+      const caseInsensitive = calendars.find((calendar) => calendar.name.toLowerCase() === lower);
+      if (caseInsensitive) return caseInsensitive;
+      throw new CalDavError(`找不到名为「${name}」的日历。现有：${calendars.map((c) => c.name).join('、')}`);
+    }
     const loose = calendars.find((calendar) => calendar.name.toLowerCase() === lower)
       ?? calendars.find((calendar) => calendar.name.toLowerCase().includes(lower));
     if (loose) return loose;
@@ -299,7 +310,8 @@ export class CalDav {
    * 提醒写进 VALARM 由系统日历负责弹，App 自己不需要通知权限。
    */
   async createEvent({ calendar, title, start, end, description, location, allDay = false, repeat, alarmMinutes, uid: givenUid }) {
-    const target = await this.findCalendar(calendar, { create: false });
+    // 写入必须精确命中：库外名字宁可报错，也不能靠子串模糊静默投进别的日历。
+    const target = await this.findCalendar(calendar, { create: false, exactOnly: true });
     if (!target.writable) throw new CalDavError(`日历「${target.name}」是只读的`);
 
     // uid 可以由调用方给（离线队列补发时复用入队时那一枚）。
