@@ -101,7 +101,12 @@ if [ -f "$ENGINE/cli.mjs" ]; then
   # 测试脚本不进包，package.json 里的 test* 入口也要跟着摘掉，否则包内 npm test 会找不到模块
   node "$HERE/../scripts/release-package-json.mjs" "$ENGINE/package.json" "$ENGINE_DST/package.json"
   cp "$ENGINE"/src/*.mjs "$ENGINE_DST/src/"
-  /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$HERE/Info.plist" > "$ENGINE_DST/VERSION"
+  # VERSION 必须带构建号。只写短版本时，同一个 1.3.x 里改了后端也不会触发
+  # ~/.local/share/dsh-cal 的自举重装（App.swift Bootstrap.ensure 只比 VERSION 字符串），
+  # 用户实际跑的还是旧引擎 —— 实测 build 33→34 时装机包已更新、自举副本仍是旧的。
+  SHORT_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$HERE/Info.plist")
+  BUILD_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$HERE/Info.plist")
+  printf '%s-%s\n' "$SHORT_VER" "$BUILD_VER" > "$ENGINE_DST/VERSION"
 else
   echo "  ⚠ 找不到 $ENGINE/cli.mjs，这份 App 不带后端（只能配已装好的后端用）"
 fi

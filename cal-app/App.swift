@@ -633,6 +633,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 用户手动改过下拉框，就不再被句子里的标签覆盖
     private var manualOverride = false
     private var detectedTag: String?
+    /// 句子里写过显式标签：本地模型不许顶替（实测 #临时 会被模型判成「学习」）
+    private var explicitTagPresent = false
+    /// 「输入停顿 2 秒」后才问一次的本地模型归属；每次改字都取消重排，
+    /// 避免 0.25s 的打字预览把 300~470ms 的模型请求堆叠起来
+    private var tagWork: DispatchWorkItem?
 
     // 主界面控件
     private var input: NSTextView?
@@ -1196,6 +1201,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                         self.addEvent()
                     } else {
                         self.parseNow()
+                        // 自检文字是直接赋值的，不走 textDidChange；补排一次 2 秒归属，
+                        // 好让玻璃模式也能在 --snapshot 下被验证到。
+                        self.scheduleTagInference(demo)
                     }
                 }
             case .success(let payload):
@@ -1571,8 +1579,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         }
     }
 
-    /// 让标签胶囊切到某个日历（列表里没有就补进去）
+    /// 让标签胶囊切到某个日历。只认标签库里确实存在的名字：
+    /// 旧实现把库外名字（#临时）直接当成已选日历显示，用户要等按回车才看到
+    /// 「找不到日历」，更糟的是后端子串模糊匹配会静默投进「课表-*」之类的日历。
+    /// 日历列表还没拉回来时放行，避免启动时把默认日历卡住。
     private func selectCalendar(_ name: String) {
+        guard calendars.isEmpty || calendars.contains(name) else { return }
         currentCalendar = name
         picker?.colors = calendarColors
         picker?.select(name)
@@ -1911,11 +1923,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         parseWork?.cancel()
         // 改了文字就重新识别标签，让句子里的标签重新生效
         manualOverride = false
+        explicitTagPresent = false
         // 光圈跟着呼吸一下：有反应，但不是闪烁
         inputCard?.pulseGlow()
         let work = DispatchWorkItem { [weak self] in self?.parseNow() }
         parseWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        scheduleTagInference(input?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
     }
 
     /// 只读本地队列，不碰网络
@@ -1961,8 +1975,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         }
     }
 
-    private func parseArgs(_ snapshot: String, model: Bool) -> [String] {
-        ["parse", snapshot, "--cals", calendars.joined(separator: ","), model ? "--llm" : "--fast", "--json"]
+    private func parseArgs(_ snapshot: String, model: Bool, tag: Bool = false) -> [String] {
+        var args = ["parse", snapshot, "--cals", calendars.joined(separator: ","), model ? "--llm" : "--fast"]
+        // --tag：输入停顿 2 秒后补发的那一次解析，顺带让本地模型判标签归属
+        if tag { args.append("--tag") }
+        args.append("--json")
+        return args
+    }
+
+    /// 输入停顿 2 秒后问一次本地模型。两个外观模式共用：玻璃版从 textDidChange
+    /// 调进来，拟物版的输入框是网页 <input>，由 requestSkeuoParse 转过来。
+    private func scheduleTagInference(_ snapshot: String) {
+        tagWork?.cancel()
+        tagWork = nil
+        debug("TAG schedule text=\(snapshot) manual=\(manualOverride) explicit=\(explicitTagPresent) phase=\(LocalModel.shared.phase) enabled=\(modelEnabled)")
+        guard !snapshot.isEmpty, !manualOverride, !explicitTagPresent else { return }
+        let work = DispatchWorkItem { [weak self] in self?.inferTagNow(snapshot) }
+        tagWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+    }
+
+    private func inferTagNow(_ snapshot: String) {
+        debug("TAG fire text=\(snapshot) phase=\(LocalModel.shared.phase) enabled=\(modelEnabled)")
+        guard !manualOverride, !explicitTagPresent,
+              modelEnabled || LocalModel.shared.phase == .ready else { return }
+        Engine.call(parseArgs(snapshot, model: false, tag: true)) { [weak self] result in
+            guard let self else { return }
+            // 回来时用户可能已经改了字：拿当前真实输入比对，旧结果直接丢
+            let current = self.skeuoMode
+                ? self.skeuoText
+                : (self.input?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+            guard current == snapshot, !self.manualOverride, !self.explicitTagPresent else {
+                self.debug("TAG dropped current=\(current) explicit=\(self.explicitTagPresent)")
+                return
+            }
+            if case .success(let payload) = result {
+                self.debug("TAG result calendar=\(payload["calendar"] ?? "nil") source=\(payload["calendarSource"] ?? "nil")")
+            } else {
+                self.debug("TAG result failed")
+            }
+            self.applyPreview(result)
+            if self.skeuoMode { self.pushSkeuoState() }
+        }
     }
 
     private func debug(_ text: String) {
@@ -2008,6 +2062,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             if payload["rolled"] as? Bool == true { when += "（顺延）" }
             let place = payload["location"] as? String ?? ""
             let tag = payload["calendar"] as? String ?? ""
+            explicitTagPresent = payload["hasExplicitTag"] as? Bool ?? false
+            let calendarSource = payload["calendarSource"] as? String ?? ""
 
             if tag.isEmpty {
                 detectedTag = nil
@@ -2034,7 +2090,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 chips.append((Format.repeatText(repeatInfo), "repeat"))
             }
             if !place.isEmpty { chips.append((place, "location")) }
-            chips.append((currentCalendar, "tag"))
+            // 模型判出来的标签标一下来源，让用户分得清「我写的」和「系统认的」
+            chips.append((calendarSource == "model" ? "\(currentCalendar) · 模型" : currentCalendar, "tag"))
             if let alarm = payload["alarmMinutes"] as? Int, alarm > 0 {
                 chips.append(("提前 \(alarm) 分钟", "alarm"))
             }
@@ -5287,6 +5344,10 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
     /// 否则快速打字会堆出四五个进程，最后返回顺序还可能乱。
     private func requestSkeuoParse(_ text: String) {
         skeuoText = text
+        // 拟物版的输入框是网页 <input>，没有 textDidChange；这里就是它的「改了字」入口。
+        // 同样重排 2 秒停顿的标签归属，两个外观模式用同一套调度。
+        explicitTagPresent = false
+        scheduleTagInference(text)
         if text.isEmpty {
             parseQueued = ""
             lastChips = []
