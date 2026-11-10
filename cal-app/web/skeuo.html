@@ -912,18 +912,25 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
 .confirm-btn:active{background:linear-gradient(180deg,#bdbdbd,#e2e2e2);box-shadow:inset 0 2px 4px rgba(0,0,0,.3)}
 .confirm-btn:focus-visible{outline:2px solid rgba(255,220,150,.9);outline-offset:2px}
 
-/* ===== 设置页开关：木板背后的半透明高斯模糊（默认关） =====
-   基线把 .plank-area 的 backdrop-filter 明确关掉了：整区实时模糊在滚动时会
-   逐帧重算，是当年卡顿的主因，所以改成「预模糊后窗 + 静态暖灰」。
-   这里保留那条基线作为默认，只在开关打开时恢复实时模糊，并把底色压得更透、
-   把后窗的预模糊调淡，让透上来的内容真的被虚化而不是蒙一层灰。
-   开关状态由 Swift 随 dshRender 的 state.blurBackdrop 推来，页面重载也会重放。 */
-html.blur-bg .plank-area{
-  -webkit-backdrop-filter:blur(18px) saturate(.88)!important;
-  backdrop-filter:blur(18px) saturate(.88)!important;
-  background:linear-gradient(180deg,rgba(58,55,51,.24) 0%,rgba(40,38,35,.38) 100%)!important;
+/* ===== 设置页开关：木板背后的系统液态玻璃（默认关） =====
+   真半透明要三层一起让开：网页根层、.desktop、.plank-area 全改透明，
+   原生侧同时关掉 WKWebView 的 drawsBackground / underPageBackgroundColor，
+   下面垫的是系统 NSGlassEffectView（26+）或 NSVisualEffectView 采到的桌面。
+   金属上半部 .chrome 有自己的背景，保持不透明 —— 用户选的「只木板背后透明」。
+   假后窗 .back-window 让位给真实桌面；.plank-area 只留极淡的暖色 tint
+   保证木板刻字仍读得清；底部雾层同步减弱，别把玻璃又盖回深色。 */
+html.liquid-bg,html.liquid-bg body{
+  background-color:transparent!important;background-image:none!important
 }
-html.blur-bg .back-window{filter:blur(1.5px)!important;opacity:.82!important}
+html.liquid-bg .desktop{background:transparent!important}
+html.liquid-bg .back-window{display:none!important}
+html.liquid-bg .plank-area{
+  -webkit-backdrop-filter:none!important;backdrop-filter:none!important;
+  background:linear-gradient(180deg,rgba(38,34,30,.10) 0%,rgba(28,25,22,.16) 100%)!important
+}
+html.liquid-bg .app-window::after{
+  background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.28))!important
+}
 </style>
 </head>
 <body>
@@ -2213,9 +2220,9 @@ document.querySelectorAll('.lamps .lamp').forEach(function(el, i){
 /* Swift → WebView：真实日程、系统提示、连接/模型状态 */
 let lastEventKey = '';
 window.dshRender = function(state){
-  /* 设置页「模糊背景」开关：状态随每次推送重放，页面重载后也不会丢 */
-  if (state.blurBackdrop != null){
-    document.documentElement.classList.toggle('blur-bg', !!state.blurBackdrop);
+  /* 设置页「液态玻璃背景」开关：状态随每次推送重放，页面重载后也不会丢 */
+  if (state.liquidBackdrop != null){
+    document.documentElement.classList.toggle('liquid-bg', !!state.liquidBackdrop);
   }
   /* 识别结果先更新：它每敲一个字都可能变，和木板列表无关 */
   if (state.chips) renderChips(state.chips);

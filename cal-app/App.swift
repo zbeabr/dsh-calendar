@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Network
 import WebKit
 
@@ -717,12 +718,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 挂在玻璃 shell 里的设置页完全盖住（实测 DSH_CAL_SKEUO=1 + FORCE_SETUP=settings）。
     /// 外观改动先记下，等 buildMain() 回到主界面再应用。
     private var settingsVisible = false
-    /// 木板背后是否用实时半透明高斯模糊（设置页开关，默认关）。
-    /// 关着时走原来的「预模糊后窗 + 静态暖灰」——那是当年为了滚动不卡做的取舍；
-    /// 打开才恢复 backdrop-filter，性能差异由用户自己看效果决定。
-    private var blurBackdrop: Bool {
-        UserDefaults.standard.bool(forKey: "blurBackdrop")
+    /// 木板背后是否换成系统玻璃、透出真实桌面（设置页开关，默认关）。
+    /// 关着时 WebView 不透明，走原来的「预模糊后窗 + 静态暖灰」；
+    /// 打开后 WebView 与网页根层一起让开，露出下面那层系统玻璃采到的桌面。
+    private var liquidBackdrop: Bool {
+        UserDefaults.standard.bool(forKey: "liquidBackdrop")
     }
+    /// 垫在拟物 WebView 后面的系统玻璃层，只木板缝隙透得出来。
+    private var skeuoGlassView: NSView?
     /// 日历名 → 颜色，给每条日程配左侧色条
     private var calendarColors: [String: NSColor] = [:]
     /// 刚写入的那条：列表刷新时闪一下，告诉用户「它真的进去了」
@@ -1764,10 +1767,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             y: 130
         ))
         root.addSubview(appearanceRow(
-            title: "模糊背景",
-            detail: "木板背后改半透明高斯模糊，仅拟物外观生效",
-            on: blurBackdrop,
-            action: #selector(settingsBlurChanged(_:)),
+            title: "液态玻璃背景",
+            detail: "木板背后透出真实桌面，系统玻璃材质（仅拟物外观）",
+            on: liquidBackdrop,
+            action: #selector(settingsLiquidChanged(_:)),
             y: 94
         ))
         root.addSubview(appearanceRow(
@@ -1824,24 +1827,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             : "已切到 Liquid Glass 外观，回到主界面生效。"
     }
 
-    /// 木板背后的半透明高斯模糊：只写偏好，立刻推给 WebView，回到主界面时
-    /// startSkeuoSync() 会带着这个字段再重放一次，页面重载也不会丢。
-    @objc private func settingsBlurChanged(_ sender: SoftSwitch) {
-        UserDefaults.standard.set(sender.on, forKey: "blurBackdrop")
-        applyBlurBackdrop()
-        skeuoLastPayload = ""
-        pushSkeuoState()
+    /// 液态玻璃背景：写偏好后立刻切三层（原生玻璃 / WebView 透明度 / 网页根层），
+    /// 状态也随 payload 重放，页面重载或回到主界面都不会丢。
+    @objc private func settingsLiquidChanged(_ sender: SoftSwitch) {
+        UserDefaults.standard.set(sender.on, forKey: "liquidBackdrop")
+        applyLiquidBackdrop()
         setupStatus?.stringValue = sender.on
-            ? "已开启模糊背景，回到主界面生效；滚动时可能略降帧率。"
-            : "已关闭模糊背景，回到主界面生效。"
-    }
-
-    /// 设置页里直接切也立刻见效（不等 0.6s 轮询）；WebView 不在视图树时
-    /// evaluateJavaScript 仍然有效，失败也无所谓，主界面会重放状态。
-    private func applyBlurBackdrop() {
-        guard let web = skeuoWebView else { return }
-        let on = blurBackdrop ? "true" : "false"
-        web.evaluateJavaScript("document.documentElement.classList.toggle('blur-bg', \(on))") { _, _ in }
+            ? "已开启液态玻璃背景：木板缝隙会透出桌面。"
+            : "已关闭液态玻璃背景，回到原来的深色木板底。"
     }
 
     @objc private func settingsTintChanged(_ sender: SoftSwitch) {
@@ -5320,6 +5313,16 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
 
         let container = NSView(frame: bounds)
         container.wantsLayer = true
+        // 自检专用：离屏快照采不到窗口后面的桌面，垫一张彩色底图来证明
+        // 「WebView 真的透了」。日常运行不创建它，玻璃采的是真实桌面。
+        if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_GLASS_BG"] == "1" {
+            container.addSubview(makeGlassProbeBackdrop(frame: bounds))
+        }
+        // 系统玻璃垫在 WebView 后面；开关关着时整层隐藏，维持原来的不透明深灰。
+        let glass = makeSkeuoGlassView(frame: bounds)
+        glass.isHidden = !liquidBackdrop
+        container.addSubview(glass)
+        skeuoGlassView = glass
         container.addSubview(web)
 
         // 只占标题栏「中间可拖」的那一段：左边 100px 留给红绿灯，右边 160px 留给状态灯。
@@ -5344,7 +5347,69 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         skeuoWebView = web
         skeuoContainer = container
         loadSkeuoHTML(into: web)
+        applyLiquidBackdrop()     // 启动时按偏好设好 WebView 透明度与玻璃层
         return container
+    }
+
+    /// 系统玻璃层：NSVisualEffectView(.underWindowBackground, .behindWindow)，
+    /// 与玻璃外观模式同一套系统预设，采窗口后面的真实桌面。
+    ///
+    /// 自检快照走离屏 cacheDisplay，采不到窗口后面的桌面，这时改
+    /// .withinWindow 采同窗口的彩色测试底图，用来证明透明链路通了。
+    private func makeSkeuoGlassView(frame: NSRect) -> NSView {
+        if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_GLASS_BG"] == "1" {
+            let fx = NSVisualEffectView(frame: frame)
+            fx.material = .underWindowBackground
+            fx.blendingMode = .withinWindow
+            fx.state = .active
+            fx.autoresizingMask = [.width, .height]
+            return fx
+        }
+        // 实测：NSGlassEffectView（26+ 的 Liquid Glass 预设）是「把 contentView
+        // 包进玻璃」的容器视图，contentView 为空时当整窗背景垫层采不到桌面，
+        // 合成快照里木板缝隙仍是一片黑。整窗大块玻璃改用项目玻璃模式已验证的
+        // NSVisualEffectView：.underWindowBackground + .behindWindow 采窗口后面
+        // 的真实桌面，并做系统 vibrancy 提亮。NSGlassEffectView 更适合小片控件。
+        let fx = NSVisualEffectView(frame: frame)
+        fx.material = .underWindowBackground
+        fx.blendingMode = .behindWindow
+        fx.state = .active
+        fx.autoresizingMask = [.width, .height]
+        return fx
+    }
+
+    private func makeGlassProbeBackdrop(frame: NSRect) -> NSView {
+        let root = NSView(frame: frame)
+        root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor(calibratedRed: 0.94, green: 0.88, blue: 0.76, alpha: 1).cgColor
+        let colors: [NSColor] = [.systemBlue, .systemGreen, .systemOrange, .systemPurple, .systemRed]
+        let stripeWidth = frame.width / CGFloat(colors.count)
+        for (index, color) in colors.enumerated() {
+            let stripe = NSView(frame: NSRect(x: CGFloat(index) * stripeWidth, y: 0,
+                                             width: stripeWidth, height: frame.height))
+            stripe.wantsLayer = true
+            stripe.layer?.backgroundColor = color.withAlphaComponent(0.62).cgColor
+            root.addSubview(stripe)
+        }
+        return root
+    }
+
+    /// 开关变化时（以及启动时）把三层一起切：原生玻璃层显隐、WebView 自身透明度、
+    /// 网页根层背景。少切一层都会退化成「换了一种灰」而不是真半透明。
+    private func applyLiquidBackdrop() {
+        let on = liquidBackdrop
+        skeuoGlassView?.isHidden = !on
+        guard let web = skeuoWebView else { return }
+        // WKWebView 在 macOS 上把 drawsBackground 暴露成 KVC 兼容属性（非公开 API）。
+        // 不关掉它，网页里 transparent 的地方会露出 WebView 自带的不透明底色。
+        web.setValue(!on, forKey: "drawsBackground")
+        web.underPageBackgroundColor = on
+            ? .clear
+            : NSColor(calibratedRed: 0.169, green: 0.161, blue: 0.149, alpha: 1)
+        let js = "document.documentElement.classList.toggle('liquid-bg', \(on ? "true" : "false"))"
+        web.evaluateJavaScript(js) { _, _ in }
+        skeuoLastPayload = ""     // 让下一轮 payload 带着 liquidBackdrop 重放
+        pushSkeuoState()
     }
 
     private func loadSkeuoHTML(into web: WKWebView) {
@@ -5447,9 +5512,9 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
             "sys": sys,
             "chips": lastChips,
             "status": ["online": !offline && !forceOffline, "modelOnline": modelOnline],
-            // 设置页「模糊背景」开关：随状态一起推，网页侧 toggle html.blur-bg。
+            // 设置页「液态玻璃背景」开关：随状态一起推，网页侧 toggle html.liquid-bg。
             // 放进 payload 而不是只靠一次性 JS 注入，是为了页面重载后能重放。
-            "blurBackdrop": blurBackdrop,
+            "liquidBackdrop": liquidBackdrop,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: state, options: []),
               let json = String(data: data, encoding: .utf8),
@@ -5516,8 +5581,26 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         }
     }
 
-    /// 自检：WKWebView 的内容不在 AppKit 的离屏位图里，得单独导出
+    /// 自检：WKWebView 的内容不在 AppKit 的离屏位图里，得单独导出。
+    ///
+    /// DSH_CAL_SNAP_COMPOSITE=1 改拍「真实合成后的窗口」：CGWindowListCreateImage
+    /// 会把 WebView 后面的原生玻璃层（以及它采到的桌面/自检彩色底图）一起拍进来。
+    /// 普通的 takeSnapshot 只导 WKWebView 自己，网页透明处会变成空，
+    /// 因此验证不了半透明；这条分支只给 --snapshot 自检用，不影响产品。
     func renderSkeuoSnapshot(to path: String, done: @escaping () -> Void) {
+        if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_COMPOSITE"] == "1",
+           let win = window {
+            let options: CGWindowImageOption = [.boundsIgnoreFraming, .bestResolution]
+            if let cg = CGWindowListCreateImage(.null, .optionIncludingWindow,
+                                                UInt32(win.windowNumber), options) {
+                let rep = NSBitmapImageRep(cgImage: cg)
+                if let data = rep.representation(using: .png, properties: [:]) {
+                    try? data.write(to: URL(fileURLWithPath: path))
+                }
+            }
+            done()
+            return
+        }
         guard let web = skeuoWebView else { done(); return }
         web.takeSnapshot(with: nil) { image, _ in
             defer { done() }
