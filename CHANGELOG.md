@@ -4,6 +4,61 @@
 
 ---
 
+## [未发布 · 本地] 设置页新增「模糊背景」开关 — 2026-11-10（build 36）
+
+**先看效果，默认关闭，随时可退。** 拟物木板背后的背景可以在设置页切成半透明高斯模糊。
+
+- 基线里 `.plank-area` 原本有 `backdrop-filter:blur(20px)`，后来被一段带 `!important`
+  的规则明确关掉，注释写着「滚动时不实时做整区高斯模糊 —— 那是卡顿的主因」，
+  改成「预模糊后窗 + 静态暖灰」。这次不推翻那条取舍，只在 `html.blur-bg` 下
+  恢复实时模糊（18px + saturate .88）、把底色从 `.55/.78` 压到 `.24/.38` 更透，
+  并把后窗预模糊从 6px 降到 1.5px、透明度 .6→.82，让透上来的内容真被虚化。
+- 设置页「外观」区从 3 行变 4 行：全拟物外观 / **模糊背景** / 输入框染色 / 输入框光圈；
+  `buildSetup` 的 `lift` 136→172，窗口高 466→502，实测四行开关完整、无截断。
+- 开关只写 `UserDefaults(blurBackdrop)`，状态放进 `pushSkeuoState` 的 payload，
+  网页 `dshRender` 里 `toggle('blur-bg')`。放进 payload 而不是一次性 JS 注入，
+  是为了页面重载 / 回到主界面后能重放；设置页里切换也会立刻 `evaluateJavaScript` 一次。
+- 仅拟物外观生效；玻璃模式没有木板列表，开关留着但不产生视觉变化。
+- `Info.plist` `CFBundleVersion` 35→36（短版本仍 `1.3.1`），`VERSION=1.3.1-36`。
+
+**验证（亲手跑过）**：双架构 `swiftc -typecheck` exit=0、拟物页 script 语法 OK、
+`build.sh` 成功、`codesign -v --deep --strict` 通过、`x86_64 arm64`、
+包内 `skeuo.html` 与源码 sha256 一致。快照探针原始输出：
+
+```
+关： class=wood16                backdrop=none
+     areaBg=rgba(58,55,51,.55)   backWindowFilter=blur(6px)  opacity=.6
+开： class=wood16 blur-bg        backdrop=blur(18px) saturate(.88)
+     areaBg=rgba(58,55,51,.24)   backWindowFilter=blur(1.5px) opacity=.82
+```
+
+关着时木板缝隙是均匀深灰；打开后透出被柔化的浅色后窗（连蓝色条带都被虚化）。
+真实链路另验一次：临时 `defaults write app.dsh.calendar blurBackdrop -bool true`
+后不注入任何 JS 跑快照，仍得到 `class=blur-bg wood16` / `backdrop=blur(18px)`；
+**跑完已 `defaults delete` 恢复，默认仍是关**。
+
+帧率对照（同一进程先关 4.2s 再开 4.8s，激活窗口后 rAF 采样）：
+
+```
+OFF  n=248 avg=17.0ms p95=19.0ms max=87.0ms  >33=1
+ON   n=271 avg=17.7ms p95=19.8ms max=309.0ms >33=1
+```
+
+稳态基本持平（约 57–59fps），但**切换到开的那一瞬间有一次 309ms 长帧**，
+是 backdrop-filter 首次建立合成层的开销，不是持续掉帧。三时区 `npm test`
+全绿（202+39+24+20+59+36+386），`--audit` 可疑 0/386。
+
+**三层可回滚**：① 设置页把「模糊背景」关掉即回到原样（本来默认就是关）；
+② `zsh <会话工作区>/rollback/switch.sh 35` 整包退回 build 35（无此开关），
+`switch.sh 36` 可再切回来；③ 本轮本地提交尚未 push，可 `git revert --no-edit`
+或在未推送范围内 reset。四条红线不变：不 force、不动已发布 tag、不新建 tag/Release、不改 `dist/`。
+
+**未验证**：真人连续滚动 / 拖动窗口时的长时间手感（探针是静止页面采 rAF）、
+不同窗口尺寸与外接屏上的模糊观感、真机 Dock 观感；设置页真人点击开关的手感
+（验证的是偏好链路与布局截图，不是真人鼠标）。
+
+---
+
 ## [未发布 · 本地] 修拟物木板晃动延迟 — 2026-11-10（build 35）
 
 用户报「拖动窗口时木板先不动、停了才开始晃」，进一步定位为
