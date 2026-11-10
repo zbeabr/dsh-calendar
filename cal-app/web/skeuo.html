@@ -1618,8 +1618,12 @@ function selectSlot(uid){
   updateSys();
 }
 function doDelete(uid){
+  /* 乐观摘板：CalDAV DELETE 加上随后那次 ls 实测要 5~8 秒，等服务端回来再重绘，
+     用户看到的就是「点了确认没反应」，于是再确认一次、还觉得整个界面卡住。
+     先从本地列表摘掉并立刻重绘，原生那边同步摘 agenda，网络请求在后台慢慢跑。 */
+  items = items.filter(function(x){ return x.uid !== uid; });
+  render(-1);
   if (bridged) post({type:'delete', uid:uid});
-  else { items = items.filter(function(x){ return x.uid !== uid; }); render(-1); }
 }
 function openConfirm(uid){
   const it = findItem(uid);
@@ -2114,7 +2118,14 @@ function setSys(text){
   updateSys();
 }
 
+/* 中文输入法组字态：拼音还挂在输入框里时按回车是「选候选字」。
+   旧版 keydown 只看 e.key === 'Enter' 就 submit()，于是打「d」选字直接挂了日程。
+   这两个标志同时给 submit() 和 keydown 用，连点添加按钮时也挡一下。 */
+let phraseComposing = false;
+let phraseJustEnded = false;
+
 function submit(){
+  if (phraseComposing || phraseJustEnded) return;
   const el = document.getElementById('phrase');
   const text = el.value.trim();
   if (!text) return;
@@ -2137,7 +2148,26 @@ function submit(){
   }
 }
 document.getElementById('add').addEventListener('click', submit);
-document.getElementById('phrase').addEventListener('keydown', function(e){ if (e.key === 'Enter') submit(); });
+/* 三道一起挡组字态：compositionstart/end 自维护标志、e.isComposing、
+   以及输入法处理中的 keyCode 229（WKWebView 里 isComposing 不是每个输入法都可靠）。
+   compositionend 常常紧跟在选字那次 keydown 之前派发，用 justEnded + 0ms 定时器
+   跨过同一轮按键，否则「选完字顺手提交」还是会发生。 */
+(function(){
+  const input = document.getElementById('phrase');
+  if (!input) return;
+  input.addEventListener('compositionstart', function(){ phraseComposing = true; });
+  input.addEventListener('compositionend', function(){
+    phraseComposing = false;
+    phraseJustEnded = true;
+    setTimeout(function(){ phraseJustEnded = false; }, 0);
+  });
+  input.addEventListener('keydown', function(e){
+    if (e.key !== 'Enter') return;
+    if (phraseComposing || e.isComposing || e.keyCode === 229 || phraseJustEnded) return;
+    e.preventDefault();
+    submit();
+  });
+})();
 
 /* 边打字边识别：把这一句推给原生，走和玻璃版同一个解析器，结果作为小牌推回来。
    为什么不是页面自己解析：时间、地点、日历标签、顺延……那一整套判断都在 node 后端里，

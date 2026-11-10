@@ -638,6 +638,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var input: NSTextView?
     /// 一次写入在飞时挡住后续的回车/点击：连按两次回车会各发一次 add，建出两条一样的日程
     private var isAdding = false
+    /// 正在删除的 uid：一次删除在飞时挡住重复点击（网页已弹确认，但用户可能连点）
+    private var deletingUids: Set<String> = []
     private var placeholderLabel: NSTextField?
     private var inputCard: CardView?
     private var chipRow: NSView?
@@ -1890,9 +1892,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         inputCard?.focused = false
     }
 
-    /// 回车即写入，不用去够按钮
+    /// 回车即写入，不用去够按钮。
+    /// 但中文输入法的组字态里，回车是「选候选字」：打拼音「d」按回车选字时
+    /// hasMarkedText() 仍为 true，以前无条件 addEvent() 就直接挂了一条日程。
+    /// 组字态下把回车吞掉（返回 true 表示已处理，但什么都不做），
+    /// 交给输入法完成上屏；选完字后再按一次回车才是真的提交。
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            guard !textView.hasMarkedText() else { return true }
             addEvent()
             return true
         }
@@ -2361,14 +2368,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     }
 
     private func deleteItem(_ item: AgendaItem) {
+        guard !deletingUids.contains(item.uid) else { return }
+        deletingUids.insert(item.uid)
+
+        /* 乐观更新：CalDAV DELETE 加上成功后那次 ls（14 个日历逐个拉）实测要 5~8 秒。
+           以前只在网络回来后才 refreshAgenda()，这段时间里木板一动不动，
+           用户以为没删成、又确认一次，还觉得整个界面卡住了。
+           现在先把条目从本地摘掉并立刻重绘，网络请求在后台慢慢跑；失败整份回滚。 */
+        let backup = agenda
+        agenda.removeAll { $0.uid == item.uid }
+        renderAgenda()
+        if skeuoMode { pushSkeuoState() }
+        hintLabel?.textColor = .secondaryLabelColor
+        hintLabel?.stringValue = "正在删除「\(item.title)」…"
+
         Engine.call(["rm", item.uid, "--json"]) { [weak self] result in
             guard let self else { return }
+            self.deletingUids.remove(item.uid)
             switch result {
             case .success(let payload) where (payload["ok"] as? Bool) == true:
                 self.hintLabel?.textColor = .secondaryLabelColor
                 self.hintLabel?.stringValue = "已删除「\(item.title)」"
                 self.refreshAgenda()
             default:
+                // 没删成就把木板放回去，界面不能骗人
+                self.agenda = backup
+                self.renderAgenda()
+                if self.skeuoMode { self.pushSkeuoState() }
                 self.hintLabel?.textColor = .systemRed
                 self.hintLabel?.stringValue = "删除失败，可能已经不在日历里了"
             }
@@ -2445,6 +2471,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
     @objc private func addEvent() {
         guard let input else { return }
+        // 组字态一律不算提交：除了 doCommandBy 那条路径，还要挡住
+        // 「候选窗还开着就点了添加按钮」和拟物页发来的 submit 消息。
+        guard !input.hasMarkedText() else { return }
         // 连按两次回车时，第二次往往还停在防抖前面，照样会再发一次 add。
         // 这里只让一次写入在飞，回来后才解锁（见 send 的回调）。
         guard !isAdding else { return }
