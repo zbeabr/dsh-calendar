@@ -1471,6 +1471,7 @@ const ropeBox = document.getElementById('ropes');
 let segs = [];            // [{els:[左,右], top, h}]
 let tails = [];           // 两根绳末端的贴图：必须和末段绳同一个旋转中心，否则绳在晃、尾巴钉着
 let plankEls = [];        // 与 nodes 一一对应的 .plank 元素
+let slotEls = [];         // 与 nodes 一一对应的 .slot 元素，用来找「可见区第一块」
 
 function buildRopes(){
   const area = document.getElementById('planks');
@@ -1832,6 +1833,8 @@ function rigSync(){
   const list = Array.prototype.slice.call(area.querySelectorAll('.slot:not(.out)'));
   order = list.map(function(el){ return el.dataset.uid; });
   plankEls = list.map(function(el){ return el.querySelector('.plank'); });
+  slotEls = list;
+  visAt = -1e9;   // 列表重排了，可见区第一块要重算，别用缓存
   placeWood();   // 顺序变了，哪块用哪条纹理要重算
 
   /* 孔里那截绳的捻纹相位，按「孔心的页面绝对 y」对齐孔外那些段。
@@ -2249,6 +2252,35 @@ window.dshSys = setSys;
    两个轴都要用上：横向直接决定板子往哪边甩；纵向（上下抽动窗口）在物理上
    是让绳的张力周期性变化 —— 参数共振，正是垂直驱动单摆会横向摆起来的原因，
    所以纵向加速度也给一份横向冲量，系数约为横向的四成半，指向取负号。 */
+
+/* 传导起点跟着视野走，而不是钉死在列表第 0 块。
+   原来 delay 按绝对索引 i 累加：24 块木板时每级 82/1.3≈63ms，滚到中间
+   看到的那一片要等 0.5~1.0s 才收到冲量，短拖动结束后还在陆续兑现，
+   现场就是「拖的时候不动、停了才开始晃」。物理上波确实沿绳往下传，
+   但视野里的第一块并不是绳子的固定端 —— 固定端早滚到屏幕外了。
+   把起点挪到当前可见的第一块：视野里立刻响应，往下仍依次传导。 */
+let visIndex = 0, visAt = -1e9, visScroll = -1;
+function firstVisibleIndex(){
+  const now = performance.now();
+  const sc = document.scrollingElement || document.documentElement;
+  const sTop = sc.scrollTop;
+  // 缓存 100ms 免得拖动中反复读 rect，但滚动一变必须立刻失效：
+  // 否则刚滚到中间就拖窗口，头 100ms 还拿上一屏的第 0 块当起点。
+  if (now - visAt < 100 && sTop === visScroll) return visIndex;
+  const area = document.getElementById('planks');
+  const top = area ? Math.max(0, area.getBoundingClientRect().top) : 0;
+  let found = 0;
+  for (let i = 0; i < slotEls.length; i += 1){
+    const el = slotEls[i];
+    if (!el.isConnected) continue;
+    if (el.getBoundingClientRect().bottom > top + 2){ found = i; break; }
+  }
+  visIndex = found;
+  visAt = now;
+  visScroll = sTop;
+  return found;
+}
+
 window.dshSwing = function(vx, vy){
   if (reduced) return;
   if (typeof vx !== 'number'){          // 老调用方式，给一个轻推
@@ -2272,14 +2304,20 @@ window.dshSwing = function(vx, vy){
      比横向迟钝太多，收到 0.075 让两轴手感接近（纵向仍略轻，符合它只是
      参数共振、不是主驱动的物理地位）。 */
   const imp = Math.max(-180, Math.min(180, -dvx * 0.12 - dvy * 0.075));
+  const base = firstVisibleIndex();
+  const STEP = (PH + GAP) / WAVE;
+  /* 视野下方很远的木板不必排到一秒开外：那些迟到冲量会在短拖动结束后
+     才陆续兑现，正是「拖完了还在晃」的另一半来源。封顶不影响可见区手感，
+     可见的那一屏仍按 63ms/级依次传导。 */
+  const MAX_DELAY = 480;
   for (let i = 0; i < nodes.length; i += 1){
     const s = nodes[i];
     const vv = imp * (0.86 + ((i * 7) % 5) / 14);   // 极小的个体差异，破掉完全同步
-    /* 冲量沿绳往下传：越靠下越晚收到。
+    /* 冲量沿绳往下传：越靠下越晚收到，但起点是当前可见的第一块。
        原来所有质量点在同一帧同时被推，整列就像一个刚体在平移；
        这是「晃动太假」的另一半原因。按 y 距离给一个几十毫秒的延迟，
        看起来才像从挂杆一路甩下去。 */
-    const delay = (i * (PH + GAP)) / WAVE;
+    const delay = Math.min(MAX_DELAY, Math.max(0, i - base) * STEP);
     const at = now + Math.max(0, delay);
     if (!s.q) s.q = [];
     s.q.push({ at: at, v: vv });
