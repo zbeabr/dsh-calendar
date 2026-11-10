@@ -717,6 +717,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 挂在玻璃 shell 里的设置页完全盖住（实测 DSH_CAL_SKEUO=1 + FORCE_SETUP=settings）。
     /// 外观改动先记下，等 buildMain() 回到主界面再应用。
     private var settingsVisible = false
+    /// 木板背后是否用实时半透明高斯模糊（设置页开关，默认关）。
+    /// 关着时走原来的「预模糊后窗 + 静态暖灰」——那是当年为了滚动不卡做的取舍；
+    /// 打开才恢复 backdrop-filter，性能差异由用户自己看效果决定。
+    private var blurBackdrop: Bool {
+        UserDefaults.standard.bool(forKey: "blurBackdrop")
+    }
     /// 日历名 → 颜色，给每条日程配左侧色条
     private var calendarColors: [String: NSColor] = [:]
     /// 刚写入的那条：列表刷新时闪一下，告诉用户「它真的进去了」
@@ -1667,8 +1673,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         noteColor: NSColor = .systemRed,
         showsAppearance: Bool = false
     ) {
-        // 从「设置…」打开时，底下多一块外观开关；首次连接时不需要，留白就好
-        let lift: CGFloat = showsAppearance ? 136 : 0
+        // 从「设置…」打开时，底下多一块外观开关；首次连接时不需要，留白就好。
+        // 外观区现在是 4 行（多一行「模糊背景」），多留 36pt 免得压到上面的状态栏。
+        let lift: CGFloat = showsAppearance ? 172 : 0
         let height: CGFloat = 330 + lift
 
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: height))
@@ -1741,12 +1748,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 界面等回到主界面再切（见 settingsAppearanceChanged / buildMain），
     /// 否则用户还在填账号密码，设置页会「啪」地消失。
     private func buildAppearanceSection(in root: NSView) {
-        let divider = NSBox(frame: NSRect(x: 24, y: 154, width: 512, height: 1))
+        let divider = NSBox(frame: NSRect(x: 24, y: 190, width: 512, height: 1))
         divider.boxType = .separator
         root.addSubview(divider)
 
         let caption = makeLabel("外观", size: 12, weight: .semibold, color: .secondaryLabelColor)
-        caption.frame = NSRect(x: 24, y: 128, width: 120, height: 18)
+        caption.frame = NSRect(x: 24, y: 164, width: 120, height: 18)
         root.addSubview(caption)
 
         root.addSubview(appearanceRow(
@@ -1754,6 +1761,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             detail: "金属板 / 木板 / 绿磷光屏，Dock 图标同步切换",
             on: skeuoMode,
             action: #selector(settingsAppearanceChanged(_:)),
+            y: 130
+        ))
+        root.addSubview(appearanceRow(
+            title: "模糊背景",
+            detail: "木板背后改半透明高斯模糊，仅拟物外观生效",
+            on: blurBackdrop,
+            action: #selector(settingsBlurChanged(_:)),
             y: 94
         ))
         root.addSubview(appearanceRow(
@@ -1808,6 +1822,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         setupStatus?.stringValue = sender.on
             ? "已切到全拟物外观，回到主界面生效。"
             : "已切到 Liquid Glass 外观，回到主界面生效。"
+    }
+
+    /// 木板背后的半透明高斯模糊：只写偏好，立刻推给 WebView，回到主界面时
+    /// startSkeuoSync() 会带着这个字段再重放一次，页面重载也不会丢。
+    @objc private func settingsBlurChanged(_ sender: SoftSwitch) {
+        UserDefaults.standard.set(sender.on, forKey: "blurBackdrop")
+        applyBlurBackdrop()
+        skeuoLastPayload = ""
+        pushSkeuoState()
+        setupStatus?.stringValue = sender.on
+            ? "已开启模糊背景，回到主界面生效；滚动时可能略降帧率。"
+            : "已关闭模糊背景，回到主界面生效。"
+    }
+
+    /// 设置页里直接切也立刻见效（不等 0.6s 轮询）；WebView 不在视图树时
+    /// evaluateJavaScript 仍然有效，失败也无所谓，主界面会重放状态。
+    private func applyBlurBackdrop() {
+        guard let web = skeuoWebView else { return }
+        let on = blurBackdrop ? "true" : "false"
+        web.evaluateJavaScript("document.documentElement.classList.toggle('blur-bg', \(on))") { _, _ in }
     }
 
     @objc private func settingsTintChanged(_ sender: SoftSwitch) {
@@ -5413,6 +5447,9 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
             "sys": sys,
             "chips": lastChips,
             "status": ["online": !offline && !forceOffline, "modelOnline": modelOnline],
+            // 设置页「模糊背景」开关：随状态一起推，网页侧 toggle html.blur-bg。
+            // 放进 payload 而不是只靠一次性 JS 注入，是为了页面重载后能重放。
+            "blurBackdrop": blurBackdrop,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: state, options: []),
               let json = String(data: data, encoding: .utf8),
