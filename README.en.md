@@ -51,6 +51,12 @@ There is no terminal step and no script to run: the app ships with the whole par
 
 It must be an **app-specific password** (looks like `abcd-efgh-ijkl-mnop`), not your account password, and two-factor authentication has to be enabled. The password is stored in the system Keychain (service `dsh-cal`) and never written to a config file.
 
+> **Mainland China Apple IDs** live on a different backend (`caldav.icloud.com.cn`, operated by GCBD).
+> You do not have to configure anything: if the first endpoint rejects the credentials, the app retries
+> the other region once, then records the working address in `config.json` — `dsh-cal doctor` shows
+> which server it ended up using. If both refuse, it is the password: only the 16-character
+> app-specific password works here.
+
 ---
 
 ## What it understands

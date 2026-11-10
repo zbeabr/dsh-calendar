@@ -48,6 +48,11 @@
 
 要的是 **App 专用密码**（形如 `abcd-efgh-ijkl-mnop`），不是登录密码，账号需已开启双重认证。密码存进系统钥匙串（service `dsh-cal`），**不写进任何配置文件**。
 
+> **中国大陆的 Apple ID**（数据在云上贵州）：走的是 `caldav.icloud.com.cn`，和国际区是两套后端。
+> 不用自己改配置 —— 连不上时程序会自动换到另一个区的入口再试一次，成功之后把地址记进
+> `config.json`，`dsh-cal doctor` 里能直接看到这次用的是哪个服务器。
+> 两个区都拒绝，那就是密码问题：这里只认 16 位的 App 专用密码。
+
 ---
 
 <table>
@@ -62,7 +67,7 @@
 </td>
 <td width="33%" valign="top">
 <h3>一个解析器，三个入口</h3>
-<p>App、命令行、MCP 共用同一套规则和 200 条用例，行为不会各说各话。</p>
+<p>App、命令行、MCP 共用同一套规则和 200 多条用例，行为不会各说各话。</p>
 </td>
 </tr>
 </table>
@@ -162,7 +167,7 @@
 
 - **`nlp.mjs` 是纯 ECMAScript**，1097 行，零 import、零 Node API。它同时被 App、CLI、MCP 使用，将来也能直接在浏览器里跑。
 - 网络、钥匙串这些平台能力都在 `caldav.mjs` / `store.mjs` 里，和解析逻辑分开。
-- 解析器有 **152 条用例**，另加 34 条安全/队列用例和 14 条 CalDAV 往返用例，`npm test` 一条命令跑完，5 秒左右。历史 bug 全部固化成用例（「全天日程被写早一天」「用半小时无效」「区间句的时长烂在标题里」「改时间改到 VTIMEZONE 上」这类）。
+- 解析器有 **202 条用例**，另加 39 条安全/队列用例、13 条账号/区域用例和 31 条 CalDAV 往返用例，`npm test` 一条命令跑完，5 秒左右。历史 bug 全部固化成用例（「全天日程被写早一天」「用半小时无效」「区间句的时长烂在标题里」「改时间改到 VTIMEZONE 上」这类）。
 - 后端随 App 一起分发（`Contents/Resources/engine`），首次启动复制到 `~/.local`，所以 App 和命令行永远同版本。
 - **拟物外观是另一层 `WKWebView`**，装 `cal-app/web/skeuo.html` 这个单文件，和 AppKit 那套玻璃界面并行、互不依赖；两者只共用 node 后端和「当前是哪种外观」这一个偏好。
 
@@ -220,7 +225,7 @@ cd dsh-cal
 <summary><b>开发</b></summary>
 
 ```bash
-npm test                        # 200 条用例：解析 + 安全/队列 + CalDAV 往返（不需要网络）
+npm test                        # 380 多条用例：解析 + 安全/队列 + 账号区域 + CalDAV 往返（不需要网络）
 npm run test:llm                # 需要本地 Ollama，对比规则与模型的输出
 cd cal-app && ./build.sh        # 只编译 App
 DSH_CAL_ARCHS=arm64 ./build.sh  # 只编本机架构，快一半

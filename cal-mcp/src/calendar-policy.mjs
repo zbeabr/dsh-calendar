@@ -62,6 +62,37 @@ export function projectModelTag(raw, candidates = AUTO_CANDIDATES) {
 }
 
 /**
+ * 登录时挑默认日历。
+ *
+ * 规则：显式指定的必须真的存在（否则报错并列出可选项）；否则沿用配置里那个
+ * （前提是它还在）；再否则用「学习」；都没有就**留空**，让用户自己选。
+ *
+ * 以前是 `names.includes('学习') ? '学习' : names[0]` —— 用户的「学习」不在
+ * iCloud 可写列表里时，默认日历会被静默改成列表第一个（实测是「哔哩哔哩HD」），
+ * 之后每一句话都写进那个日历，而界面上看不出任何变化。
+ *
+ * @param {{ requested?: string, current?: string, writable?: string[] }} [input]
+ * @returns {{ calendar?: string, source: 'requested'|'current'|'preferred'|null,
+ *             writable: string[], error?: string }}
+ */
+export function pickDefaultCalendar({ requested, current, writable = [] } = {}) {
+  const list = (Array.isArray(writable) ? writable : [])
+    .filter((name) => typeof name === 'string')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const wanted = normalizeName(requested);
+  if (wanted) {
+    return list.includes(wanted)
+      ? { calendar: wanted, source: 'requested', writable: list }
+      : { error: `「${wanted}」不在可写日历里`, writable: list };
+  }
+  const existing = normalizeName(current);
+  if (existing && list.includes(existing)) return { calendar: existing, source: 'current', writable: list };
+  if (list.includes('学习')) return { calendar: '学习', source: 'preferred', writable: list };
+  return { source: null, writable: list };
+}
+
+/**
  * 决定一条日程最终写进哪个日历。
  *
  * 优先级：显式标签（用户写明的 #X / 手动选的日历） > 模型建议 > 默认日历。

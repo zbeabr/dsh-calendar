@@ -23,7 +23,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CalDav, CalDavError, parseVevents } from './src/caldav.mjs';
+import { CalDav, CalDavError, authFailureMessage, isTrustedHop, parseVevents } from './src/caldav.mjs';
 
 let pass = 0;
 const failures = [];
@@ -155,6 +155,18 @@ const server = createServer(async (req, res) => {
     // 典型的开放重定向：把客户端踢到别的域名
     res.writeHead(302, { location: 'https://evil.example.com/collect' });
     res.end();
+    return;
+  }
+  // 认证失败的两种真实反应：Apple 对无效凭据多数回 401，偶尔回 403。
+  // 两个区各用一条路径模拟，验证「先失败、换区再成功」的兜底真的会发生。
+  if (path.startsWith('/denied/')) {
+    res.writeHead(401, { 'content-type': 'text/plain' });
+    res.end('unauthorized');
+    return;
+  }
+  if (path.startsWith('/forbidden/')) {
+    res.writeHead(403, { 'content-type': 'text/plain' });
+    res.end('forbidden');
     return;
   }
   if (path === '/slow') return; // 永远不回应，测超时
@@ -668,6 +680,81 @@ await check('机器时区与日历时区不同时，RECURRENCE-ID 去重仍生�
     expect(dayRows.length, 1, `${zone} 下全天日程同一 uid 的行数`);
     expect(new Date(dayRows[0].start).getTime(), ALLDAY_START, `${zone} 下全天覆盖后的开始时刻`);
   });
+});
+
+// ── 账号区域与认证文案 ───────────────────────────────────
+// 中国大陆 Apple ID 的数据在 caldav.icloud.com.cn，与国际区是两套后端。
+// 这一组锁住三件事：跨区跳转允许、认证失败能自己换区、报错里说清是哪个服务器。
+
+await check('跨区 iCloud 入口之间允许携带凭据', async () => {
+  // 中国大陆账号的真实路径：caldav.icloud.com → pXX-caldav.icloud.com.cn
+  assert(isTrustedHop('https://caldav.icloud.com/', 'https://p33-caldav.icloud.com.cn/'), '国际区 → 中国区分片被拒');
+  assert(isTrustedHop('https://p33-caldav.icloud.com.cn/', 'https://caldav.icloud.com/'), '中国区分片 → 国际区被拒');
+  assert(isTrustedHop('https://caldav.icloud.com.cn/', 'https://caldav.icloud.com/'), '中国区 → 国际区被拒');
+});
+
+await check('放宽跨区不等于放宽到任意域名', async () => {
+  assert(!isTrustedHop('https://caldav.icloud.com/', 'https://evil.example.com/'), '无关域名必须拒绝');
+  assert(!isTrustedHop('https://caldav.icloud.com/', 'http://p33-caldav.icloud.com.cn/'), 'http 降级必须拒绝');
+  assert(!isTrustedHop('https://caldav.icloud.com/', 'https://icloud.com.evil.example/'), '后缀伪装必须拒绝');
+});
+
+await check('认证失败的文案带服务器地址，并给中国区提示', async () => {
+  const intl = authFailureMessage('https://caldav.icloud.com/', 401);
+  assert(intl.includes('caldav.icloud.com'), `没带服务器地址：${intl}`);
+  assert(intl.includes('caldav.icloud.com.cn'), `没给中国区提示：${intl}`);
+  assert(intl.includes('401'), '没带状态码');
+
+  const cn = authFailureMessage('https://caldav.icloud.com.cn/', 401);
+  assert(!cn.includes('请用 https://caldav.icloud.com.cn/'), '已经是 .com.cn 了还在劝用户换过去');
+});
+
+await check('两个区都拒绝时，文案直说密码不对并点明要 16 位', async () => {
+  const both = authFailureMessage('https://caldav.icloud.com.cn/', 401, { bothRegions: true });
+  assert(both.includes('caldav.icloud.com') && both.includes('caldav.icloud.com.cn'), '没列出试过哪两个服务器');
+  assert(both.includes('16 位'), `没点明 App 专用密码是 16 位：${both}`);
+});
+
+await check('主入口 401 时自动换到另一个区，并回报可用的地址', async () => {
+  const changes = [];
+  const client = new CalDav({
+    baseUrl: `http://127.0.0.1:${port}/denied/`,
+    alternateBaseUrl: `http://127.0.0.1:${port}/`,
+    username: 'u',
+    password: 'p',
+    onBaseUrlChange: (next, previous) => changes.push({ next, previous }),
+  });
+  const home = await client.discover();
+  assert(String(home.url).includes('/u/'), `换区后没读到日历根：${home.url}`);
+  expect(changes.length, 1, '回报换区的次数');
+  expect(changes[0].next, `http://127.0.0.1:${port}/`, '回报的新地址');
+  expect(changes[0].previous, `http://127.0.0.1:${port}/denied/`, '回报的旧地址');
+});
+
+await check('403 也翻成「认证失败」，不再漏成 principal 查询失败', async () => {
+  const client = new CalDav({ baseUrl: `http://127.0.0.1:${port}/forbidden/`, username: 'u', password: 'p' });
+  let caught;
+  try {
+    await client.discover();
+  } catch (error) {
+    caught = error;
+  }
+  assert(caught instanceof CalDavError, '没有抛 CalDavError');
+  expect(caught.status, 403, '状态码');
+  assert(caught.message.startsWith('认证失败'), `文案没翻成认证失败：${caught.message}`);
+  assert(!caught.message.includes('principal 查询失败'), '仍然漏出了内部错误');
+});
+
+await check('没设默认日历时拒绝写入，不替用户挑列表第一个', async () => {
+  const client = new CalDav({ baseUrl: `http://127.0.0.1:${port}/`, username: 'u', password: 'p' });
+  let caught;
+  try {
+    await client.findCalendar('');
+  } catch (error) {
+    caught = error;
+  }
+  assert(caught instanceof CalDavError, '没有抛 CalDavError');
+  assert(caught.message.includes('默认日历'), `报错没说清是默认日历没设：${caught.message}`);
 });
 
 // ── 汇总 ─────────────────────────────────────────────────

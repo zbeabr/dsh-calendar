@@ -1196,7 +1196,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 if self.offline { self.startReconnectWatch() } else { self.stopReconnectWatch() }
                 self.modelEnabled = (self.readConfigFile()["llm"] as? [String: Any])?["enabled"] as? Bool ?? false
                 let fallback = (payload["default"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                self.currentCalendar = fallback ?? names.first ?? "学习"
+                // 没有默认日历（从没选过）时，别拿列表第一个顶上 —— 那等于替用户
+                // 决定「以后每句话都写进这个日历」，而界面上看不出任何区别。
+                // 停在设置页让他自己选；写入口径见 CalDav.findCalendar()。
+                guard let chosen = fallback else {
+                    self.buildSetup(
+                        note: "已经连上 iCloud，但还没有默认日历。你的日历：\(names.joined(separator: "、"))。在上面填一个再点「保存」。",
+                        heading: "选一个默认日历",
+                        actionTitle: "保存",
+                        email: self.readConfigFile()["username"] as? String ?? "",
+                        calendar: "",
+                        noteColor: .secondaryLabelColor,
+                        showsAppearance: true
+                    )
+                    self.snapshotIfRequested()
+                    return
+                }
+                self.currentCalendar = chosen
                 self.buildMain()
                 self.refreshPending()
                 if let manual = ProcessInfo.processInfo.environment["DSH_CAL_DEMO_MANUAL"], !manual.isEmpty {
@@ -1713,7 +1729,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         root.addSubview(calendarLabel)
 
         let calendarField = NSTextField(frame: NSRect(x: 116, y: 106 + lift, width: 420, height: 26))
-        calendarField.stringValue = prefillCalendar.isEmpty ? "学习" : prefillCalendar
+        // 不再在这里兜「学习」：从设置页进来时它可能是个空格子（用户还没选默认日历），
+        // 界面替他把「学习」填回去，等于又替他做了一个决定。
+        calendarField.stringValue = prefillCalendar
         calendarField.font = NSFont.systemFont(ofSize: 13)
         root.addSubview(calendarField)
 
@@ -1887,6 +1905,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             guard let self else { return }
             switch result {
             case .success(let payload) where (payload["ok"] as? Bool) == true:
+                // 连上了但没挑到默认日历（比如「学习」不在这个账号里）：
+                // 留在设置页把可选列表摆出来，别悄悄用列表第一个。
+                if let needed = payload["needsCalendar"] as? [String], !needed.isEmpty {
+                    status.textColor = .systemRed
+                    status.stringValue = "已连上 \(account)，但「\(calendarField.stringValue)」不在你的日历里。"
+                        + "可选：\(needed.joined(separator: "、")) —— 填一个再点连接。"
+                    return
+                }
                 self.refreshConfig()
             case .success(let payload):
                 status.textColor = .systemRed

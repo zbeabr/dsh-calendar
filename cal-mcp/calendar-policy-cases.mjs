@@ -9,7 +9,7 @@ process.env.TZ = 'Asia/Shanghai';
 
 import { CalDav } from './src/caldav.mjs';
 import {
-  AUTO_CANDIDATES, UNSPECIFIED, exactCalendarMatch, projectModelTag, resolveCalendar,
+  AUTO_CANDIDATES, UNSPECIFIED, exactCalendarMatch, pickDefaultCalendar, projectModelTag, resolveCalendar,
 } from './src/calendar-policy.mjs';
 
 const LIB = ['学习', '生活', '家庭', '特别事件', '课表-数学', '课表-体育'];
@@ -99,6 +99,19 @@ await shouldThrow('写入路径：库外名必须抛错', () => mock.findCalenda
 eq('写入路径：精确名字仍可用', (await mock.findCalendar('学习', { create: false, exactOnly: true })).name, '学习');
 // 非写入路径（ls / rm / update）保留原来的容错，不被这次改动带坏
 eq('查询路径：旧的模糊容错保留', (await mock.findCalendar('课表', { create: false })).name, '课表-数学');
+
+// ── 5. 登录时的默认日历：绝不静默挑第一个 ──
+// 「学习」不在 iCloud 可写列表里时，旧逻辑会静默选中列表第一个（实测是「哔哩哔哩HD」），
+// 之后每句话都写进那个日历，而用户看不出任何变化。
+const IC = ['哔哩哔哩HD', '个人', '工作'];
+eq('默认日历：指定了且存在 → 用它', pickDefaultCalendar({ requested: '工作', current: '个人', writable: IC }).calendar, '工作');
+eq('默认日历：指定了但不存在 → 报错，不退而求其次', Boolean(pickDefaultCalendar({ requested: '学习', writable: IC }).error), true);
+eq('默认日历：指定了但不存在 → 不返回任何日历', pickDefaultCalendar({ requested: '学习', writable: IC }).calendar, undefined);
+eq('默认日历：没指定 → 沿用配置里那个（还在的话）', pickDefaultCalendar({ current: '个人', writable: IC }).calendar, '个人');
+eq('默认日历：配置里那个已不在 → 不拿列表第一个顶上', pickDefaultCalendar({ current: '学习', writable: IC }).calendar, undefined);
+eq('默认日历：都没指定但库里有「学习」→ 用「学习」', pickDefaultCalendar({ writable: ['个人', '学习'] }).calendar, '学习');
+eq('默认日历：返回可写列表，供 UI 提示用户挑', pickDefaultCalendar({ writable: IC }).writable, IC);
+eq('默认日历：库为空时返回空，不抛错', pickDefaultCalendar({ writable: [] }).calendar, undefined);
 
 console.log(`${passed}/${passed + failed} 通过`);
 if (failed) process.exitCode = 1;

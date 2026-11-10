@@ -5,11 +5,12 @@
 
 import { CalDav, CalDavError, newEventUid } from './caldav.mjs';
 import { resolveCalendar } from './calendar-policy.mjs';
+import { normalizeAccount } from './credentials.mjs';
 import { inferCalendarTag, needsRefine, refineWithModel } from './llm.mjs';
 import { parseEvent, toRrule } from './nlp.mjs';
 import {
   cachedCalendarNames, dequeueEvent, enqueueEvent, markAttempt, readCalendarCache, readConfig, readDeadLetter,
-  readPassword, readQueue, writeCalendarCache,
+  readPassword, readQueue, writeCalendarCache, writeConfig,
 } from './store.mjs';
 
 export class NotConfiguredError extends Error {
@@ -17,6 +18,40 @@ export class NotConfiguredError extends Error {
     super(message);
     this.name = 'NotConfiguredError';
   }
+}
+
+/** 区域兜底换到另一个 iCloud 入口后，把可用的那个记进配置，下次不用再试一遍。 */
+function rememberBaseUrl(next) {
+  try {
+    const config = readConfig();
+    if (!config.baseUrl || config.baseUrl === next) return;
+    writeConfig({ ...config, baseUrl: next });
+  } catch {
+    /* 记不下来只影响下次要多试一次，不该让这次操作失败 */
+  }
+}
+
+/**
+ * 用给定凭据真连一次，返回读到的日历。
+ *
+ * 登录流程必须先用它验证、**再**写钥匙串：反过来的话，一次输错的密码会
+ * 覆盖掉钥匙串里原本正确的那个，用户从「能用的旧密码」直接掉到「401」，
+ * 而且自己没有任何办法退回（旧密码已经没了）。
+ */
+export async function verifyCredentials({ username, password, baseUrl } = {}) {
+  const config = readConfig();
+  const account = normalizeAccount(username || config.username);
+  const from = baseUrl || config.baseUrl;
+  const client = new CalDav({
+    baseUrl: from,
+    username: account,
+    password,
+    timeZone: config.timeZone,
+    onBaseUrlChange: rememberBaseUrl,
+  });
+  const calendars = await client.listCalendars();
+  writeCalendarCache(calendars.map((calendar) => calendar.name));
+  return { calendars, username: account, baseUrl: client.baseUrl, switched: client.baseUrl !== from };
 }
 
 export function getClient() {
@@ -34,6 +69,7 @@ export function getClient() {
       username: config.username,
       password,
       timeZone: config.timeZone,
+      onBaseUrlChange: rememberBaseUrl,
     }),
     config,
   };
@@ -532,6 +568,14 @@ export async function createCalendar({ name } = {}) {
   return { ok: true, name: created.name, summary: `已创建日历「${created.name}」` };
 }
 
+function hostLabel(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return String(url ?? '');
+  }
+}
+
 /** Probe the connection and report what is usable. */
 export async function doctor() {
   const config = readConfig();
@@ -551,9 +595,14 @@ export async function doctor() {
   if (!password) return report;
 
   try {
-    const client = new CalDav({ baseUrl: config.baseUrl, username: config.username, password });
-    const calendars = await client.listCalendars();
-    report.checks.push({ name: 'CalDAV 连接', ok: true, detail: `读到 ${calendars.length} 个日历` });
+    const verified = await verifyCredentials({ username: config.username, password, baseUrl: config.baseUrl });
+    const calendars = verified.calendars;
+    report.checks.push({
+      name: 'CalDAV 连接',
+      ok: true,
+      detail: `读到 ${calendars.length} 个日历（${hostLabel(verified.baseUrl)}）`
+        + (verified.switched ? '，账号在中国区，已自动改用 caldav.icloud.com.cn' : ''),
+    });
     report.checks.push({
       name: '日历列表',
       ok: calendars.length > 0,

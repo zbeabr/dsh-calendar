@@ -3,6 +3,8 @@
  * No dependencies — plain fetch + regex XML scraping, tuned for iCloud.
  */
 
+import { alternateIcloudBase } from './credentials.mjs';
+
 const PROPFIND_PRINCIPAL = `<?xml version="1.0" encoding="UTF-8"?>
 <d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>`;
 
@@ -71,6 +73,31 @@ function hostOf(url) {
 }
 
 /**
+ * 认证失败的文案。必须带服务器地址：
+ * 「401」本身分不清是密码错、账号被锁、还是账号在另一个区的后端，
+ * 而中国大陆 Apple ID 恰恰就是最后一种 —— 数据在 icloud.com.cn（云上贵州），
+ * 拿国际区入口去认证会一直 401，用户却只会以为密码错了。
+ *
+ * 导出是给用例断言文案用的：这几句话本身就是「用户能不能自己解决」的关键。
+ */
+export function authFailureMessage(target, status, { bothRegions = false } = {}) {
+  const host = hostOf(target);
+  if (bothRegions) {
+    return `认证失败（HTTP ${status}）：caldav.icloud.com 和 caldav.icloud.com.cn 都拒绝了这组凭据。`
+      + '多半是密码不对 —— 这里要填「App 专用密码」（16 位，形如 xxxx-xxxx-xxxx-xxxx），不是 Apple ID 登录密码。';
+  }
+  const hint = host.endsWith('icloud.com') && !host.endsWith('icloud.com.cn')
+    ? '中国大陆的 Apple ID 请用 https://caldav.icloud.com.cn/。'
+    : '';
+  return `认证失败（HTTP ${status}，服务器 ${host}）：Apple ID 或 App 专用密码不正确。${hint}`;
+}
+
+/** 认证类失败：账号/密码/区域问题，换一个区域入口重试才有意义。 */
+function isAuthFailure(error) {
+  return error instanceof CalDavError && (error.status === 401 || error.status === 403);
+}
+
+/**
  * 会把请求分片到「同父不同子」主机的服务商。只认这几个。
  * 以前的写法是「末两段相同就放行」，而 `co.uk`、`github.io`、`com.cn` 都是公共后缀：
  * `foo.bar.co.uk` 和 `evil.co.uk` 末两段一样，但注册人是两个不同的人。
@@ -124,11 +151,14 @@ export function isTrustedHop(baseUrl, target) {
   // 上下级关系算同一个注册者；但任何一方本身就是公共后缀时不算
   // （`x.co.uk` 和 `co.uk` 不是一家，`evil.github.io` 和 `github.io` 更不是）
   if (!PUBLIC_SUFFIXES.has(from) && !PUBLIC_SUFFIXES.has(to) && (under(to, from) || under(from, to))) return true;
-  // 同父不同子：只有确知会分片的服务商才放行
-  for (const zone of SHARDED_ZONES) {
-    const inZone = (host) => host === zone || under(host, zone);
-    if (inZone(from) && inZone(to)) return true;
-  }
+  // 同父不同子：只有确知会分片的服务商才放行。
+  // 这里刻意把 SHARDED_ZONES 当成**一整组**来判断，而不是逐条要求首尾落在同一条里：
+  // 中国大陆 Apple ID 的设备会被苹果从 caldav.icloud.com 踢到
+  // pXX-caldav.icloud.com.cn，逐条比对的结果是「跨条目 → 拒绝」，
+  // 于是整个中国区的账号都卡在「重定向到不受信任的地址」，而白名单里
+  // 明明两个域名都写着 —— 白名单写了、实现漏了，是这里曾经的真实 bug。
+  const inShardedZone = (host) => SHARDED_ZONES.some((zone) => host === zone || under(host, zone));
+  if (inShardedZone(from) && inShardedZone(to)) return true;
   return false;
 }
 
@@ -139,9 +169,14 @@ export function newEventUid() {
 
 export class CalDav {
   /**
-   * @param {{ baseUrl?: string, username: string, password: string, timeZone?: string, timeoutMs?: number }} options
+   * @param {{ baseUrl?: string, username: string, password: string, timeZone?: string,
+   *           timeoutMs?: number, onBaseUrlChange?: (next: string, previous: string) => void,
+   *           alternateBaseUrl?: string }} options
    */
-  constructor({ baseUrl = 'https://caldav.icloud.com/', username, password, timeZone = 'Asia/Shanghai', timeoutMs = 20000 }) {
+  constructor({
+    baseUrl = 'https://caldav.icloud.com/', username, password, timeZone = 'Asia/Shanghai', timeoutMs = 20000,
+    onBaseUrlChange, alternateBaseUrl,
+  }) {
     this.baseUrl = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
     this.username = username;
     this.password = password;
@@ -149,6 +184,12 @@ export class CalDav {
     this.timeoutMs = timeoutMs;
     this.auth = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
     this.home = undefined;
+    // 区域兜底成功后回调，让上层把可用的 baseUrl 记进配置（下次不用再试第二遍）
+    this.onBaseUrlChange = onBaseUrlChange;
+    // 默认按 iCloud 的两个区自动推断；显式传入则用它（用例里指到本机假服务器）
+    this.alternateBaseUrl = alternateBaseUrl === undefined
+      ? alternateIcloudBase(this.baseUrl)
+      : (alternateBaseUrl || undefined);
   }
 
   async request(url, { method = 'PROPFIND', body, headers = {}, redirects = 3 } = {}) {
@@ -195,20 +236,66 @@ export class CalDav {
         target = new URL(location, target).href;
         continue;
       }
-      if (res.status === 401) throw new CalDavError('认证失败：Apple ID 或 App 专用密码不正确', { status: 401, url: target });
+      if (res.status === 401) {
+        throw new CalDavError(authFailureMessage(target, 401), { status: 401, url: target });
+      }
       return { res, text: await res.text(), url: target };
     }
     throw new CalDavError('重定向次数过多', { url: target });
   }
 
-  /** Resolve calendar-home-set, cached after the first call. */
+  /**
+   * Resolve calendar-home-set, cached after the first call.
+   *
+   * 认证失败时会换「另一个区」的 iCloud 入口再试一次：
+   * 中国大陆 Apple ID 的资料在 caldav.icloud.com.cn（云上贵州），
+   * 拿国际区入口认证会一路 401，而用户没有任何地方能改服务器地址。
+   * 只有认证类失败才换区（密码错也换，两个都错就给一句合并的结论，
+   * 比让用户对着「401」猜自己是哪个区强）；网络错误不换，免得白等两轮超时。
+   */
   async discover() {
     if (this.home) return this.home;
+    const bases = [this.baseUrl];
+    const alternate = this.alternateBaseUrl;
+    if (alternate && alternate !== this.baseUrl) bases.push(alternate);
 
+    const authFailures = [];
+    for (const base of bases) {
+      const previous = this.baseUrl;
+      this.baseUrl = base;
+      try {
+        const home = await this.resolveHome();
+        if (base !== previous) this.onBaseUrlChange?.(base, previous);
+        return home;
+      } catch (error) {
+        if (!isAuthFailure(error)) throw error;
+        authFailures.push({ base, error });
+      }
+    }
+    if (authFailures.length > 1) {
+      const last = authFailures[authFailures.length - 1].error;
+      throw new CalDavError(authFailureMessage(bases[bases.length - 1], last.status ?? 401, { bothRegions: true }), {
+        status: last.status ?? 401,
+        url: last.url,
+      });
+    }
+    throw authFailures[0].error;
+  }
+
+  /** 一次区域内的完整发现（principal → home）。discover 负责换区重试。 */
+  async resolveHome() {
     const principalRes = await this.request(this.baseUrl, {
       body: PROPFIND_PRINCIPAL,
       headers: { depth: '0' },
     });
+    // Apple 对无效凭据有时回 403（不是 401）。403 以前一路漏成
+    // 「principal 查询失败 HTTP 403」—— 用户看不出这是账号/密码/区域的问题。
+    if (principalRes.res.status === 401 || principalRes.res.status === 403) {
+      throw new CalDavError(authFailureMessage(principalRes.url, principalRes.res.status), {
+        status: principalRes.res.status,
+        url: principalRes.url,
+      });
+    }
     if (principalRes.res.status >= 400) {
       throw new CalDavError(`principal 查询失败 HTTP ${principalRes.res.status}`, {
         status: principalRes.res.status,
@@ -270,7 +357,11 @@ export class CalDav {
    */
   async findCalendar(name, { create = false, exactOnly = false } = {}) {
     const calendars = await this.listCalendars();
-    if (!name) return calendars[0];
+    // 以前这里 `return calendars[0]`：没配默认日历时，日程会静默写进列表里的第一个
+    // （实测是「哔哩哔哩HD」这种）。写错日历比报错危险得多，所以直接拒绝。
+    if (!name) {
+      throw new CalDavError(`还没有选默认日历，不敢替你挑一个。现有：${calendars.map((c) => c.name).join('、') || '（空）'}`);
+    }
     const exact = calendars.find((calendar) => calendar.name === name);
     if (exact) return exact;
     const lower = name.toLowerCase();

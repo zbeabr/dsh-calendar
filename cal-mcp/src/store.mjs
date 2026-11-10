@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { normalizeAccount } from './credentials.mjs';
 
 export const KEYCHAIN_SERVICE = 'dsh-cal';
 const CONFIG_DIR = join(homedir(), '.config', 'dsh-cal');
@@ -38,7 +39,9 @@ export function readConfig() {
   if (!existsSync(CONFIG_PATH)) return { ...DEFAULTS, llm: { ...DEFAULTS.llm } };
   try {
     const file = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
-    return { ...DEFAULTS, ...file, llm: { ...DEFAULTS.llm, ...(file.llm ?? {}) } };
+    // 账号统一归一化：老配置里存着 `User@x.com` 的话，界面显示和钥匙串查询
+    // 会各走一条，症状就是「同一个账号一会儿有密码一会儿没有」。
+    return { ...DEFAULTS, ...file, username: normalizeAccount(file.username), llm: { ...DEFAULTS.llm, ...(file.llm ?? {}) } };
   } catch {
     return { ...DEFAULTS, llm: { ...DEFAULTS.llm } };
   }
@@ -46,7 +49,8 @@ export function readConfig() {
 
 export function writeConfig(config) {
   mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  const normalized = { ...config, username: normalizeAccount(config.username) };
+  writeFileSync(CONFIG_PATH, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
   try {
     chmodSync(CONFIG_PATH, 0o600);
   } catch {
@@ -55,18 +59,34 @@ export function writeConfig(config) {
   return CONFIG_PATH;
 }
 
-/** Read the password from the Keychain, falling back to an env var for headless runs. */
-export function readPassword(username) {
-  if (process.env.DSH_CAL_PASSWORD) return process.env.DSH_CAL_PASSWORD;
+/** 按原样（不归一化）读一条钥匙串记录。内部用，不导出。 */
+function readKeychain(account) {
   try {
     return execFileSync(
       'security',
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', username, '-w'],
+      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', account, '-w'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     ).trim();
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Read the password from the Keychain, falling back to an env var for headless runs.
+ *
+ * 账号先归一化（Apple ID 不区分大小写），再用**原样**的写法兜一次：
+ * 早于归一化的版本是按用户输入的大小写写进去的，那些记录得还能读到，
+ * 否则现有用户升级后会突然「钥匙串里没有密码」。
+ */
+export function readPassword(username) {
+  if (process.env.DSH_CAL_PASSWORD) return process.env.DSH_CAL_PASSWORD;
+  const account = normalizeAccount(username);
+  const normalized = readKeychain(account);
+  if (normalized !== undefined) return normalized;
+  const legacy = String(username ?? '').trim();
+  if (legacy !== '' && legacy !== account) return readKeychain(legacy);
+  return undefined;
 }
 
 /**
@@ -84,18 +104,30 @@ export function readPassword(username) {
  * 换成不含命令行的错误，并且再过一遍脱敏。
  */
 export function savePassword(username, password) {
+  const account = normalizeAccount(username);
   try {
     execFileSync('security', [
       'add-generic-password',
       '-s', KEYCHAIN_SERVICE,
-      '-a', username,
-      '-l', `dsh-cal CalDAV (${username})`,
+      '-a', account,
+      '-l', `dsh-cal CalDAV (${account})`,
       '-w', password,
       '-U',
     ], { stdio: ['ignore', 'ignore', 'ignore'] });
   } catch (error) {
     throw new Error(redact(`写入钥匙串失败（${error?.status ?? error?.code ?? '未知原因'}），密码没有保存。`
       + '请解锁「钥匙串访问」后重试，或用 DSH_CAL_PASSWORD 环境变量临时提供密码。', password));
+  }
+  // 统一写入归一化账号后，把「同一个邮箱但大小写不同」的旧条目清掉，
+  // 否则那条陈旧密码会永远躺在钥匙串里，谁读到它都是一次莫名其妙的 401。
+  // 只在写入成功之后删，且只删一次，删不掉也不影响本次结果。
+  const legacy = String(username ?? '').trim();
+  if (legacy !== '' && legacy !== account) {
+    try {
+      execFileSync('security', ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', legacy], { stdio: 'ignore' });
+    } catch {
+      /* 本来就没有这条，或删不掉：都不该让登录失败 */
+    }
   }
 }
 
@@ -113,12 +145,19 @@ export function redact(text, secret) {
 }
 
 export function deletePassword(username) {
-  try {
-    execFileSync('security', ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', username], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+  const account = normalizeAccount(username);
+  const legacy = String(username ?? '').trim();
+  let removed = false;
+  for (const entry of new Set([account, legacy])) {
+    if (entry === '') continue;
+    try {
+      execFileSync('security', ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', entry], { stdio: 'ignore' });
+      removed = true;
+    } catch {
+      /* 这条不存在 */
+    }
   }
+  return removed;
 }
 
 export function hasPassword(username) {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-cal",
-  "version": "1.3.0",
+  "version": "1.3.2",
   "description": "用中文自然语言建日历：规则解析 + CalDAV(iCloud) + MCP，零依赖",
   "type": "module",
   "license": "MIT",
@@ -8,7 +8,7 @@
     "dsh-cal": "./cli.mjs"
   },
   "scripts": {
-    "test": "node parse-cases.mjs && node safety-cases.mjs && node caldav-cases.mjs && node llm-guard-cases.mjs && node calendar-policy-cases.mjs && node calendar-model-cases.mjs && node parse-corpus.mjs",
+    "test": "node parse-cases.mjs && node safety-cases.mjs && node credentials-cases.mjs && node caldav-cases.mjs && node llm-guard-cases.mjs && node calendar-policy-cases.mjs && node calendar-model-cases.mjs && node parse-corpus.mjs",
     "test:llm": "node llm-cases.mjs",
     "test:llm-guard": "node llm-guard-cases.mjs",
     "test:calendar-policy": "node calendar-policy-cases.mjs",

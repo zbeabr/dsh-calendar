@@ -16,13 +16,14 @@
  */
 
 import { createInterface } from 'node:readline';
-import { AUTO_CANDIDATES, exactCalendarMatch, resolveCalendar } from './src/calendar-policy.mjs';
+import { AUTO_CANDIDATES, exactCalendarMatch, pickDefaultCalendar, resolveCalendar } from './src/calendar-policy.mjs';
+import { appPasswordFormat, isIcloudHost, normalizeAccount } from './src/credentials.mjs';
 import { inferCalendarTag, llmConfig, llmLastError, needsRefine, probeModel, refineWithModel } from './src/llm.mjs';
 import { parseEvent } from './src/nlp.mjs';
 import { cachedCalendarNames, configPath, KEYCHAIN_SERVICE, readConfig, redact, savePassword, writeConfig } from './src/store.mjs';
 import {
   addEvent, createCalendar, deleteEvent, doctor, formatRange, listCalendars, listEvents,
-  pendingEvents, syncQueue, updateEvent,
+  pendingEvents, syncQueue, updateEvent, verifyCredentials,
 } from './src/tools.mjs';
 
 let jsonMode = false;
@@ -77,31 +78,87 @@ function ask(prompt, { hidden = false } = {}) {
   });
 }
 
+/**
+ * 密码格式的问题说明；没问题返回 undefined。
+ * 只对 iCloud 生效 —— 自定义 CalDAV 服务端没有「16 位」这条规矩。
+ */
+function appPasswordProblem(password, baseUrl) {
+  let host = '';
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    /* 地址本身有问题时交给连接阶段报错 */
+  }
+  if (!isIcloudHost(host)) return undefined;
+  const format = appPasswordFormat(password);
+  if (format.ok) return undefined;
+  if (format.reason === 'charset') {
+    return 'App 专用密码只由字母和数字组成（可以带连字符），这串里有别的字符。';
+  }
+  if (format.reason === 'length') {
+    return `这看起来不是 App 专用密码：它是 16 位（形如 xxxx-xxxx-xxxx-xxxx），你给的是 ${format.length} 位。`
+      + '别用 Apple ID 登录密码或设备密码 —— 去 account.apple.com →「登录与安全」→「App 专用密码」生成一个。';
+  }
+  return undefined;
+}
+
+/** 连上之后把日历列出来，登录成功/失败都复用这一个格式。 */
+function calendarLines(calendars) {
+  return calendars.map((calendar) => `· ${calendar.name}${calendar.writable ? '' : '（只读）'}`).join('\n');
+}
+
 /** Config with --user + DSH_CAL_PASSWORD: no prompts, usable from a GUI. */
 async function loginHeadless(flags) {
-  const username = String(flags.user).trim();
-  const password = process.env.DSH_CAL_PASSWORD || (await ask('App 专用密码（输入时不显示）: ', { hidden: true }));
+  const account = normalizeAccount(flags.user);
+  if (!account) return fail('需要 Apple ID');
+  const password = (process.env.DSH_CAL_PASSWORD || (await ask('App 专用密码（输入时不显示）: ', { hidden: true }))).trim();
   if (!password) return fail('需要 App 专用密码');
 
-  savePassword(username, password);
-  writeConfig({ ...readConfig(), username });
-  const list = await listCalendars();
-  const names = list.calendars.filter((calendar) => calendar.writable).map((calendar) => calendar.name);
-  const picked = flags.calendar
-    ? String(flags.calendar)
-    : (names.includes('学习') ? '学习' : (names[0] ?? readConfig().calendar));
-  writeConfig({ ...readConfig(), calendar: picked });
+  const current = readConfig();
+  const problem = appPasswordProblem(password, current.baseUrl);
+  if (problem) return fail(problem);
+
+  // 顺序很重要：先验证，验证通过才写钥匙串。
+  // 以前是先 savePassword 再 listCalendars —— 密码打错时，错的那个已经
+  // 覆盖掉原来的正确密码，用户从「能用」直接掉到「401」，旧密码还找不回来。
+  let verified;
+  try {
+    verified = await verifyCredentials({ username: account, password, baseUrl: current.baseUrl });
+  } catch (error) {
+    return fail(`${error.message}\n（这次没有写入钥匙串，原来的密码仍然有效。）`);
+  }
+
+  const writable = verified.calendars.filter((calendar) => calendar.writable).map((calendar) => calendar.name);
+  const pick = pickDefaultCalendar({ requested: flags.calendar, current: current.calendar, writable });
+  if (pick.error) {
+    return fail(`${pick.error}。可选：${writable.join('、') || '（这个账号没有可写日历）'}`
+      + '\n（这次没有写入钥匙串，原来的密码仍然有效。）');
+  }
+
+  savePassword(account, password);
+  writeConfig({ ...readConfig(), username: account, baseUrl: verified.baseUrl, calendar: pick.calendar ?? '' });
 
   if (jsonMode) {
     return out({
       ok: true,
-      username,
-      calendar: picked,
-      calendars: list.calendars.map((calendar) => calendar.name),
+      username: account,
+      baseUrl: verified.baseUrl,
+      switchedRegion: verified.switched,
+      calendar: pick.calendar ?? '',
+      // App 靠这个字段把「连上了但还没默认日历」和「连上且已选好」分开处理，
+      // 而不是自己拿列表第一个顶上。
+      needsCalendar: pick.calendar ? undefined : writable,
+      calendars: verified.calendars.map((calendar) => calendar.name),
     });
   }
-  console.log(`✓ 已连接 ${username}，默认日历「${picked}」`);
-  console.log(list.summary);
+  console.log(`✓ 已连接 ${account}${verified.switched ? '（账号在中国区，已改用 caldav.icloud.com.cn）' : ''}`);
+  console.log(calendarLines(verified.calendars));
+  if (pick.calendar) {
+    console.log(`✓ 默认日历「${pick.calendar}」`);
+  } else {
+    console.log('! 还没有默认日历：你的列表里没有「学习」。用 `dsh-cal config --calendar 名字` 指定一个；');
+    console.log('  在指定之前，新增日程会直接报错，不会替你随便挑一个日历写进去。');
+  }
   return undefined;
 }
 
@@ -112,35 +169,44 @@ async function cmdLogin(flags) {
   console.log('生成地址：https://account.apple.com → 登录与安全 → App 专用密码\n');
 
   const current = readConfig();
-  const username = (await ask(`Apple ID 邮箱${current.username ? ` [${current.username}]` : ''}: `)) || current.username;
-  if (!username) return fail('需要 Apple ID');
+  const typed = (await ask(`Apple ID 邮箱${current.username ? ` [${current.username}]` : ''}: `)) || current.username;
+  const account = normalizeAccount(typed);
+  if (!account) return fail('需要 Apple ID');
 
-  const password = await ask('App 专用密码（输入时不显示）: ', { hidden: true });
+  const password = (await ask('App 专用密码（输入时不显示）: ', { hidden: true })).trim();
   if (!password) return fail('需要 App 专用密码');
-  if (!/^[a-z0-9]{4}-?[a-z0-9]{4}-?[a-z0-9]{4}-?[a-z0-9]{4}$/iu.test(password.replace(/\s/gu, ''))) {
-    console.log('! 密码格式不太像 App 专用密码（通常是 xxxx-xxxx-xxxx-xxxx），仍会尝试保存。');
-  }
-
-  savePassword(username, password);
-  writeConfig({ ...current, username });
-  console.log(`✓ 密码已存入钥匙串（service=${KEYCHAIN_SERVICE}, account=${username}）`);
-  console.log(`  配置文件：${configPath()}\n`);
+  const problem = appPasswordProblem(password, current.baseUrl);
+  if (problem) return fail(problem);
 
   console.log('正在连接 CalDAV…');
-  const report = await doctor();
-  printDoctor(report);
+  let verified;
+  try {
+    verified = await verifyCredentials({ username: account, password, baseUrl: current.baseUrl });
+  } catch (error) {
+    return fail(`${error.message}\n密码没有保存 —— 钥匙串里原来那个仍然有效。`);
+  }
 
-  const names = report.checks.find((check) => check.name === '日历列表')?.ok
-    ? report.checks.find((check) => check.name === '日历列表').detail.split('、').map((s) => s.replace(/\(只读\)$/u, ''))
-    : [];
+  savePassword(account, password);
+  writeConfig({ ...readConfig(), username: account, baseUrl: verified.baseUrl });
+  console.log(`✓ 密码已存入钥匙串（service=${KEYCHAIN_SERVICE}, account=${account}）`);
+  if (verified.switched) console.log('  账号在中国区，已自动改用 https://caldav.icloud.com.cn/ 并记进配置');
+  console.log(`  配置文件：${configPath()}\n`);
+  console.log(calendarLines(verified.calendars));
 
+  const names = verified.calendars.filter((calendar) => calendar.writable).map((calendar) => calendar.name);
   if (names.length > 0) {
-    const suggestion = names.includes('学习') ? '学习' : current.calendar || names[0];
-    const answer = await ask(`\n默认写入哪个日历？[${suggestion}]: `);
+    const suggestion = pickDefaultCalendar({ current: current.calendar, writable: names }).calendar;
+    const prompt = suggestion ? `[${suggestion}]` : `[可选：${names.join('、')}]`;
+    const answer = (await ask(`\n默认写入哪个日历？${prompt}: `)).trim();
     const picked = answer || suggestion;
-    if (!names.includes(picked)) console.log(`! 「${picked}」不在列表里，仍然保存，出问题再改。`);
-    writeConfig({ ...readConfig(), calendar: picked });
-    console.log(`✓ 默认日历已设为「${picked}」`);
+    if (!picked) {
+      console.log('! 没有选默认日历。用 `dsh-cal config --calendar 名字` 指定；在那之前新增日程会直接报错。');
+    } else if (!names.includes(picked)) {
+      console.log(`! 「${picked}」不在可写日历里（可选：${names.join('、')}），本次没有保存。`);
+    } else {
+      writeConfig({ ...readConfig(), calendar: picked });
+      console.log(`✓ 默认日历已设为「${picked}」`);
+    }
     if (!names.includes('学习')) {
       console.log('\n注意：列表里没有「学习」。如果它是「我的 Mac 上」的本地日历，它不在 iCloud 里，');
       console.log('      本工具读不到。解法：在日历 App 里把它拖到 iCloud 分组下，或新建一个 iCloud 的「学习」。');
