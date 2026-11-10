@@ -692,9 +692,22 @@ function parseLocation(text) {
   let match = new RegExp(`(?:地点|地址|位置)\\s*(?:[:：]|写|设|是|为|在)\\s*[:：]?\\s*(${PLACE})`, 'u').exec(text);
   if (match) return { location: match[1].trim(), matched: match[0] };
 
-  // ② @图书馆
+  // ② @图书馆。PLACE 是贪婪的，「@大学#生活」会把后面的标签一起吞进地点，
+  //    变成「大学#生活」；按地名词表切右边界，剩下的留给标签识别。
   match = new RegExp(`@\\s*(${PLACE})`, 'u').exec(text);
-  if (match) return { location: match[1].trim(), matched: match[0] };
+  if (match) {
+    const phrase = match[1].trim();
+    let end = landmarkEnd(phrase);
+    if (end < 2) {
+      const building = CAMPUS_BUILDING.exec(phrase);
+      if (building) end = building[0].length;
+    }
+    if (end >= 2) {
+      const prefix = match[0].length - phrase.length;
+      return { location: phrase.slice(0, end), matched: match[0].slice(0, prefix + end) };
+    }
+    return { location: phrase, matched: match[0] };
+  }
 
   // ③ 不带分隔符（「地点图书馆」）。这里必须真的是地名，
   //    否则「测试地点识别」这种标题里的「地点」会被当成前缀，把「识别」读成地点。
@@ -788,8 +801,9 @@ export function parseCalendarTag(text, names = []) {
   const known = [...new Set(names.filter(Boolean))].sort((a, b) => b.length - a.length);
   const STOP = new Set(['日历', '日程', '我的', '默认', '这个', '那个', '它', '列表']);
 
-  // #标签
-  let match = /#\s*([^\s#，,。;；:：]+)/u.exec(text);
+  // #标签。必须排除 @ / ＠：「@大学」是地点语法，紧贴在标签后面时
+  // （「#学习@大学」）不能被当成日历名的一部分，否则会写一个不存在的日历。
+  let match = /#\s*([^\s#@＠，,。;；:：]+)/u.exec(text);
   if (match) {
     const raw = match[1];
     // 「#学习半个小时」「#工作明天」：标签后面没空格、直接跟了时长/时间词时，
@@ -806,8 +820,8 @@ export function parseCalendarTag(text, names = []) {
     return { calendar: name, matched: match[0] };
   }
 
-  // 标签：工作 / 分类: 工作
-  match = /(?:标签|分类|类别)\s*[:：]?\s*([^\s，,。;；]{1,12})/u.exec(text);
+  // 标签：工作 / 分类: 工作（同样不能把后面的「@地点」吞进名字）
+  match = /(?:标签|分类|类别)\s*[:：]?\s*([^\s@＠，,。;；]{1,12})/u.exec(text);
   if (match && !STOP.has(match[1])) return { calendar: match[1], matched: match[0] };
 
   // 加到 X 日历 / 放进 X 日历 / 记到 X 日历
@@ -907,7 +921,7 @@ export function parseEvent(input, now = new Date(), options = {}) {
     // 一句话挂多个标签时，第一个当日历，剩下的也得剔出标题，
     // 否则「吃麻辣烫 #生活 #吃饭」会剩下「吃麻辣烫#吃饭」。
     if (calPart.matched.startsWith('#')) {
-      for (const extra of text.matchAll(/#\s*([^\s#，,。;；:：]+)/gu)) {
+      for (const extra of text.matchAll(/#\s*([^\s#@＠，,。;；:：]+)/gu)) {
         if (extra[0] !== calPart.matched && !pieces.some((piece) => piece.text === extra[0])) {
           pieces.push({ text: extra[0], kind: 'tag' });
         }
