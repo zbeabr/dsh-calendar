@@ -4,6 +4,83 @@
 
 ---
 
+## [未发布 · 本地] 交互三修 + 装机 build 33 — 2026-11-10
+
+用户实测报了三个问题，逐个追到根因；本轮**改了 App 并重新打包安装到本机**
+（1.3.1 / build 33，App 当时未运行，下次打开就是修复版）。`dist/` 仍未动。
+
+### ① 拼音输入法打「d」按回车选字，直接挂上了日程
+
+两个入口都漏了组字态判断：
+
+- 玻璃模式 `App.swift` 的 `textView(_:doCommandBy:)` 收到 `insertNewline` 就无条件
+  `addEvent()`；现在先看 `hasMarkedText()`，组字态把回车吞掉（返回 true 但什么都不做），
+  交给输入法上屏，选完字再按一次回车才提交。`addEvent()` 开头也加了同样的兜底，
+  挡住「候选窗还开着就点添加按钮」和拟物页的 submit 消息。
+- 拟物页 `skeuo.html` 的 `keydown` 原来只写 `if (e.key === 'Enter') submit()`。
+  现在用 `compositionstart/end` 自维护标志 + `e.isComposing` + `keyCode 229` 三道拦截，
+  并用 `justEnded`（0ms 定时器）跨过「compositionend 紧跟同一次 keydown」这个经典坑；
+  `submit()` 本身也检查组字态，连点按钮也挡。
+
+### ② 删除点确认后不立刻消失、要确认两次、非常卡顿
+
+根因是 `deleteItem()` 只在 `rm` 网络成功后才 `refreshAgenda()`，而 `rm` + 那次 `ls`
+（14 个日历逐个拉）实测要 5~8 秒；这段时间木板一动不动，用户以为没删成又确认一次。
+
+- `skeuo.html` 的 `doDelete()` 改成**乐观摘板**：先从 `items` 移除并立刻 `render(-1)`，
+  再发 `post({type:'delete'})`。
+- `App.swift` 的 `deleteItem()` 同步乐观：先从 `agenda` 移除、立刻重绘并 `pushSkeuoState()`，
+  网络请求在后台跑；失败整份回滚（保存删除前的数组快照），界面不骗人。
+  另加 `deletingUids` 防止一次删除在飞时重复点击。CLI 的 `rm` 用精确 uid 时
+  `ok` 正常返回，不存在「后端还要第二次 confirm」，已排除。
+
+### ③ `#学习@大学` 报「不存在名为…的标签」写入失败
+
+**源码级真 bug**（不只是装机旧后端）：`parseCalendarTag` 的 `#标签` 正则没排除 `@`，
+把「学习@大学」整串当成日历名；日历列表里恰好有「学习」时会被上一轮的前缀切分碰巧救下，
+换个名字就必现。`@大学#生活` 还会把后一个标签吞进地点，变成「大学#生活」。
+
+- `parseCalendarTag` 的 `#标签`、`标签：X` 两处字符类排除 `@` / `＠`；
+  `parseEvent` 的多标签循环同步；`parseLocation` 的 `@地点` 分支改用 `landmarkEnd()`
+  切右边界（原来直接返回贪婪匹配到的整串）。
+- 修后 `明天晚上写作业#学习@大学` → 标题「写作业」、地点「大学」、日历「学习」，
+  且 `calendarNames` 为空或不含「学习」时结果一样。
+
+### 回归与验证
+
+- `parse-cases.mjs` 194 → **202**（+8 条硬断言，特意用不在日历表里的「临时」标签钉住）；
+  示例库蓝本 369 → **378**（+9 条，P 组「回归·标签地点」），`--record` 的
+  「只许追加」闸门照旧生效。旧 369 行输出 `diff` **零差异**。
+- `npm test` 本机 / UTC / 纽约三套全绿：`202/202` + 39 + 24 + 20 + `378` 条蓝本；
+  `--audit` 可疑 **0/378**。
+- 双架构 `swiftc -typecheck` exit=0 无警告；拟物页 `<script>` 语法检查通过；
+  `build.sh` 成功，`codesign -v --deep --strict` 通过、`x86_64 arm64`、build 33；
+  包内 `engine/src/nlp.mjs` 与 `web/skeuo.html` 与源码 **sha256 逐字节一致**；
+  用**包内**后端跑用户那句，输出 `写作业 / 大学 / 学习 / 19:00–20:00`。
+- 网页侧两个行为用项目自带的 `DSH_CAL_SNAP_JS` 通道**亲手探针**（全程拦截
+  `postMessage`，没有真写/真删任何日程）：
+  - 组字态探针：`intercepted=true composingEnter=0 justEndedEnter=0 normalEnter=2`
+    —— 组字态和刚结束组字的回车都不提交，正常回车才提交。
+  - 删除探针：`before=24 after=23 opened=true closed=true removed=true calls=delete:…`
+    —— 确认一次就立刻摘板并发出 delete。
+
+### 未验证（如实列出，不能拿编译/探针冒充）
+
+- 玻璃模式的 IME 回车是标准 `hasMarkedText()` 判断，只做了代码审查 + 编译，
+  **真人打拼音 / 翻候选 / Esc 取消的手感未验证**（探针覆盖的是拟物网页侧）。
+- 真实 CalDAV DELETE 往返、失败回滚在真机上的表现、删除后的滚动/动画手感，
+  以及「点叉叉 → 点摘下」的真人鼠标手感，都未验证。
+- 装机版已更新文件，但**没有重启 App**（当时未运行），请打开后亲自试这三个场景。
+
+### 状态
+
+本地提交，**未 push、未打 tag、未发 Release**；`dist/` 未动。
+本轮 3 笔，累计 `main` 领先 `origin/main` **6 笔**（上一节写的 3 笔已过时）。
+负责 push 的模型仍只需普通 `git push origin main`，四条红线不变：
+不 force、不动已发布 tag（`v1.1.0` … `v1.3.1`）、不新建 tag/Release、不改 `dist/`。
+
+---
+
 ## [未发布 · 本地] 口语解析深度回归 — 2026-11-10
 
 只改 `cal-mcp/` 后端解析与测试，**没有改 App、没有打包、没有升版本号**：
