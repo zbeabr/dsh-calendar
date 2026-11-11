@@ -912,12 +912,16 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
 .confirm-btn:active{background:linear-gradient(180deg,#bdbdbd,#e2e2e2);box-shadow:inset 0 2px 4px rgba(0,0,0,.3)}
 .confirm-btn:focus-visible{outline:2px solid rgba(255,220,150,.9);outline-offset:2px}
 
-/* ===== 设置页开关：木板背后直接透出桌面（默认关） =====
-   不再用系统 NSVisualEffectView —— 它把桌面糊成一片均匀色，壁纸是纯色时
-   看起来跟不透明完全一样（用户实测反馈）。改成 WKWebView 原生透明 +
-   网页只留一层很淡的玻璃高光：后面的东西清晰可辨，同时有一点玻璃光泽。
-   金属上半部 .chrome 有自己的背景，保持不透明（用户选的只木板背后透明）。
-   假后窗 .back-window 让位给真实桌面；底部雾层也一起减弱。 */
+/* ===== 设置页开关：系统液态玻璃背景（默认关） =====
+   真玻璃由原生两层系统材质负责（NSVisualEffectView 采桌面模糊 +
+   NSGlassEffectView 提供折射与圆角边缘），网页这边只做三件事：
+   ① 根层让开，让原生玻璃透上来；
+   ② 一层柔和磨砂 tint：把透出来的高对比内容压柔，木板刻字才读得清
+      （用户反馈「可读性太差」——之前一版是裸透，后面的东西太抢眼）；
+   ③ 一圈可见的液态玻璃边界：顶部弧形反光 + 内高光 + 四角轻微色散，
+      这是用户要的「边界液态玻璃效果」，普通快照也能验证。
+   刻意不再往网页里塞整区 backdrop-filter：滚动时逐帧重算正是当年卡顿主因，
+   模糊交给原生系统材质做（合成阶段一次算完，不随滚动重复）。 */
 html.liquid-bg,html.liquid-bg body{
   background-color:transparent!important;background-image:none!important
 }
@@ -926,15 +930,66 @@ html.liquid-bg .back-window{display:none!important}
 html.liquid-bg .plank-area{
   -webkit-backdrop-filter:none!important;backdrop-filter:none!important;
   background:
-    linear-gradient(180deg,rgba(255,255,255,.18) 0%,rgba(255,255,255,.05) 130px,rgba(255,255,255,0) 320px),
-    linear-gradient(180deg,rgba(24,22,20,.05) 0%,rgba(18,16,14,.12) 100%)!important
+    /* 磨砂 tint 用变量控制，三档浓度由 Swift 推来的 glass-strength-N 决定。
+       系统 NSGlassEffectView 已经把桌面模糊了，这层只是可读性兜底：
+       清透档几乎不加，柔和档压得最实，但始终保留后面颜色的明暗变化。 */
+    linear-gradient(180deg,
+      rgba(246,244,239,var(--tint-top,.30)) 0%,
+      rgba(228,225,217,var(--tint-bottom,.44)) 100%),
+    /* 顶部弧形反光：玻璃片上沿的透镜高光 */
+    radial-gradient(140% 100px at 50% 0%,rgba(255,255,255,.34),rgba(255,255,255,0) 78%)!important
+}
+html.liquid-bg.glass-strength-0 .plank-area{--tint-top:.16;--tint-bottom:.26}
+html.liquid-bg.glass-strength-1 .plank-area{--tint-top:.30;--tint-bottom:.44}
+html.liquid-bg.glass-strength-2 .plank-area{--tint-top:.46;--tint-bottom:.62}
+/* 玻璃片的边界：一圈亮边 + 内侧高光 + 折射色散 + 落地阴影 */
+html.liquid-bg .app-window{
+  border-radius:22px!important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.78),
+    inset 1px 0 0 rgba(255,255,255,.42),
+    inset -1px 0 0 rgba(255,255,255,.42),
+    inset 0 -1px 0 rgba(255,255,255,.26),
+    inset 0 0 0 1px rgba(255,255,255,.16),
+    0 0 0 1px rgba(255,255,255,.22),
+    0 24px 60px rgba(24,18,12,.28)!important;
+  filter:none!important
+}
+html.liquid-bg .app-window::before{
+  content:"";position:absolute;inset:0;z-index:60;pointer-events:none;
+  border-radius:22px;
+  /* 只画边缘与四角的折射，中间整片留空，不干扰木板刻字 */
+  background:
+    linear-gradient(112deg,rgba(120,180,255,.13) 0%,rgba(255,255,255,0) 14%,
+                    rgba(255,255,255,0) 86%,rgba(255,186,130,.13) 100%),
+    radial-gradient(100% 64px at 50% 0%,rgba(255,255,255,.20),rgba(255,255,255,0) 82%);
+}
+/* 液态玻璃的边界：一圈真正看得见的高光边。
+   系统 NSGlassEffectView 的折射边只在窗口最外沿、实测贡献很弱（对照实验
+   平均像素差仅 1.48），所以这里用网页层补一条清晰的镜片亮边 + 圆角 +
+   顶部弧光 + 四角色散。fixed 贴视口，滚动时边界不会跟着跑掉；
+   pointer-events:none，绝不挡木板点击。 */
+html.liquid-bg body::after{
+  content:"";position:fixed;inset:0;z-index:40;pointer-events:none;
+  border-radius:22px;
+  border:1.5px solid rgba(255,255,255,.58);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.85),
+    inset 0 0 0 1px rgba(255,255,255,.20),
+    inset 0 -1px 0 rgba(255,255,255,.30),
+    0 0 18px rgba(255,255,255,.22),
+    0 0 0 1px rgba(20,16,12,.18);
+  background:
+    radial-gradient(120% 90px at 50% 0%,rgba(255,255,255,.30),rgba(255,255,255,0) 82%),
+    linear-gradient(108deg,rgba(130,190,255,.14) 0%,rgba(255,255,255,0) 13%,
+                    rgba(255,255,255,0) 87%,rgba(255,190,140,.14) 100%);
 }
 html.liquid-bg .app-window::after{
-  background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.18))!important
+  background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.12))!important
 }
 /* 自检专用：探针注入 .glass-probe 时，在网页最底层铺一块高对比彩色图案。
    普通 takeSnapshot 只导 WebView，有了它就能直接拍到「木板缝隙里确实有东西」。
-   产品运行不带这个 class，透出来的是真实桌面。 */
+   产品运行不带这个 class，透出来的是真实桌面（经系统玻璃模糊）。 */
 html.glass-probe.liquid-bg body::before{
   content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   background:repeating-linear-gradient(90deg,
@@ -2229,9 +2284,17 @@ document.querySelectorAll('.lamps .lamp').forEach(function(el, i){
 /* Swift → WebView：真实日程、系统提示、连接/模型状态 */
 let lastEventKey = '';
 window.dshRender = function(state){
-  /* 设置页「液态玻璃背景」开关：状态随每次推送重放，页面重载后也不会丢 */
+  /* 设置页「液态玻璃背景」开关 + 浓度档位：状态随每次推送重放，
+     页面重载后也不会丢（Swift 侧 applyLiquidBackdrop 也会主动切一次） */
   if (state.liquidBackdrop != null){
     document.documentElement.classList.toggle('liquid-bg', !!state.liquidBackdrop);
+  }
+  if (state.glassStrength != null){
+    var h = document.documentElement;
+    h.classList.remove('glass-strength-0','glass-strength-1','glass-strength-2');
+    if (state.liquidBackdrop !== false){
+      h.classList.add('glass-strength-' + state.glassStrength);
+    }
   }
   /* 识别结果先更新：它每敲一个字都可能变，和木板列表无关 */
   if (state.chips) renderChips(state.chips);

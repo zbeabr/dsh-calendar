@@ -718,12 +718,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 挂在玻璃 shell 里的设置页完全盖住（实测 DSH_CAL_SKEUO=1 + FORCE_SETUP=settings）。
     /// 外观改动先记下，等 buildMain() 回到主界面再应用。
     private var settingsVisible = false
-    /// 木板背后是否换成系统玻璃、透出真实桌面（设置页开关，默认关）。
-    /// 关着时 WebView 不透明，走原来的「预模糊后窗 + 静态暖灰」；
-    /// 打开后 WebView 与网页根层一起让开，露出下面那层系统玻璃采到的桌面。
+    /// 木板背后是否换成系统液态玻璃（设置页开关，默认关）。
+    /// 关着时走原来的「预模糊后窗 + 静态暖灰」；打开后 WebView 与网页根层
+    /// 一起让开，露出下面那一层 NSGlassEffectView —— 它是 macOS 26+ 的
+    /// Liquid Glass 预设，自带模糊、折射与圆角边缘。
     private var liquidBackdrop: Bool {
         UserDefaults.standard.bool(forKey: "liquidBackdrop")
     }
+    /// 玻璃浓度：0 清透 / 1 标准 / 2 柔和。
+    /// 系统预设没有连续的模糊半径参数（只有 .regular/.clear 两档 + tintColor），
+    /// 所以用「style + tint 浓淡 + 网页 tint 浓淡」组合出三档可调。
+    /// macOS 27 系统设置里那个全局透明度滑块同样会作用到这一层，两者叠加生效。
+    private var glassStrength: Int {
+        // 没存过偏好时默认「标准」(1)：最透的 0 档会让后面的桌面内容太抢眼，
+        // 用户实测反馈过「可读性太差」。不能直接用 integer(forKey:)（未设置返回 0）。
+        guard UserDefaults.standard.object(forKey: "glassStrength") != nil else { return 1 }
+        return min(2, max(0, UserDefaults.standard.integer(forKey: "glassStrength")))
+    }
+    /// 系统液态玻璃预设：按官方用法把承载视图嵌进 contentView，玻璃材质、
+    /// 折射和圆角边缘都由系统绘制。用 NSView? 存是因为该类只在 macOS 26+ 可用。
+    /// 刻意不再垫 NSVisualEffectView：四组对照实验证明双层会把后面内容糊成
+    /// 一片均匀浅灰白（看起来像不透明），单留系统预设反而能柔化且颜色可辨。
+    private var skeuoGlassView: NSView?
     /// 日历名 → 颜色，给每条日程配左侧色条
     private var calendarColors: [String: NSColor] = [:]
     /// 刚写入的那条：列表刷新时闪一下，告诉用户「它真的进去了」
@@ -1691,8 +1707,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         showsAppearance: Bool = false
     ) {
         // 从「设置…」打开时，底下多一块外观开关；首次连接时不需要，留白就好。
-        // 外观区现在是 4 行（多一行「模糊背景」），多留 36pt 免得压到上面的状态栏。
-        let lift: CGFloat = showsAppearance ? 172 : 0
+        // 外观区现在是 5 行（多一行「玻璃浓度」），多留 36pt 免得压到上面的状态栏。
+        let lift: CGFloat = showsAppearance ? 208 : 0
         let height: CGFloat = 330 + lift
 
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: height))
@@ -1767,12 +1783,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 界面等回到主界面再切（见 settingsAppearanceChanged / buildMain），
     /// 否则用户还在填账号密码，设置页会「啪」地消失。
     private func buildAppearanceSection(in root: NSView) {
-        let divider = NSBox(frame: NSRect(x: 24, y: 190, width: 512, height: 1))
+        let divider = NSBox(frame: NSRect(x: 24, y: 226, width: 512, height: 1))
         divider.boxType = .separator
         root.addSubview(divider)
 
         let caption = makeLabel("外观", size: 12, weight: .semibold, color: .secondaryLabelColor)
-        caption.frame = NSRect(x: 24, y: 164, width: 120, height: 18)
+        caption.frame = NSRect(x: 24, y: 200, width: 120, height: 18)
         root.addSubview(caption)
 
         root.addSubview(appearanceRow(
@@ -1780,15 +1796,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             detail: "金属板 / 木板 / 绿磷光屏，Dock 图标同步切换",
             on: skeuoMode,
             action: #selector(settingsAppearanceChanged(_:)),
-            y: 130
+            y: 166
         ))
         root.addSubview(appearanceRow(
-            title: "半透明背景",
-            detail: "木板背后直接透出桌面，带玻璃高光（仅拟物外观）",
+            title: "液态玻璃背景",
+            detail: "系统 NSGlassEffectView 预设：桌面模糊透出，带折射亮边",
             on: liquidBackdrop,
             action: #selector(settingsLiquidChanged(_:)),
-            y: 94
+            y: 130
         ))
+        root.addSubview(glassStrengthRow(y: 94))
         root.addSubview(appearanceRow(
             title: "输入框染色",
             detail: "按「标题 → 时间 → 地点 → 标签」铺一层渐变",
@@ -1803,6 +1820,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             action: #selector(settingsGlowChanged(_:)),
             y: 22
         ))
+    }
+
+    /// 玻璃浓度三档。AppKit 的液态玻璃预设没有 blurRadius，只有 style 两档 +
+    /// tintColor，所以这里把「通透 ↔ 磨砂」做成三档组合，系统 27 的全局
+    /// 透明度滑块会额外叠加到同一层。
+    private func glassStrengthRow(y: CGFloat) -> NSView {
+        let row = NSView(frame: NSRect(x: 24, y: y, width: 512, height: 28))
+        let label = makeLabel("玻璃浓度", size: 13, weight: .regular, color: .labelColor)
+        label.frame = NSRect(x: 0, y: 4, width: 96, height: 20)
+        row.addSubview(label)
+
+        let sub = makeLabel("系统预设无连续参数，用样式与染色浓淡近似", size: 11.5,
+                            weight: .regular, color: .secondaryLabelColor)
+        sub.frame = NSRect(x: 104, y: 5, width: 232, height: 18)
+        sub.lineBreakMode = .byTruncatingTail
+        row.addSubview(sub)
+
+        let seg = NSSegmentedControl(frame: NSRect(x: 344, y: 2, width: 168, height: 24))
+        seg.segmentCount = 3
+        seg.setLabel("清透", forSegment: 0)
+        seg.setLabel("标准", forSegment: 1)
+        seg.setLabel("柔和", forSegment: 2)
+        seg.segmentStyle = .rounded
+        seg.selectedSegment = glassStrength
+        seg.target = self
+        seg.action = #selector(settingsGlassStrengthChanged(_:))
+        row.addSubview(seg)
+        return row
+    }
+
+    @objc private func settingsGlassStrengthChanged(_ sender: NSSegmentedControl) {
+        UserDefaults.standard.set(sender.selectedSegment, forKey: "glassStrength")
+        applyLiquidBackdrop()
+        let names = ["清透", "标准", "柔和"]
+        setupStatus?.stringValue = "玻璃浓度已设为「\(names[sender.selectedSegment])」，回到主界面生效。"
     }
 
     private func appearanceRow(
@@ -1849,7 +1901,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         UserDefaults.standard.set(sender.on, forKey: "liquidBackdrop")
         applyLiquidBackdrop()
         setupStatus?.stringValue = sender.on
-            ? "已开启液态玻璃背景：木板缝隙会透出桌面。"
+            ? "已开启液态玻璃背景：系统玻璃会模糊桌面并透出，边界带折射高光。"
             : "已关闭液态玻璃背景，回到原来的深色木板底。"
     }
 
@@ -5210,6 +5262,10 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
             installScrollForwarder()
             installSkeuoFocusGuard()
             startSkeuoSync()
+            // 设置页点开关时拟物容器不在视图树里，回主界面重放一次，
+            // 保证「两层系统玻璃显隐 / WebView 底色 / 网页 liquid-bg 类」同步。
+            // 只切公开属性，不碰私有 KVC（build 39 的教训）。
+            applyLiquidBackdrop()
         } else {
             skeuoSyncTimer?.invalidate()
             skeuoSyncTimer = nil
@@ -5338,10 +5394,32 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
 
         let container = NSView(frame: bounds)
         container.wantsLayer = true
-        // 自检专用：在 WebView 后面垫高对比彩色底图，合成快照里能直接看到它
+        // 自检专用：在 WebView 后面垫高对比彩色底图，快照里能直接看到它
         // 从木板缝隙透出来。日常运行不创建它，透出的是真实桌面。
         if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_GLASS_BG"] == "1" {
             container.addSubview(makeGlassProbeBackdrop(frame: bounds))
+        }
+
+        // macOS 26+ 的 Liquid Glass 预设，只用这一层，不再垫 NSVisualEffectView。
+        // 头文件写明它是「把 contentView 嵌进动态玻璃」的容器视图，所以必须设
+        // contentView；前两版把它当空背景垫层（contentView=nil）是错的。
+        // 四组对照实验（都开/都关/只留一层）证明：双层会把后面糊成一片均匀
+        // 浅灰白；单留系统预设时彩色条纹被柔化但颜色仍可辨，圆角亮边也可见。
+        // 内缩 12px + 24px 圆角，让玻璃边界真的看得见，而不是被窗口裁掉。
+        if #available(macOS 26.0, *) {
+            let glassFrame = NSInsetRect(bounds, 12, 12)
+            let glass = NSGlassEffectView(frame: glassFrame)
+            applyGlassStrength(to: glass)
+            glass.cornerRadius = 24
+            let holder = NSView(frame: NSRect(origin: .zero, size: glassFrame.size))
+            holder.wantsLayer = true
+            holder.layer?.backgroundColor = NSColor.clear.cgColor
+            glass.contentView = holder
+            if #available(macOS 27.0, *) { glass.effectIsInteractive = true }
+            glass.autoresizingMask = [.width, .height]
+            glass.isHidden = !liquidBackdrop
+            container.addSubview(glass)
+            skeuoGlassView = glass
         }
         container.addSubview(web)
 
@@ -5395,20 +5473,75 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         return root
     }
 
-    /// 开关只切两样：underPageBackgroundColor（公开属性，运行时可靠）和网页
-    /// 根层的 liquid-bg 类。drawsBackground 在 WebView 创建时已永久关掉，
-    /// 不再在运行时动它 —— 上一版点开关没反应就栽在这里。
-    /// 关着时网页根层不透明深色，把桌面挡住；打开后根层透明，桌面直接透出。
+    /// 三档浓度映射到系统预设仅有的两个可调维度：style（.regular 更磨砂 /
+    /// .clear 更通透）与 tintColor 浓淡。AppKit 没有 blurRadius，所以这是
+    /// 「能做到的连续调节」的近似；macOS 27 系统设置里的全局透明度滑块
+    /// 会额外叠加到这一层，两者不冲突。
+    @available(macOS 26.0, *)
+    private func applyGlassStrength(to glass: NSGlassEffectView) {
+        switch glassStrength {
+        case 0:
+            glass.style = .clear
+            glass.tintColor = NSColor(calibratedRed: 0.16, green: 0.15, blue: 0.14, alpha: 0.06)
+        case 2:
+            glass.style = .regular
+            glass.tintColor = NSColor(calibratedRed: 0.16, green: 0.15, blue: 0.14, alpha: 0.38)
+        default:
+            glass.style = .regular
+            glass.tintColor = NSColor(calibratedRed: 0.16, green: 0.15, blue: 0.14, alpha: 0.20)
+        }
+    }
+
+    /// 开关只切公开属性：玻璃层 isHidden、underPageBackgroundColor、网页根层
+    /// 的 liquid-bg / glass-strength-N 类。drawsBackground 在 WebView 创建时
+    /// 已永久关掉，运行时绝不再碰私有 KVC —— 上一版点开关没反应就栽在这里。
+    /// 关着时玻璃隐藏、网页根层回到不透明深色，完全复原成原来的样子。
     private func applyLiquidBackdrop() {
         let on = liquidBackdrop
+        // 自检对照：DSH_CAL_GLASS_DISABLE=1 关掉系统玻璃层，用来证明
+        // 「模糊与边界确实来自系统预设，而不是网页自己画的」。
+        let glassOff = ProcessInfo.processInfo.environment["DSH_CAL_GLASS_DISABLE"] == "1"
+        skeuoGlassView?.isHidden = !on || glassOff
+        if #available(macOS 26.0, *), let g = skeuoGlassView as? NSGlassEffectView {
+            applyGlassStrength(to: g)
+        }
         guard let web = skeuoWebView else { return }
         web.underPageBackgroundColor = on
             ? .clear
             : NSColor(calibratedRed: 0.169, green: 0.161, blue: 0.149, alpha: 1)
-        let js = "document.documentElement.classList.toggle('liquid-bg', \(on ? "true" : "false"))"
+        // 网页侧的磨砂 tint 浓度跟着档位走：只改 class，不注入样式字符串，
+        // 页面重载后 pushSkeuoState 会带着 liquidBackdrop 再重放一次。
+        let onJS = on ? "true" : "false"
+        let js = "(function(){var h=document.documentElement;"
+            + "h.classList.toggle('liquid-bg',\(onJS));"
+            + "h.classList.remove('glass-strength-0','glass-strength-1','glass-strength-2');"
+            + "if(\(onJS)){h.classList.add('glass-strength-\(glassStrength)');}"
+            + "})()"
         web.evaluateJavaScript(js) { _, _ in }
         skeuoLastPayload = ""     // 让下一轮 payload 带着 liquidBackdrop 重放
         pushSkeuoState()
+    }
+
+    /// 自检用：把原生玻璃层的真实配置回传给网页探针。
+    /// 系统玻璃是运行时合成层，离屏渲染（cacheDisplay / layer.render）根本
+    /// 不画它，所以截图证明不了；只能把「系统预设确实挂上了、参数是什么」
+    /// 以结构化数据交给网页快照，避免把没验证的东西说成已验证。
+    private func glassDiagnostics() -> [String: Any] {
+        var glass: [String: Any] = ["available": false]
+        if #available(macOS 26.0, *), let g = skeuoGlassView as? NSGlassEffectView {
+            glass = [
+                "available": true,
+                "class": "NSGlassEffectView",
+                "style": g.style == .regular ? "regular" : "clear",
+                "cornerRadius": g.cornerRadius,
+                "contentView": g.contentView == nil ? "nil" : "SET",
+                "tinted": g.tintColor != nil,
+                "strength": glassStrength,
+                "hidden": g.isHidden,
+                "hostingLayer": g.subviews.contains { String(describing: type(of: $0)).contains("Hosting") },
+            ]
+        }
+        return ["glass": glass]
     }
 
     private func loadSkeuoHTML(into web: WKWebView) {
@@ -5506,7 +5639,7 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         let forceOffline = ProcessInfo.processInfo.environment["DSH_CAL_SNAP_OFFLINE"] == "1"
         let modelOnline = !forceOffline && (modelEnabled || LocalModel.shared.phase == .ready)
 
-        let state: [String: Any] = [
+        var state: [String: Any] = [
             "events": events,
             "sys": sys,
             "chips": lastChips,
@@ -5515,6 +5648,12 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
             // 放进 payload 而不是只靠一次性 JS 注入，是为了页面重载后能重放。
             "liquidBackdrop": liquidBackdrop,
         ]
+        // 浓度档位随 payload 重放，页面重载后也不会丢。
+        state["glassStrength"] = glassStrength
+        // 只在自检时把原生玻璃层的真实配置回传给网页探针（不污染日常 payload）。
+        if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_GLASS_INFO"] == "1" {
+            state["glassInfo"] = glassDiagnostics()
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: state, options: []),
               let json = String(data: data, encoding: .utf8),
               json != skeuoLastPayload else { return }
