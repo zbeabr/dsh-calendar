@@ -5405,13 +5405,15 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         // contentView；前两版把它当空背景垫层（contentView=nil）是错的。
         // 四组对照实验（都开/都关/只留一层）证明：双层会把后面糊成一片均匀
         // 浅灰白；单留系统预设时彩色条纹被柔化但颜色仍可辨，圆角亮边也可见。
-        // 内缩 12px + 24px 圆角，让玻璃边界真的看得见，而不是被窗口裁掉。
         if #available(macOS 26.0, *) {
-            let glassFrame = NSInsetRect(bounds, 12, 12)
-            let glass = NSGlassEffectView(frame: glassFrame)
+            // 满铺、不内缩：上一版内缩 12px 想「让边界看得见」，结果是玻璃外面
+            // 留了一圈 12px 的**没经过模糊的原始桌面** —— 同一次合成里
+            // 边缘锐利、中间模糊，正是用户问的「为啥边缘和中间透明度不一样」。
+            // 现在玻璃铺满窗口，边界交给网页那圈 1px 亮线 + 暗环来画。
+            let glass = NSGlassEffectView(frame: bounds)
             applyGlassStrength(to: glass)
-            glass.cornerRadius = 24
-            let holder = NSView(frame: NSRect(origin: .zero, size: glassFrame.size))
+            glass.cornerRadius = 22
+            let holder = NSView(frame: NSRect(origin: .zero, size: bounds.size))
             holder.wantsLayer = true
             holder.layer?.backgroundColor = NSColor.clear.cgColor
             glass.contentView = holder

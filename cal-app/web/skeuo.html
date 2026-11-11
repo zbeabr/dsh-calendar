@@ -913,36 +913,83 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
 .confirm-btn:focus-visible{outline:2px solid rgba(255,220,150,.9);outline-offset:2px}
 
 /* ===== 设置页开关：系统液态玻璃背景（默认关） =====
-   真玻璃由原生两层系统材质负责（NSVisualEffectView 采桌面模糊 +
-   NSGlassEffectView 提供折射与圆角边缘），网页这边只做三件事：
+   玻璃本体由原生 NSGlassEffectView 负责（模糊 + 折射都在合成阶段算完），
+   网页这边只做三件事：
    ① 根层让开，让原生玻璃透上来；
-   ② 一层柔和磨砂 tint：把透出来的高对比内容压柔，木板刻字才读得清
-      （用户反馈「可读性太差」——之前一版是裸透，后面的东西太抢眼）；
-   ③ 一圈可见的液态玻璃边界：顶部弧形反光 + 内高光 + 四角轻微色散，
-      这是用户要的「边界液态玻璃效果」，普通快照也能验证。
-   刻意不再往网页里塞整区 backdrop-filter：滚动时逐帧重算正是当年卡顿主因，
-   模糊交给原生系统材质做（合成阶段一次算完，不随滚动重复）。 */
+   ② 木板区一层柔和磨砂 tint（三档变量），把透出来的高对比内容压柔，
+      木板刻字才读得清（用户反馈过「可读性太差」，之前一版是裸透）；
+   ③ 木板区一圈「边缘亮、中间清」的液态玻璃边 —— 见下面 ::after。
+   刻意不往网页塞整区 backdrop-filter：滚动时逐帧重算正是当年卡顿主因，
+   模糊交给原生系统材质做（合成阶段一次算完，不随滚动重复）。
+
+   —— 2026-11-11 二次修正 ——
+   上一版把「顶部弧光 + 对角色散」写成了铺满整窗的填充，又用 z-index 40/60
+   盖在 .chrome 之上，结果金属上半部与绿屏整体被提亮（实测金属 175→202，
+   +27/255），看起来像糊了一层白纱、材质都变了（用户原话）。
+   现在：整窗填充全部删除，玻璃的可见性只留在木板区；
+   body::after 只留 1.5px 镜片亮边，不再铺任何颜色。 */
 html.liquid-bg,html.liquid-bg body{
   background-color:transparent!important;background-image:none!important
 }
 html.liquid-bg .desktop{background:transparent!important}
 html.liquid-bg .back-window{display:none!important}
+/* 金属上半部不参与液态玻璃（用户选的「只木板背后透明」）。
+   isolation 把 .chrome::before 的 overlay 混合锁在本元素内部：
+   页面根层透明之后，纹理层有可能去和窗口后面的桌面混色，材质就"变"了。
+   有了隔离，金属永远只和它自己的渐变混。 */
+html.liquid-bg .chrome{isolation:isolate}
 html.liquid-bg .plank-area{
   -webkit-backdrop-filter:none!important;backdrop-filter:none!important;
   background:
-    /* 磨砂 tint 用变量控制，三档浓度由 Swift 推来的 glass-strength-N 决定。
-       系统 NSGlassEffectView 已经把桌面模糊了，这层只是可读性兜底：
-       清透档几乎不加，柔和档压得最实，但始终保留后面颜色的明暗变化。 */
+    /* ① 上沿镜面：铜杆下方 12px 的一条反光，越往下越没有 */
+    linear-gradient(180deg,rgba(255,255,255,.26) 0%,rgba(255,255,255,0) 12px),
+    /* ② 左右两侧的折射提亮：36px 内衰减到 0，中间整片留空 ——
+       这就是「边缘和中间透明度不一样」的那道边：
+       玻璃弯折光线，边沿更亮更实，中间反而更清。
+       前 3px 给得最重，模拟弯月面那一圈高光。 */
+    linear-gradient(90deg,
+      rgba(255,255,255,.34) 0%,rgba(255,255,255,.16) 3px,rgba(255,255,255,0) 36px,
+      rgba(255,255,255,0) calc(100% - 36px),rgba(255,255,255,.14) calc(100% - 3px),
+      rgba(255,255,255,.30) 100%),
+    /* ③ 磨砂 tint：三档浓度由 Swift 推来的 glass-strength-N 决定。
+       用深色而不是白色 —— 白色 tint 会把后面的壁纸洗成一片米色，
+       看着「蒙了层雾」；深色 tint 像真玻璃那样压住亮度、保住后面的颜色，
+       木板刻字也才压得住（可读性那轮反馈的诉求）。 */
     linear-gradient(180deg,
-      rgba(246,244,239,var(--tint-top,.30)) 0%,
-      rgba(228,225,217,var(--tint-bottom,.44)) 100%),
-    /* 顶部弧形反光：玻璃片上沿的透镜高光 */
-    radial-gradient(140% 100px at 50% 0%,rgba(255,255,255,.34),rgba(255,255,255,0) 78%)!important
+      rgba(26,22,18,var(--tint-top,.22)) 0%,
+      rgba(16,13,10,var(--tint-bottom,.36)) 100%)!important
 }
-html.liquid-bg.glass-strength-0 .plank-area{--tint-top:.16;--tint-bottom:.26}
-html.liquid-bg.glass-strength-1 .plank-area{--tint-top:.30;--tint-bottom:.44}
-html.liquid-bg.glass-strength-2 .plank-area{--tint-top:.46;--tint-bottom:.62}
-/* 玻璃片的边界：一圈亮边 + 内侧高光 + 折射色散 + 落地阴影 */
+html.liquid-bg.glass-strength-0 .plank-area{--tint-top:.08;--tint-bottom:.18}
+html.liquid-bg.glass-strength-1 .plank-area{--tint-top:.20;--tint-bottom:.34}
+html.liquid-bg.glass-strength-2 .plank-area{--tint-top:.34;--tint-bottom:.50}
+/* 液态玻璃的「边」：亮线 + 紧贴内侧的暗环（玻璃厚度）+ 向内衰减的折射光。
+   放在 .plank-area 里而不是整窗：① 天然避开金属半部，绝不改材质；
+   ② 左右两条竖线沿 y 方向是均匀的，页面滚动时不会跟着内容跑掉；
+   ③ z-index 压在木板上方，光才会像真的洒在板子边缘上。
+   底边不在这个伪元素上（它跟着内容高度走，滚一下就出屏），
+   交给 fixed 的 .app-window::after 画。 */
+html.liquid-bg .plank-area::after{
+  content:"";position:absolute;inset:0;z-index:6;pointer-events:none;
+  border-left:1px solid rgba(255,255,255,.62);
+  border-right:1px solid rgba(255,255,255,.62);
+  border-top:1px solid rgba(255,255,255,.48);
+  /* 极淡的色散：左上偏冷、右下偏暖，只在两侧 6% 内出现，
+     这是液态玻璃和普通磨砂最容易被眼睛认出的一笔。 */
+  background:linear-gradient(102deg,
+    rgba(150,200,255,.10) 0%,rgba(255,255,255,0) 6%,
+    rgba(255,255,255,0) 94%,rgba(255,190,150,.10) 100%);
+  box-shadow:
+    /* 圈内第一笔：近白的弯月面高光 */
+    inset 3px 0 4px -3px rgba(255,255,255,.90),
+    inset -3px 0 4px -3px rgba(255,255,255,.85),
+    inset 0 3px 4px -3px rgba(255,255,255,.80),
+    /* 第二笔：紧跟其后的暗环，做出玻璃的厚度 */
+    inset 7px 0 12px -10px rgba(0,0,0,.55),
+    inset -7px 0 12px -10px rgba(0,0,0,.55),
+    inset 0 8px 14px -12px rgba(0,0,0,.45);
+}
+/* 玻璃片的边界：一圈亮边 + 内侧高光 + 落地阴影。
+   这些都画在 .app-window 自己的盒子里、位于子元素之下，不会盖到金属上。 */
 html.liquid-bg .app-window{
   border-radius:22px!important;
   box-shadow:
@@ -955,37 +1002,23 @@ html.liquid-bg .app-window{
     0 24px 60px rgba(24,18,12,.28)!important;
   filter:none!important
 }
-html.liquid-bg .app-window::before{
-  content:"";position:absolute;inset:0;z-index:60;pointer-events:none;
-  border-radius:22px;
-  /* 只画边缘与四角的折射，中间整片留空，不干扰木板刻字 */
-  background:
-    linear-gradient(112deg,rgba(120,180,255,.13) 0%,rgba(255,255,255,0) 14%,
-                    rgba(255,255,255,0) 86%,rgba(255,186,130,.13) 100%),
-    radial-gradient(100% 64px at 50% 0%,rgba(255,255,255,.20),rgba(255,255,255,0) 82%);
-}
-/* 液态玻璃的边界：一圈真正看得见的高光边。
-   系统 NSGlassEffectView 的折射边只在窗口最外沿、实测贡献很弱（对照实验
-   平均像素差仅 1.48），所以这里用网页层补一条清晰的镜片亮边 + 圆角 +
-   顶部弧光 + 四角色散。fixed 贴视口，滚动时边界不会跟着跑掉；
-   pointer-events:none，绝不挡木板点击。 */
+/* 窗口最外沿的镜片亮边：只有 1.5px 的框，不铺任何颜色填充
+   （上一版这里还有一层 radial 白弧 + 对角色散，正是"白纱"的来源）。 */
 html.liquid-bg body::after{
   content:"";position:fixed;inset:0;z-index:40;pointer-events:none;
   border-radius:22px;
-  border:1.5px solid rgba(255,255,255,.58);
+  border:1.5px solid rgba(255,255,255,.50);
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.85),
-    inset 0 0 0 1px rgba(255,255,255,.20),
-    inset 0 -1px 0 rgba(255,255,255,.30),
-    0 0 18px rgba(255,255,255,.22),
-    0 0 0 1px rgba(20,16,12,.18);
-  background:
-    radial-gradient(120% 90px at 50% 0%,rgba(255,255,255,.30),rgba(255,255,255,0) 82%),
-    linear-gradient(108deg,rgba(130,190,255,.14) 0%,rgba(255,255,255,0) 13%,
-                    rgba(255,255,255,0) 87%,rgba(255,190,140,.14) 100%);
+    inset 0 1px 0 rgba(255,255,255,.70),
+    inset 0 -1px 0 rgba(255,255,255,.26),
+    0 0 0 1px rgba(20,16,12,.16);
 }
+/* 底部雾层（fixed 贴视口）：玻璃模式里把它压淡，并补一条下沿亮边，
+   让玻璃片的"底"有厚度，而不是被深色雾一盖了之。 */
 html.liquid-bg .app-window::after{
-  background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.12))!important
+  background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.14) 62%,rgba(45,43,40,.26))!important;
+  border-bottom:1px solid rgba(255,255,255,.34);
+  box-shadow:inset 0 -4px 14px -8px rgba(255,255,255,.55)
 }
 /* 自检专用：探针注入 .glass-probe 时，在网页最底层铺一块高对比彩色图案。
    普通 takeSnapshot 只导 WebView，有了它就能直接拍到「木板缝隙里确实有东西」。
