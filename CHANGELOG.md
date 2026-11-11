@@ -4,6 +4,88 @@
 
 ---
 
+## [未发布 · 本地] 纯系统液态玻璃 + 三档浓度 — 2026-11-11（build 40）
+
+用户反馈 build 39「没有模糊、边界也没有液态玻璃效果、可读性太差」，并追问
+「为什么底层还有个毛玻璃？我这个版本液态玻璃不是可以直接调整模糊度吗？」
+
+### 两条查证结论
+
+1. **系统预设没有连续模糊度参数**。SDK 头文件里 `NSGlassEffectView` 的全部属性只有
+   `contentView / cornerRadius / tintColor / style / effectIsInteractive`，
+   `style` 只有 `.regular` / `.clear` 两档；SwiftUI 的 `Glass` 也只有
+   `regular / clear / identity` + `tint(_:)` + `interactive(_:)`，同样没有 `blurRadius`。
+   macOS 27「系统设置 → 外观」确实新增了**液态玻璃透明度滑块**（26.1 只有
+   「清晰 / 着色」二元开关），但那是系统级全局偏好，App 无 API 读写；
+   它只对「只用系统预设、不自己叠手工模糊」的视图生效。
+2. **前两版把 `NSGlassEffectView` 用错了**。头文件写明它是「把 `contentView`
+   嵌进动态玻璃」的容器视图，而我让它 `contentView = nil` 当空背景垫层。
+   独立图层树探针证实内部始终有 `_NSCoreHostingView<RootView>`（SwiftUI 材质层），
+   玻璃层一直都在，问题在于它没东西可包、又跟另一层毛玻璃叠在一起。
+
+### 决定性实验：四组真实合成窗口对照
+
+| 配置 | 木板缝隙 |
+|---|---|
+| 两层都关（build 39 裸透） | 彩色条纹锐利刺眼，可读性差 |
+| **只留系统液态玻璃** | 条纹被柔化模糊、颜色仍可辨、圆角亮边可见 ← 正确 |
+| 只留底层毛玻璃 | 一片均匀浅灰白 |
+| 两层都在 | 一片均匀浅灰白（＝用户说的「完全不透明」） |
+
+底层 `NSVisualEffectView` 是多余的双重模糊，把后面内容糊没了，**已删除**。
+另一次像素对照也印证：两层都在时单独关掉液态玻璃层，平均像素差只有 1.48
+（19% 像素有差异），说明上层几乎没贡献；删掉底层后它才真正起作用。
+
+### 改动
+
+- `ensureSkeuoContainer` 只创建 `NSGlassEffectView`：透明 `contentView`、
+  `.regular`、`cornerRadius = 24`、`tintColor`、macOS 27+ `effectIsInteractive`，
+  内缩 12px 让玻璃边界可见。删掉 `skeuoBlurView` 及全部相关代码。
+- **新增三档浓度** `glassStrength`（清透 / 标准 / 柔和，默认标准）：
+  映射 `style` + `tintColor` alpha + 网页磨砂 tint 浓度（CSS 变量）。
+  这是 AppKit 没有连续参数时能做到的近似；macOS 27 系统级滑块会叠加到同一层。
+- 设置页第 3 行加 `NSSegmentedControl`，外观区 4→5 行，窗口 `lift 172→208`。
+- 网页层补**可见的液态玻璃边界**：`body::after` 固定定位高光边 + 圆角 +
+  顶部弧光 + 四角色散、`app-window` 亮边、`plank-area` 三档磨砂 tint。
+  刻意不往网页塞整区 `backdrop-filter`——滚动逐帧重算正是当年卡顿主因。
+- `applyAppearance()` 回主界面时重放一次状态，避免设置页切换丢失。
+- 自检：`DSH_CAL_SNAP_GLASS_INFO` 把原生玻璃层配置回传网页探针，
+  `DSH_CAL_GLASS_DISABLE` 关掉玻璃层做对照，`glassDiagnostics()` 报
+  `class/style/cornerRadius/contentView/strength/hostingLayer`。
+- `Info.plist` 39→40（短版本仍 1.3.2，`VERSION=1.3.2-40`）。
+
+### 验证边界（重要）
+
+系统玻璃是**运行时合成层**：三个独立探针证实 `cacheDisplay`、
+`layer.render(in:)`、`CGWindowListCreateImage` 都不画它，本机 `screencapture`
+也无屏幕采集权限。所以本轮改用「真实合成窗口快照 + 结构化配置回传」分层验证，
+**不把截图里看不到的东西说成已验证**。
+
+- 双架构 `swiftc -typecheck` exit=0、JS 语法、`build.sh`、
+  `codesign -v --deep --strict`、`x86_64 arm64`、包内 HTML 与源码 sha256 一致。
+- 三时区 `npm test` 全绿（202+39+13+31+20+67+36+386），`--audit` 可疑 0/386。
+- 合成快照三档：清透条纹饱和锐利 / 柔和被磨砂压成淡彩、刻字清楚；设置页 5 行完整。
+- 状态探针：关 `class=wood16 玻璃 hidden=true`；开(柔和)
+  `class=liquid-bg glass-strength-2`, `tint .46/.62`, `payloadStrength=2`,
+  `glass=NSGlassEffectView style=regular r=24 cv=SET strength=2 hidden=false host=true`；
+  运行时点开关同样 `hidden=false host=true`；默认档 `strength=1 / regular`。
+- 帧率：开 `n=476 avg=16.8ms p95=18.0ms >33=2`；关 `n=0`（rAF 被系统暂停，不报数字）。
+
+**未验证**：真机桌面（非自检彩色图案）透出的实际观感、macOS 27 系统级透明度
+滑块与本 App 的实际联动、真人滚动/拖窗口手感、不同壁纸与外接屏、
+设置页真人点击分段控件。所有临时 `defaults write` 已恢复（开关默认关、浓度默认标准）。
+
+### 状态与回滚
+
+本地提交 **未 push、未打 tag、未发 Release**；`dist/` 未动。
+`rollback/switch.sh` 补 `src-build40`（`4ed99eb`）并演练 40↔39 闭环。
+负责 push 的模型仍只需普通 `git push origin main`，四条红线不变：
+不 force、不动已发布 tag（`v1.1.0` … `v1.3.1`）、不新建 tag/Release、不改 `dist/`。
+装机 **1.3.2 / build 40**；若 App 正开着，**必须 ⌘Q 完全退出再重新打开**。
+图标第二轮 4 版设计稿按用户要求继续「先放着」，未动任何图标文件。
+
+---
+
 ## [未发布 · 本地] 半透明背景重做：去掉系统模糊，直接透出桌面 — 2026-11-11（build 39）
 
 用户实测 build 37/38 的开关「完全不透明，重新搞」。复盘出两个根因，都在我这侧：
