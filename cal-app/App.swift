@@ -5483,8 +5483,13 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
     private func applyGlassStrength(to glass: NSGlassEffectView) {
         switch glassStrength {
         case 0:
-            glass.style = .clear
-            glass.tintColor = NSColor(calibratedRed: 0.16, green: 0.15, blue: 0.14, alpha: 0.06)
+            // 三档都用 .regular，只差 tint 浓淡。
+            // 原先是 .clear，真机截图证明那条路径**几乎不模糊**：彩色底图透上来
+            // 完全锐利、饱和度不减，看着就是「没开玻璃」，用户选的清透档因此
+            // 形同虚设。系统只给 .clear / .regular 两档材质，模糊只由 style 决定，
+            // 浓淡由 tint 决定 —— 想要「清透但仍像玻璃」，只能 .regular + 浅 tint。
+            glass.style = .regular
+            glass.tintColor = NSColor(calibratedRed: 0.16, green: 0.15, blue: 0.14, alpha: 0.10)
         case 2:
             glass.style = .regular
             glass.tintColor = NSColor(calibratedRed: 0.16, green: 0.15, blue: 0.14, alpha: 0.38)
