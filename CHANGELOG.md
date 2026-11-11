@@ -4,6 +4,67 @@
 
 ---
 
+## [未发布 · 本地] 半透明背景重做：去掉系统模糊，直接透出桌面 — 2026-11-11（build 39）
+
+用户实测 build 37/38 的开关「完全不透明，重新搞」。复盘出两个根因，都在我这侧：
+
+1. **运行时点开关根本没生效**。所有验证都是「启动前 `defaults write` 再启动」，
+   而真实用法是在设置页点开关。上一版在设置页运行时才调
+   `web.setValue(false, forKey:"drawsBackground")`（KVC 私有属性），页面已加载完，
+   不会重新生效 —— 用户点完开关看到的仍是不透明 WebView。
+2. **系统 `NSVisualEffectView` 把桌面糊成一片均匀色**。壁纸是纯色时，透出来就是
+   一片浅灰，视觉上和「不透明的一块板」没有区别。`NSGlassEffectView` 作整窗背景
+   更是直接采不到桌面（上一轮已实测）。
+
+**重做**：不再依赖系统材质采样，也不在运行时碰 WebView 私有属性。
+
+- WebView 创建时**一次性**设 `drawsBackground=false` / `underPageBackgroundColor=.clear`；
+  开关只切 `underPageBackgroundColor`（公开属性）和网页 `html.liquid-bg` 类。
+- 删掉 `NSVisualEffectView` 玻璃层，桌面内容**清晰可辨**地直接透出；网页
+  `.plank-area` 只留一层极淡的白色玻璃高光 + 很淡的暗色，不再做 `backdrop-filter`。
+- 金属上半部 `.chrome` 保持不透明（用户选的「只木板背后透明」）。
+- 设置页第 2 行改名为「半透明背景」，默认关；`Info.plist` 38→39
+  （短版本仍 1.3.2，`VERSION=1.3.2-39`）。
+
+**自检**：网页新增 `.glass-probe` 彩色底层图案（只在探针注入时出现），
+普通 `takeSnapshot` 就能拍到「木板缝隙里确实有东西」；
+`DSH_CAL_SNAP_LIQUID_RUNTIME=1` 在 `didFinish` 后模拟「页面加载完再点开关」。
+上一轮加的 `DSH_CAL_SNAP_COMPOSITE=1`（CGWindowListCreateImage）在这台机器当前
+环境下拍出纯白图（`screencapture` 也报 could not create image from display），
+**屏幕采集不可用，本轮不拿它当证据**；代码保留但不作为验证依据。
+
+验证（亲手跑过）：双架构 `swiftc -typecheck` exit=0、拟物页 script 语法 OK、
+`build.sh`、`codesign -v --deep --strict`、`x86_64 arm64`、包内 `skeuo.html`
+与源码 sha256 一致；三时区 `npm test` 全绿
+（202 解析 + 39 安全 + 13 账号/区域 + 31 CalDAV + 20 模型兜底 +
+67 闭集策略 + 36 模型属性 + 386 蓝本），`--audit` 可疑 0/386。
+三张普通快照：
+
+```
+关：      class=wood16 glass-probe       bodyBg=rgb(43,41,38)   backWindowDisplay=block
+开：      class=liquid-bg wood16 glass-probe bodyBg=rgba(0,0,0,0) backWindowDisplay=none
+运行时开：与「开」输出完全一致，PNG 字节数同为 1971807
+```
+
+关着时缝隙是均匀深灰；打开后是**清晰可辨的蓝/绿/橙/紫/红条纹**（测试图案，
+真机换成你的桌面），一眼能看出后面有东西。运行时切换与启动时切换结果字节级一致，
+说明第 1 个根因已修掉。
+
+**帧率本轮没有重新测到**：rAF 探针这次 `n=0`（系统暂停了帧回调），不把上一轮数字
+冒充本轮结果。上一轮已验证系统玻璃方案为关 17.3ms / 开 16.7ms；本轮去掉了
+原生模糊层，理论上不会更慢，但**这一项标为未验证**。
+
+**三层可回滚**：① 设置页关掉开关即回原样（默认关）；
+② `zsh <会话工作区>/rollback/switch.sh 38` 整包退回你当前装机的
+1.3.2 / build 38（`39` 可切回，脚本已补 38/39 两档）；
+③ 本地提交未 push 可 `git revert --no-edit`。四条红线不变。
+
+**未验证**：真机上桌面内容透出的实际观感（当前环境屏幕采集不可用，只能靠彩色
+测试图案证明网页根层透明）、真人长时间滚动/拖窗口手感、不同壁纸与外接屏、
+设置页真人鼠标点开关手感。**必须 ⌘Q 完全退出 App 再重开**才是 build 39。
+
+---
+
 ## [1.3.2] — 2026-11-10（构建号 38）
 
 外部反馈（中国大陆 iCloud 账号 + Apple Silicon）暴露了五个问题，全部核实并修掉。
