@@ -724,8 +724,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var liquidBackdrop: Bool {
         UserDefaults.standard.bool(forKey: "liquidBackdrop")
     }
-    /// 垫在拟物 WebView 后面的系统玻璃层，只木板缝隙透得出来。
-    private var skeuoGlassView: NSView?
     /// 日历名 → 颜色，给每条日程配左侧色条
     private var calendarColors: [String: NSColor] = [:]
     /// 刚写入的那条：列表刷新时闪一下，告诉用户「它真的进去了」
@@ -1785,8 +1783,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             y: 130
         ))
         root.addSubview(appearanceRow(
-            title: "液态玻璃背景",
-            detail: "木板背后透出真实桌面，系统玻璃材质（仅拟物外观）",
+            title: "半透明背景",
+            detail: "木板背后直接透出桌面，带玻璃高光（仅拟物外观）",
             on: liquidBackdrop,
             action: #selector(settingsLiquidChanged(_:)),
             y: 94
@@ -5332,23 +5330,19 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         web.autoresizingMask = [.width, .height]
         web.navigationDelegate = self
         web.allowsBackForwardNavigationGestures = false
-        // 滚到底回弹时露出来的是 WebView 的 underPage 底色，系统默认是白的 ——
-        // 页面里 html/body 已经压成同一块深色，原生这一层也要一起压，
-        // 否则橡皮筋拉出来的那一块还是「没渲染的白底」。
-        web.underPageBackgroundColor = NSColor(calibratedRed: 0.169, green: 0.161, blue: 0.149, alpha: 1)
+        // 透明链路只在 WebView 创建时设一次：之后开关只切网页 CSS 类。
+        // 上一版在设置页运行时才改 drawsBackground（KVC 私有属性），页面已加载完，
+        // 不会重新生效 —— 这正是用户点开关后仍「完全不透明」的根因。
+        web.setValue(false, forKey: "drawsBackground")
+        web.underPageBackgroundColor = .clear
 
         let container = NSView(frame: bounds)
         container.wantsLayer = true
-        // 自检专用：离屏快照采不到窗口后面的桌面，垫一张彩色底图来证明
-        // 「WebView 真的透了」。日常运行不创建它，玻璃采的是真实桌面。
+        // 自检专用：在 WebView 后面垫高对比彩色底图，合成快照里能直接看到它
+        // 从木板缝隙透出来。日常运行不创建它，透出的是真实桌面。
         if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_GLASS_BG"] == "1" {
             container.addSubview(makeGlassProbeBackdrop(frame: bounds))
         }
-        // 系统玻璃垫在 WebView 后面；开关关着时整层隐藏，维持原来的不透明深灰。
-        let glass = makeSkeuoGlassView(frame: bounds)
-        glass.isHidden = !liquidBackdrop
-        container.addSubview(glass)
-        skeuoGlassView = glass
         container.addSubview(web)
 
         // 只占标题栏「中间可拖」的那一段：左边 100px 留给红绿灯，右边 160px 留给状态灯。
@@ -5373,62 +5367,41 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         skeuoWebView = web
         skeuoContainer = container
         loadSkeuoHTML(into: web)
-        applyLiquidBackdrop()     // 启动时按偏好设好 WebView 透明度与玻璃层
+        applyLiquidBackdrop()     // 启动时按偏好设好网页根层
         return container
     }
 
-    /// 系统玻璃层：NSVisualEffectView(.underWindowBackground, .behindWindow)，
-    /// 与玻璃外观模式同一套系统预设，采窗口后面的真实桌面。
-    ///
-    /// 自检快照走离屏 cacheDisplay，采不到窗口后面的桌面，这时改
-    /// .withinWindow 采同窗口的彩色测试底图，用来证明透明链路通了。
-    private func makeSkeuoGlassView(frame: NSRect) -> NSView {
-        if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_GLASS_BG"] == "1" {
-            let fx = NSVisualEffectView(frame: frame)
-            fx.material = .underWindowBackground
-            fx.blendingMode = .withinWindow
-            fx.state = .active
-            fx.autoresizingMask = [.width, .height]
-            return fx
-        }
-        // 实测：NSGlassEffectView（26+ 的 Liquid Glass 预设）是「把 contentView
-        // 包进玻璃」的容器视图，contentView 为空时当整窗背景垫层采不到桌面，
-        // 合成快照里木板缝隙仍是一片黑。整窗大块玻璃改用项目玻璃模式已验证的
-        // NSVisualEffectView：.underWindowBackground + .behindWindow 采窗口后面
-        // 的真实桌面，并做系统 vibrancy 提亮。NSGlassEffectView 更适合小片控件。
-        let fx = NSVisualEffectView(frame: frame)
-        fx.material = .underWindowBackground
-        fx.blendingMode = .behindWindow
-        fx.state = .active
-        fx.autoresizingMask = [.width, .height]
-        return fx
-    }
-
+    /// 自检底图：高对比彩色条纹 + 粗白横线。不再放系统模糊层，
+    /// 这样合成快照里能**清晰辨认**出后面的东西，而不是一片糊掉的均匀色。
     private func makeGlassProbeBackdrop(frame: NSRect) -> NSView {
         let root = NSView(frame: frame)
         root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor(calibratedRed: 0.94, green: 0.88, blue: 0.76, alpha: 1).cgColor
+        root.layer?.backgroundColor = NSColor.white.cgColor
         let colors: [NSColor] = [.systemBlue, .systemGreen, .systemOrange, .systemPurple, .systemRed]
         let stripeWidth = frame.width / CGFloat(colors.count)
         for (index, color) in colors.enumerated() {
             let stripe = NSView(frame: NSRect(x: CGFloat(index) * stripeWidth, y: 0,
                                              width: stripeWidth, height: frame.height))
             stripe.wantsLayer = true
-            stripe.layer?.backgroundColor = color.withAlphaComponent(0.62).cgColor
+            stripe.layer?.backgroundColor = color.cgColor
             root.addSubview(stripe)
+        }
+        for y in stride(from: 90.0, to: frame.height, by: 170.0) {
+            let line = NSView(frame: NSRect(x: 0, y: y, width: frame.width, height: 26))
+            line.wantsLayer = true
+            line.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.9).cgColor
+            root.addSubview(line)
         }
         return root
     }
 
-    /// 开关变化时（以及启动时）把三层一起切：原生玻璃层显隐、WebView 自身透明度、
-    /// 网页根层背景。少切一层都会退化成「换了一种灰」而不是真半透明。
+    /// 开关只切两样：underPageBackgroundColor（公开属性，运行时可靠）和网页
+    /// 根层的 liquid-bg 类。drawsBackground 在 WebView 创建时已永久关掉，
+    /// 不再在运行时动它 —— 上一版点开关没反应就栽在这里。
+    /// 关着时网页根层不透明深色，把桌面挡住；打开后根层透明，桌面直接透出。
     private func applyLiquidBackdrop() {
         let on = liquidBackdrop
-        skeuoGlassView?.isHidden = !on
         guard let web = skeuoWebView else { return }
-        // WKWebView 在 macOS 上把 drawsBackground 暴露成 KVC 兼容属性（非公开 API）。
-        // 不关掉它，网页里 transparent 的地方会露出 WebView 自带的不透明底色。
-        web.setValue(!on, forKey: "drawsBackground")
         web.underPageBackgroundColor = on
             ? .clear
             : NSColor(calibratedRed: 0.169, green: 0.161, blue: 0.149, alpha: 1)
@@ -5596,6 +5569,13 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // 自检：模拟「页面加载完之后，用户在设置页点开关」这条路径。
+        // 之前所有验证都是启动前写好偏好，恰恰漏了运行时切换。
+        if webView === skeuoWebView,
+           ProcessInfo.processInfo.environment["DSH_CAL_SNAP_LIQUID_RUNTIME"] == "1" {
+            UserDefaults.standard.set(true, forKey: "liquidBackdrop")
+            applyLiquidBackdrop()
+        }
         skeuoLastPayload = ""
         pushSkeuoState()
         /* 打开就能打字：DOM 焦点给了输入框，还得让 WebView 成为 firstResponder，
@@ -5616,6 +5596,11 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
     func renderSkeuoSnapshot(to path: String, done: @escaping () -> Void) {
         if ProcessInfo.processInfo.environment["DSH_CAL_SNAP_COMPOSITE"] == "1",
            let win = window {
+            // 窗口不在前台 / 不在当前 Space 时 CGWindowListCreateImage 会拍出纯白，
+            // 先把它拉到前台并强制重绘一次（只影响 --snapshot 自检进程）。
+            NSApp.activate(ignoringOtherApps: true)
+            win.makeKeyAndOrderFront(nil)
+            win.display()
             let options: CGWindowImageOption = [.boundsIgnoreFraming, .bestResolution]
             if let cg = CGWindowListCreateImage(.null, .optionIncludingWindow,
                                                 UInt32(win.windowNumber), options) {

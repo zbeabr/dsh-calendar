@@ -912,13 +912,12 @@ html.wood16 .plank{background-image:var(--wood);background-size:100% 864px}
 .confirm-btn:active{background:linear-gradient(180deg,#bdbdbd,#e2e2e2);box-shadow:inset 0 2px 4px rgba(0,0,0,.3)}
 .confirm-btn:focus-visible{outline:2px solid rgba(255,220,150,.9);outline-offset:2px}
 
-/* ===== 设置页开关：木板背后的系统液态玻璃（默认关） =====
-   真半透明要三层一起让开：网页根层、.desktop、.plank-area 全改透明，
-   原生侧同时关掉 WKWebView 的 drawsBackground / underPageBackgroundColor，
-   下面垫的是系统 NSGlassEffectView（26+）或 NSVisualEffectView 采到的桌面。
-   金属上半部 .chrome 有自己的背景，保持不透明 —— 用户选的「只木板背后透明」。
-   假后窗 .back-window 让位给真实桌面；.plank-area 只留极淡的暖色 tint
-   保证木板刻字仍读得清；底部雾层同步减弱，别把玻璃又盖回深色。 */
+/* ===== 设置页开关：木板背后直接透出桌面（默认关） =====
+   不再用系统 NSVisualEffectView —— 它把桌面糊成一片均匀色，壁纸是纯色时
+   看起来跟不透明完全一样（用户实测反馈）。改成 WKWebView 原生透明 +
+   网页只留一层很淡的玻璃高光：后面的东西清晰可辨，同时有一点玻璃光泽。
+   金属上半部 .chrome 有自己的背景，保持不透明（用户选的只木板背后透明）。
+   假后窗 .back-window 让位给真实桌面；底部雾层也一起减弱。 */
 html.liquid-bg,html.liquid-bg body{
   background-color:transparent!important;background-image:none!important
 }
@@ -926,10 +925,20 @@ html.liquid-bg .desktop{background:transparent!important}
 html.liquid-bg .back-window{display:none!important}
 html.liquid-bg .plank-area{
   -webkit-backdrop-filter:none!important;backdrop-filter:none!important;
-  background:linear-gradient(180deg,rgba(38,34,30,.10) 0%,rgba(28,25,22,.16) 100%)!important
+  background:
+    linear-gradient(180deg,rgba(255,255,255,.18) 0%,rgba(255,255,255,.05) 130px,rgba(255,255,255,0) 320px),
+    linear-gradient(180deg,rgba(24,22,20,.05) 0%,rgba(18,16,14,.12) 100%)!important
 }
 html.liquid-bg .app-window::after{
-  background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.28))!important
+  background:linear-gradient(180deg,rgba(45,43,40,0),rgba(45,43,40,.18))!important
+}
+/* 自检专用：探针注入 .glass-probe 时，在网页最底层铺一块高对比彩色图案。
+   普通 takeSnapshot 只导 WebView，有了它就能直接拍到「木板缝隙里确实有东西」。
+   产品运行不带这个 class，透出来的是真实桌面。 */
+html.glass-probe.liquid-bg body::before{
+  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:repeating-linear-gradient(90deg,
+    #2f7ff0 0 20%,#34b26a 20% 40%,#ef9a2f 40% 60%,#9b6be0 60% 80%,#e2534b 80% 100%)
 }
 </style>
 </head>
