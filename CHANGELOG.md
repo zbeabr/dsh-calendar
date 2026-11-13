@@ -4,6 +4,97 @@
 
 ---
 
+## [未发布 · 本地] P0/P1：视觉回归闭环 + 中心均匀玻璃 + 回滚补齐 — 2026-11-13（build 43）
+
+所有者拍板：「做 P0 P1，但是木板本身不要半透明」。木板 `.plank` 的 CSS 本轮**一行未动**。
+
+### P1：为什么还会有「蒙版」和「边缘/中间不一样」
+
+build 41 删掉了整窗白纱，但还留着三样东西：铺满全屏的 `body::after` 亮框、整窗
+`.app-window` 的圆角 / inset 阴影、木板区 36px 侧向渐变 + 上下 tint 渐变。
+前两样盖在 `.chrome` 之上，第三样把「中心与边缘」写成了一片渐变，而用户贴的
+控制中心参考图是**中心均匀 + 一圈明确亮线**。
+
+本轮只改 `cal-app/web/skeuo.html`：
+
+- 删除 `html.liquid-bg body::after`、`html.liquid-bg .app-window{...}` 两块整窗 / 全屏装饰；
+- `.chrome` 的 `isolation:isolate` 从 liquid 专属挪到基础规则，两种外观共用一套混合；
+- 木板区 tint 收成单一 `rgba(20,17,14,var(--tint,.26))`，三档只改 `--tint`（.12/.26/.40），
+  删掉 36px 侧向渐变、12px 上沿镜面、上下 tint 渐变与色散填充；
+- 亮边只画在 `.plank-area::after`：1.5px 近白边（.78/.62）+ 加粗的弯月面高光 + 暗环；
+  底部 fixed 层只留下沿亮线，不再铺渐变雾；
+- 原生 `NSGlassEffectView` 保持满铺 `.regular` 与三档 tint（build 42 的修复不回退）。
+
+### P0：三条地基
+
+1. **回归用例**（`cal-app/tests/`，纯 Node / Swift 零依赖）：
+   - `node cal-app/tests/glass-layout.mjs`：10 条 CSS 契约，锁死「不许再有整窗装饰、
+     tint 必须均匀、亮边只在木板区、木板不透明」；
+   - `zsh cal-app/tests/glass-pixel.sh`：用装机 App 的 `--snapshot` 拍开 / 关两张图，
+     量上半部金属像素差；会自动 `defaults export/import` 备份并恢复 `liquidBackdrop`。
+   - 刻意**没有**挂进 `npm test`：发行包内自检跑的是裁剪过的 `cal-mcp/`，没有 `cal-app/`，
+     挂上去会让包内 `npm test` 找不到用例文件。
+2. **回滚补齐**：`rollback/switch.sh` 现支持 `34…43`，新增 `src-build41/42/43`
+   （从 `d8ce7db` / `3ddf775` / `15d1734` 的 git 对象导出，含 `cal-app`、`cal-mcp`、
+   `scripts` 三份 —— 只导 `cal-app` 会缺后端与 `engine/VERSION`，第一轮导出踩过）。
+3. **发布状态写清**：本地有一批未推送提交（笔数以
+   `git rev-list --count origin/main..HEAD` 实测为准，写这行时是 17 笔），
+   最新已发布 tag 仍是 `v1.3.1`，装机却是 `1.3.2 / build 43`。
+   push / 打 tag / 发 Release 仍由所有者执行，本轮未动。
+
+### 验证（原始输出）
+
+旧代码（build 42）先失败：
+
+```
+液态玻璃视觉契约 10 条 … 2/10 通过，8 条失败
+✗ 顶部亮边带  DIFF=22.907 MAX=91 … 阈值≤2.0
+✗ 左侧亮边带  DIFF=21.160 MAX=91 … 阈值≤2.0
+✓ 上半部整块  DIFF=1.055  ← 白纱那轮确实已修好，剩下的是整窗亮框
+```
+
+改后（build 43）：
+
+```
+液态玻璃视觉契约 10 条 … 10/10 通过
+✓ 上半部整块  DIFF=1.329 MAX=55 … 阈值≤1.5
+✓ 顶部亮边带  DIFF=0.408 MAX=55 … 阈值≤2.0
+✓ 左侧亮边带  DIFF=0.837 MAX=55 … 阈值≤2.0
+结果：PASS  偏好已恢复：0
+```
+
+用例自身修过两个 bug（都写在注释里）：静态契约的 `block()` 曾把 `{` 算进偏移、
+跳到下一个规则造成假通过；像素工具的 y 轴曾被 `translate/scale` 翻反，
+把下半部灰→黑的差（63/255）误算成上半部。修正后才开始取证。
+
+其余：三时区 `npm test` 全绿（202+39+13+31+20+67+36+386）；`build.sh` 成功、
+`codesign -v --deep --strict` 通过、`x86_64 arm64`、包内 `skeuo.html` 与源码
+sha256 一致 `e466429d…`；装机 `1.3.2 / build 43`、`VERSION=1.3.2-43`；
+回滚演练 41→42→43 全部通过（VERSION 分别为 1.3.2-41/42/43、后端 7 个 mjs、签名有效），
+装机包未被演练触碰。编译日志里的 `CGWindowListCreateImage` deprecated 警告属
+`--snapshot` 合成通道既有代码，不是本轮引入。
+
+**未验证**：原生玻璃是合成层，离屏 `takeSnapshot` 拍不到它，所以「真机桌面透出后的
+模糊强度、边缘折射、亮边与系统 22px 圆角是否对齐、三档观感」仍需用户眼睛确认；
+GUI 交互（点击 / 滚动 / 拖动）本轮未做人工冒烟。偏好已恢复为 `liquidBackdrop=0`、
+`glassStrength=1`；旧 App 进程需 ⌘Q 完全退出再重开才是 build 43。
+
+### 所有者要 push 时的清单（本轮没执行）
+
+工作区干净 + `cd cal-mcp && npm test` 全绿后：
+
+```
+git push origin main                       # 有条件放行守卫，别用 --no-verify
+git tag -a v1.3.2 -m "1.3.2 / build 43" && git push origin v1.3.2
+./scripts/make-release.sh 1.3.2            # 发行包要另走脚本，dist/ 本轮未动
+GH_CONFIG_DIR=/tmp/ghcfg gh release create v1.3.2 dist/<dmg> dist/<zip> --notes-file dist/notes-1.3.2.md
+```
+
+红线不变：不 `--force`、不移动已发布 tag、不改测试迁就代码、不改 `dist/`、
+没亲手验证的事不报成已验证。
+
+---
+
 ## [未发布 · 本地] 玻璃只留在木板区：修白纱与边缘无模糊圈 — 2026-11-11（build 41）
 
 用户两条反馈：① 「为啥边缘和中间透明度不一样，我想搞成那样」（指控制中心那排深色玻璃胶囊：
