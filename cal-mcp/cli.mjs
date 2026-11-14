@@ -19,6 +19,7 @@ import { createInterface } from 'node:readline';
 import { AUTO_CANDIDATES, exactCalendarMatch, pickDefaultCalendar, resolveCalendar } from './src/calendar-policy.mjs';
 import { appPasswordFormat, isIcloudHost, normalizeAccount } from './src/credentials.mjs';
 import { inferCalendarTag, llmConfig, llmLastError, needsRefine, probeModel, refineWithModel } from './src/llm.mjs';
+import { apply as applyHolidayPhrase } from './src/holidays.mjs';
 import { parseEvent } from './src/nlp.mjs';
 import { cachedCalendarNames, configPath, KEYCHAIN_SERVICE, readConfig, redact, savePassword, writeConfig } from './src/store.mjs';
 import {
@@ -277,6 +278,8 @@ async function cmdTag(text, flags) {
  */
 async function cmdParse(text, flags) {
   if (!text) return fail('用法：node cli.mjs parse "明天下午三点到四点 组会 #工作" [--fast|--llm]');
+  // 和 addEvent 用同一套节日替换：App 的预览就是走这条命令，两边不能不一致。
+  text = applyHolidayPhrase(text, new Date());
   const calendarNames = nameList(flags);
   const parsed = parseEvent(text, new Date(), { calendarNames });
 
@@ -479,6 +482,7 @@ async function cmdLlm(text, flags) {
   }
 
   const calendarNames = cachedCalendarNames();
+  text = applyHolidayPhrase(text, new Date());
   const parsed = parseEvent(text, new Date(), { calendarNames });
   const refined = await refineWithModel(
     text,

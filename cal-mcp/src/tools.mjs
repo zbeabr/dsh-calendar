@@ -5,6 +5,7 @@
 
 import { CalDav, CalDavError, newEventUid } from './caldav.mjs';
 import { resolveCalendar } from './calendar-policy.mjs';
+import { apply as applyHolidayPhrase } from './holidays.mjs';
 import { normalizeAccount } from './credentials.mjs';
 import { inferCalendarTag, needsRefine, refineWithModel } from './llm.mjs';
 import { parseEvent, toRrule } from './nlp.mjs';
@@ -120,15 +121,21 @@ export async function addEvent(input = {}) {
   calendar = typeof calendar === 'string' && calendar.trim() !== '' ? calendar.trim() : undefined;
   let tag;
 
+  // 节日短语先换成具体公历日期，解析层不用认识「中秋」，也不碰 nlp.mjs 的纯函数语义。
+  // CLI 的 parse 预览走同一套替换，保证屏幕上看到的时间与真正写进去的一致。
+  const effectiveText = typeof input.text === 'string'
+    ? applyHolidayPhrase(input.text, new Date())
+    : input.text;
+
   if (typeof input.text === 'string' && input.text.trim() !== '') {
     const calendarNames = cachedCalendarNames();
-    const parsed = parseEvent(input.text, new Date(), { calendarNames });
+    const parsed = parseEvent(effectiveText, new Date(), { calendarNames });
     let refined;
     // 规则结果可疑（脏标题、量词残渣、残留时间词、有介词却没认出地点）就让模型兜一次；
     // 模型只出标题和地点，时间仍用规则的。「没写地点」本身不再触发，否则每句话都白调一次模型。
-    if (!input.location && !input.noModel && needsRefine(input.text, parsed)) {
+    if (!input.location && !input.noModel && needsRefine(effectiveText, parsed)) {
       refined = await refineWithModel(
-        input.text,
+        effectiveText,
         { title: parsed.title, location: parsed.location, local: formatRange(parsed.start, parsed.end) },
         { calendarNames },
       );
@@ -161,7 +168,7 @@ export async function addEvent(input = {}) {
   // 只有完全没有任何显式意图时才问模型。App 预览阶段已经算过归属并传了
   // --calendar，所以正常写入不会重复调模型；--fast（模型未就绪）也跳过。
   if (!calendar && !tag && typeof input.text === 'string' && !input.noModel) {
-    suggestedTag = (await inferCalendarTag(input.text, { known }))?.tag;
+    suggestedTag = (await inferCalendarTag(effectiveText, { known }))?.tag;
   }
   const decision = resolveCalendar({
     explicit: calendar ?? tag,
