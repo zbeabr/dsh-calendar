@@ -27,12 +27,21 @@ process.env.TZ = 'Asia/Shanghai';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { apply as applyHolidayPhrase } from './src/holidays.mjs';
 import { parseEvent } from './src/nlp.mjs';
+import { extractKnownPlace } from './src/places.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SNAPSHOT = join(HERE, 'parse-corpus.snapshot.txt');
 const NOW = new Date(2026, 10, 4, 20, 48);
 const NAMES = ['学习', '生活', '工作', '家庭', '特别事件'];
+/**
+ * build 44 起新增「完整链路」示例：第三项写 'full' 时，先跑节日短语替换和
+ * 常用地点剥离，再交给 parseEvent —— 因为这两层刻意放在解析层之外，
+ * 只测 parseEvent 的旧蓝本覆盖不到它们。
+ * 地点词典写死在这里，绝不读用户真实 config.json，蓝本在任何机器上都一致。
+ */
+const CORPUS_PLACES = ['大学图书馆', '图书馆', '宿舍', '食堂'];
 
 /**
  * [分类, 句子]。分类只用于分组阅读与 --audit 的「预期报错」判断，
@@ -483,15 +492,40 @@ const CORPUS = [
   ['回归·归属输入', '明天下午在图书馆看第三章'],
   ['回归·归属输入', '明天取快递'],
   ['回归·归属输入', '明天三点开组会'],
+
+  // ── P. 新版本功能（build 44/45）：完整链路，第三项 'full' ──────────
+  // 这些句子必须每次更新都跑一遍：节日误伤防护与年份线索见 holiday-guard-cases.mjs，
+  // 这里冻住的是「看到的解析结果」本身，防止以后改预处理悄悄改掉日期或标题。
+  ['回归·节日', '中秋前一天晚上八点吃饭', 'full'],
+  ['回归·节日', '中秋晚上八点吃饭', 'full'],
+  ['回归·节日', '国庆后第一个工作日交材料', 'full'],
+  ['回归·节日', '元宵节看灯会', 'full'],
+  ['回归·节日', '明年春节回老家', 'full'],
+  ['回归·节日', '今年中秋聚餐', 'full'],
+  ['回归·节日', '2027年中秋吃饭', 'full'],
+  ['回归·常用地点', '明天晚上图书馆复习第三章', 'full'],
+  ['回归·常用地点', '明天下午在大学图书馆复习', 'full'],
+  ['回归·常用地点', '明天晚上去食堂吃饭', 'full'],
 ];
 
 const pad = (n) => String(n).padStart(2, '0');
 const stamp = (date) => `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
+/** 'full' 条目先走节日替换 + 常用地点剥离；其余条目保持原来的纯解析语义，一字不变。 */
+function parseForCorpus(text, pipeline) {
+  const effective = pipeline === 'full' ? applyHolidayPhrase(text, NOW) : text;
+  let r = parseEvent(effective, NOW, { calendarNames: NAMES });
+  if (pipeline === 'full' && !r.location) {
+    const hit = extractKnownPlace(r.title, CORPUS_PLACES);
+    if (hit) r = { ...r, title: hit.title, location: hit.location };
+  }
+  return r;
+}
+
 /** 把一条解析结果压成一行可读文本；报错也记下来（报错文案同样是契约）。 */
-function render(text) {
+function render(text, pipeline) {
   try {
-    const r = parseEvent(text, NOW, { calendarNames: NAMES });
+    const r = parseForCorpus(text, pipeline);
     const rep = r.repeat
       ? [r.repeat.freq, r.repeat.interval > 1 ? `INTERVAL=${r.repeat.interval}` : null,
         r.repeat.byday?.join(','), r.repeat.bymonthday].filter(Boolean).join(' ')
@@ -507,8 +541,8 @@ function render(text) {
   }
 }
 
-const lines = CORPUS.map(([category, text], index) =>
-  `${String(index + 1).padStart(3, '0')}\t${category}\t${text}\t=>\t${render(text)}`);
+const lines = CORPUS.map(([category, text, pipeline], index) =>
+  `${String(index + 1).padStart(3, '0')}\t${category}\t${text}\t=>\t${render(text, pipeline)}`);
 
 const mode = process.argv[2] ?? '';
 
@@ -543,10 +577,11 @@ if (mode === '--show') {
   const suspicious = /明天|今天|后天|大后天|下个?周|下下|周末|点钟|点半|小时|分钟|用时|提前|每周|每天|每月|#|＃|，|,|。/u;
   let count = 0;
   lines.forEach((line, index) => {
-    const [category, text] = CORPUS[index];
+    const [category, text, pipeline] = CORPUS[index];
     const result = line.split('\t=>\t')[1];
     let parsed;
-    try { parsed = parseEvent(text, NOW, { calendarNames: NAMES }); } catch { parsed = null; }
+    // 审计也要走同一条链路，否则 'full' 条目会被当成「意外报错」误报。
+    try { parsed = parseForCorpus(text, pipeline); } catch { parsed = null; }
     const errored = parsed === null;
     const reasons = [];
     if (errored && category !== '预期报错') reasons.push('意外报错');
