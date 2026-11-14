@@ -685,6 +685,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var didLayoutMain = false
     /// 列表里显示的日程
     private var agenda: [AgendaItem] = []
+    /// 已经过去的日程，给拟物界面的「小盒子」用；只在刷新列表时拉一次，不每帧请求。
+    private var pastAgenda: [AgendaItem] = []
+    /// 设置页「本地待同步」那一行，补发后原地更新。
+    private var pendingStatusLabel: NSTextField?
 
     // MARK: 全拟物外观（用 WebView 承载参考稿；玻璃模式代码与数据完全独立）
     /// env `DSH_CAL_SKEUO=1/0` 只给自检快照用，日常走 UserDefaults。
@@ -1791,6 +1795,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         caption.frame = NSRect(x: 24, y: 200, width: 120, height: 18)
         root.addSubview(caption)
 
+        // 离线小本本：待同步条数 + 死信条数，右边一个「立即补发」。
+        let pending = makeLabel(pendingText(), size: 11, weight: .regular, color: .secondaryLabelColor)
+        pending.frame = NSRect(x: 286, y: 200, width: 176, height: 18)
+        pending.alignment = .right
+        pending.lineBreakMode = .byTruncatingTail
+        root.addSubview(pending)
+        pendingStatusLabel = pending
+        let sync = NSButton(title: "立即补发", target: self, action: #selector(syncPendingTapped(_:)))
+        sync.bezelStyle = .rounded
+        sync.font = NSFont.systemFont(ofSize: 11)
+        sync.frame = NSRect(x: 468, y: 196, width: 68, height: 22)
+        root.addSubview(sync)
+
         root.addSubview(appearanceRow(
             title: "全拟物外观",
             detail: "金属板 / 木板 / 绿磷光屏，Dock 图标同步切换",
@@ -2449,6 +2466,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             self.agenda = events.compactMap { AgendaItem(json: $0) }
             self.renderAgenda()
             self.checkConflict()
+            self.loadPastAgenda()
+        }
+    }
+
+    /// 过去 30 天的日程：小盒子的数据源。和列表同一次刷新里拉，绝不放进 0.6s 的状态轮询。
+    private func loadPastAgenda() {
+        Engine.call(["past", "--days", "30", "--json"]) { [weak self] result in
+            guard let self else { return }
+            guard case .success(let payload) = result,
+                  let list = payload["events"] as? [[String: Any]] else { return }
+            self.pastAgenda = list.compactMap { AgendaItem(json: $0) }.sorted { $0.start > $1.start }
+            if self.skeuoMode { self.pushSkeuoState() }
         }
     }
 
@@ -2527,7 +2556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         if skeuoMode { pushSkeuoState() }   // 不等 0.6s 轮询，木板立刻挂上去
     }
 
-    private func deleteItem(_ item: AgendaItem) {
+    private func deleteItem(_ item: AgendaItem, scope: String = "series", occurrence: String? = nil) {
         guard !deletingUids.contains(item.uid) else { return }
         deletingUids.insert(item.uid)
 
@@ -2542,7 +2571,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         hintLabel?.textColor = .secondaryLabelColor
         hintLabel?.stringValue = "正在删除「\(item.title)」…"
 
-        Engine.call(["rm", item.uid, "--json"]) { [weak self] result in
+        var args = ["rm", item.uid]
+        // 网页确认卡选「只删这一次」时，后端用 EXDATE 跳过该次，整个系列保留。
+        if scope == "this", let occurrence, !occurrence.isEmpty {
+            args += ["--scope", "this", "--occurrence", occurrence]
+        }
+        args.append("--json")
+        Engine.call(args) { [weak self] result in
             guard let self else { return }
             self.deletingUids.remove(item.uid)
             switch result {
@@ -3525,9 +3560,11 @@ struct AgendaItem {
     let location: String?
     let calendar: String
     let allDay: Bool
+    /// 重复日程才给「只删这一次 / 只改这一次」二选一，单次日程不做这个选择。
+    let recurring: Bool
 
     init(uid: String, title: String, start: Date, end: Date,
-         location: String?, calendar: String, allDay: Bool) {
+         location: String?, calendar: String, allDay: Bool, recurring: Bool = false) {
         self.uid = uid
         self.title = title
         self.start = start
@@ -3535,6 +3572,7 @@ struct AgendaItem {
         self.location = location
         self.calendar = calendar
         self.allDay = allDay
+        self.recurring = recurring
     }
 
     init?(json: [String: Any]) {
@@ -3549,6 +3587,7 @@ struct AgendaItem {
         self.end = end
         self.location = json["location"] as? String
         self.calendar = json["calendar"] as? String ?? ""
+        self.recurring = (json["recurring"] as? Bool) ?? false
 
         // CalDAV 返回里没有 allDay 字段，用「零点开始、正好一天」来认
         let calendar = Calendar.current
@@ -5628,12 +5667,28 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         clock.locale = Locale(identifier: "zh_CN")
         clock.dateFormat = "HH:mm"
 
+        // 编辑卡要能填回原值，所以把结构化字段一起推过去（不只是渲染用的 what/when）。
+        let iso = ISO8601DateFormatter()
         let events: [[String: String]] = agenda.map { item in
             let detail = item.allDay ? "全天" : clock.string(from: item.start)
             return [
                 "uid": item.uid,
                 "when": day.string(from: item.start),
                 "what": item.title + " · " + detail,
+                "tag": item.calendar,
+                "title": item.title,
+                "start": iso.string(from: item.start),
+                "end": iso.string(from: item.end),
+                "location": item.location ?? "",
+                "recurring": item.recurring ? "1" : "0",
+                "occurrence": iso.string(from: item.start),
+            ]
+        }
+        let past: [[String: String]] = pastAgenda.map { item in
+            [
+                "uid": item.uid,
+                "when": day.string(from: item.start),
+                "what": item.title + " · " + (item.allDay ? "全天" : clock.string(from: item.start)),
                 "tag": item.calendar,
             ]
         }
@@ -5648,6 +5703,7 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
 
         var state: [String: Any] = [
             "events": events,
+            "past": past,
             "sys": sys,
             "chips": lastChips,
             "status": ["online": !offline && !forceOffline, "modelOnline": modelOnline],
@@ -5667,6 +5723,59 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         skeuoLastPayload = json
         web.evaluateJavaScript("window.dshRender(\(json))") { [weak self] _, error in
             if error != nil { self?.skeuoLastPayload = "" }   // 页面还没加载好，下一轮重推
+        }
+    }
+
+    /// 网页编辑卡保存：把结构化字段转成 CLI 的 update 参数，成功就刷新列表。
+    private func updateFromSkeuo(uid: String, body: [String: Any]) {
+        var args = ["update", uid]
+        if let title = body["title"] as? String, !title.isEmpty { args += ["--title", title] }
+        if let start = body["start"] as? String, !start.isEmpty { args += ["--start", start] }
+        if let end = body["end"] as? String, !end.isEmpty { args += ["--end", end] }
+        if let location = body["location"] as? String { args += ["--location", location] }
+        if (body["scope"] as? String) == "this" {
+            args += ["--scope", "this"]
+            if let occurrence = body["occurrence"] as? String, !occurrence.isEmpty {
+                args += ["--occurrence", occurrence]
+            }
+        }
+        args.append("--json")
+        hintLabel?.textColor = .secondaryLabelColor
+        hintLabel?.stringValue = "正在修改日程…"
+        Engine.call(args) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let payload) where (payload["ok"] as? Bool) == true:
+                self.hintLabel?.stringValue = (payload["summary"] as? String) ?? "已修改"
+                self.refreshAgenda()
+                if self.skeuoMode { self.pushSkeuoState() }
+            default:
+                self.hintLabel?.textColor = .systemRed
+                self.hintLabel?.stringValue = "修改失败，请检查标题或时间格式"
+                if self.skeuoMode { self.pushSkeuoState() }
+            }
+        }
+    }
+
+    /// 设置页那一行：直接同步读本机队列，不碰网络。
+    private func pendingText() -> String {
+        guard let payload = try? Engine.callSync(["pending", "--json"]),
+              (payload["ok"] as? Bool) == true else { return "待同步：读取失败" }
+        let count = (payload["count"] as? NSNumber)?.intValue ?? 0
+        let dead = (payload["deadLettered"] as? NSNumber)?.intValue ?? 0
+        return (count == 0 && dead == 0) ? "本地没有待同步" : "待同步 \(count) 条 · 死信 \(dead) 条"
+    }
+
+    @objc private func syncPendingTapped(_ sender: NSButton) {
+        Engine.call(["sync", "--json"]) { [weak self] result in
+            guard let self else { return }
+            self.pendingStatusLabel?.stringValue = self.pendingText()
+            if case .success(let payload) = result, let summary = payload["summary"] as? String {
+                self.setupStatus?.stringValue = summary
+            } else {
+                self.setupStatus?.stringValue = "补发没成功，条目仍留在本机。"
+            }
+            self.refreshAgenda()
         }
     }
 
@@ -5696,7 +5805,12 @@ extension AppDelegate: WKScriptMessageHandler, WKNavigationDelegate {
         case "delete":
             guard let uid = body["uid"] as? String,
                   let item = agenda.first(where: { $0.uid == uid }) else { return }
-            deleteItem(item)
+            deleteItem(item,
+                       scope: body["scope"] as? String ?? "series",
+                       occurrence: body["occurrence"] as? String)
+        case "update":
+            guard let uid = body["uid"] as? String else { return }
+            updateFromSkeuo(uid: uid, body: body)
         case "shift":
             guard let uid = body["uid"] as? String,
                   let seconds = (body["seconds"] as? NSNumber)?.doubleValue,

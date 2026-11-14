@@ -988,6 +988,79 @@ html.glass-probe.liquid-bg body::before{
   background:repeating-linear-gradient(90deg,
     #2f7ff0 0 20%,#34b26a 20% 40%,#ef9a2f 40% 60%,#9b6be0 60% 80%,#e2534b 80% 100%)
 }
+
+/* ===== 过去日程小盒子 / 木板编辑卡（2026-11-14） =====
+   木板本身保持不透明；盒子里的小木板也是实木，不用半透明。 */
+.memory-box{position:fixed;right:24px;bottom:22px;z-index:30;width:188px;
+  font-family:"Apple Garamond","Hoefler Text",Georgia,serif;cursor:pointer;user-select:none;
+  filter:drop-shadow(0 10px 16px rgba(20,12,4,.5))}
+.memory-box .mb-body{position:relative;padding:8px 10px 12px;border-radius:4px 4px 9px 9px;
+  background:linear-gradient(180deg,#5c3618,#3a200d);border:1px solid #241407;
+  box-shadow:inset 0 2px 6px rgba(0,0,0,.6)}
+.memory-box .mb-lid{position:absolute;left:-6px;right:-6px;top:-24px;height:30px;
+  border-radius:7px 7px 2px 2px;border:1px solid #241407;
+  background:linear-gradient(180deg,#8a5528,#4a2a12 70%,#301a0b);
+  box-shadow:0 4px 8px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,220,160,.38);
+  transform-origin:50% 100%;transition:transform .38s cubic-bezier(.2,.8,.3,1)}
+.memory-box.open .mb-lid{transform:perspective(300px) rotateX(-62deg) translateY(-3px)}
+.memory-box .mb-clasp{position:absolute;left:50%;top:-28px;transform:translateX(-50%);
+  width:26px;height:12px;border-radius:3px;background:linear-gradient(180deg,#f0d79a,#8a6a24);
+  border:1px solid #4a3510;box-shadow:0 1px 2px rgba(0,0,0,.5);z-index:2}
+.memory-box .mb-count{color:#f4e3bd;font-size:12px;letter-spacing:1px;text-align:center;
+  text-shadow:0 1px 2px rgba(0,0,0,.8)}
+.memory-box .mb-stack{position:relative;height:16px;margin-top:6px}
+.memory-box .mb-mini{position:absolute;left:8%;right:8%;height:9px;border-radius:2px;
+  background-image:url(wood-sprite.png);background-size:100% 216px;border:1px solid #1c0f05;
+  transition:transform .35s ease,opacity .35s ease}
+.memory-box .mb-mini:nth-child(1){top:0;transform:rotate(-2deg)}
+.memory-box .mb-mini:nth-child(2){top:4px;transform:rotate(1deg)}
+.memory-box .mb-mini:nth-child(3){top:8px;transform:rotate(-1deg)}
+.memory-box.open .mb-stack{display:none}
+.memory-box.open .mb-mini{opacity:0;transform:translateY(-14px)}
+.memory-list{display:none;max-height:220px;overflow:auto;margin-top:8px;
+  border-top:1px solid rgba(255,220,160,.25);padding-top:6px}
+.memory-box.open .memory-list{display:block}
+/* 摊开的每一条本身就是一小块实木板（不透明），从盒子里依次滑出来 */
+.memory-list .ml-row{display:flex;gap:6px;align-items:baseline;color:#f6e7c6;
+  font-size:11px;line-height:1.5;padding:5px 8px;margin-bottom:4px;border-radius:3px;
+  background-image:linear-gradient(180deg,rgba(255,220,160,.12),rgba(0,0,0,.18)),url(wood-sprite.png);
+  background-size:100% 216px;border:1px solid #1c0f05;
+  box-shadow:0 2px 4px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,220,160,.22);
+  text-shadow:0 1px 1px rgba(0,0,0,.85);
+  /* 不写入场 animation：离屏渲染会把动画停在起始帧（opacity:0），
+     快照和某些合成路径里整片小木板会消失。展开即见，只留一个位移过渡。 */
+  transition:transform .3s ease}
+.memory-box:not(.open) .memory-list .ml-row{transform:translateY(-8px)}
+.memory-list .ml-when{flex:none;color:#d8b878;font-family:ui-monospace,Menlo,monospace;font-size:10px}
+.memory-list .ml-what{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.memory-list .ml-empty{color:#c9b48c;font-size:11px;text-align:center;padding:8px}
+/* 木板上的「改」：和叉叉同一排，悬停才出现 */
+.plank .edit{position:absolute;right:40px;top:50%;transform:translateY(-50%);
+  width:22px;height:22px;border-radius:50%;border:1px solid #2a1808;
+  background:linear-gradient(180deg,#d9b26a,#8a6122);color:#241407;font-size:12px;
+  line-height:1;cursor:pointer;opacity:0;transition:opacity .2s;z-index:4}
+.plank:hover .edit{opacity:1}
+/* 编辑卡：和确认卡同一套浮层，字段是结构化的 */
+.edit-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;
+  background:rgba(12,9,6,.55)}
+.edit-overlay.on{display:flex}
+.edit-card{width:340px;border-radius:10px;padding:16px 18px 14px;
+  background:linear-gradient(180deg,#6d6d6d,#4b4b4b);
+  border:1px solid #2e2e2e;box-shadow:0 18px 40px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.35);
+  font-family:-apple-system,"PingFang SC",sans-serif;color:#f7f5ef}
+.edit-card h3{margin:0 0 10px;font-size:14px;font-weight:600;letter-spacing:.5px}
+.edit-card label{display:block;font-size:11px;opacity:.8;margin:8px 0 3px}
+.edit-card input{width:100%;box-sizing:border-box;padding:6px 8px;border-radius:5px;
+  border:1px solid #262626;background:#1d2a20;color:#a9f5b4;font-size:12px;
+  font-family:ui-monospace,Menlo,monospace}
+.edit-card .edit-scope{display:flex;gap:8px;margin-top:12px;align-items:center;font-size:11px}
+.edit-card .edit-scope select{flex:1;background:#2c2c2c;color:#f7f5ef;border:1px solid #262626;
+  border-radius:5px;padding:4px}
+.edit-card .edit-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.edit-card button{font-size:12px;padding:5px 12px;border-radius:6px;border:1px solid #2b2b2b;
+  background:linear-gradient(180deg,#8d8d8d,#666);color:#fff;cursor:pointer}
+.edit-card button.primary{background:linear-gradient(180deg,#4f8c58,#356b3c)}
+.confirm-btn.once{background:linear-gradient(180deg,#8a7a5c,#6a5a42)}
 </style>
 </head>
 <body>
@@ -1133,13 +1206,42 @@ html.glass-probe.liquid-bg body::before{
       <div class="confirm-sub">这条日程会从日历里删掉，没有撤销。按 Esc 或点「取消」可以反悔。</div>
       <div class="confirm-actions">
         <button class="confirm-btn" id="confirmNo" type="button">取消</button>
-        <button class="confirm-btn danger" id="confirmYes" type="button">摘下</button>
+        <button class="confirm-btn once" id="confirmOnce" data-scope="this" type="button" hidden>只删这一次</button>
+        <button class="confirm-btn danger" id="confirmYes" data-scope="series" type="button">删掉这一条</button>
       </div>
     </div>
   </div>
 </div>
 
 <div class="ctx" id="ctx"></div>
+
+<!-- 改一改这块木板：点木板上的「改」按钮 -->
+<div class="edit-overlay" id="editOverlay">
+  <div class="edit-card" id="editCard" role="dialog" aria-modal="true" aria-label="编辑日程">
+    <h3>改一改这块木板</h3>
+    <label for="editTitle">标题</label><input id="editTitle" type="text" autocomplete="off">
+    <label for="editStart">开始</label><input id="editStart" type="datetime-local">
+    <label for="editEnd">结束</label><input id="editEnd" type="datetime-local">
+    <label for="editLocation">地点</label><input id="editLocation" type="text" autocomplete="off">
+    <div class="edit-scope" id="editScopeRow" hidden><span>范围</span>
+      <select id="editScope"><option value="series">整个系列</option><option value="this">只改这一次</option></select>
+    </div>
+    <div class="edit-actions">
+      <button type="button" id="editCancel">取消</button>
+      <button type="button" class="primary" id="editSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 过去日程小盒子：收起时木板叠着，点开盖子摊开 -->
+<div class="memory-box" id="memoryBox" title="打开看看过去做了什么">
+  <div class="mb-lid"></div><div class="mb-clasp"></div>
+  <div class="mb-body">
+    <div class="mb-count" id="mbCount">过去 0 条</div>
+    <div class="mb-stack"><i class="mb-mini"></i><i class="mb-mini"></i><i class="mb-mini"></i></div>
+    <div class="memory-list" id="memoryList"></div>
+  </div>
+</div>
 
 <script>
 let W = 560; const PH = 54, GAP = 28;
@@ -1694,13 +1796,13 @@ function selectSlot(uid){
   selectionNote = '> 已选中「' + (it.what || '') + '」 · 按删除键摘下 · Esc 取消';
   updateSys();
 }
-function doDelete(uid){
+function doDelete(uid, scope, occurrence){
   /* 乐观摘板：CalDAV DELETE 加上随后那次 ls 实测要 5~8 秒，等服务端回来再重绘，
      用户看到的就是「点了确认没反应」，于是再确认一次、还觉得整个界面卡住。
      先从本地列表摘掉并立刻重绘，原生那边同步摘 agenda，网络请求在后台慢慢跑。 */
   items = items.filter(function(x){ return x.uid !== uid; });
   render(-1);
-  if (bridged) post({type:'delete', uid:uid});
+  if (bridged) post({type:'delete', uid:uid, scope:scope || 'series', occurrence:occurrence || null});
 }
 function openConfirm(uid){
   const it = findItem(uid);
@@ -1708,6 +1810,8 @@ function openConfirm(uid){
   confirmUid = uid;
   const line = document.getElementById('confirmLine');
   if (line) line.textContent = (it.when ? it.when + '  ' : '') + (it.what || '这条日程');
+  const once = document.getElementById('confirmOnce');
+  if (once) once.hidden = !(it.recurring === '1' || it.recurring === 1 || it.recurring === true);
   confirmEl.classList.add('on');
   const no = document.getElementById('confirmNo');
   if (no) no.focus();
@@ -1716,17 +1820,20 @@ function closeConfirm(){
   confirmUid = null;
   if (confirmEl) confirmEl.classList.remove('on');
 }
-function confirmDelete(){
+function confirmDelete(scope){
   const uid = confirmUid;
   closeConfirm();
   if (!uid) return;
   if (selectedUid === uid) clearSelection();
-  doDelete(uid);
+  const it = findItem(uid) || {};
+  doDelete(uid, scope || 'series', it.occurrence || it.start || null);
 }
 if (confirmEl){
   const yes = document.getElementById('confirmYes');
   const no = document.getElementById('confirmNo');
-  if (yes) yes.addEventListener('click', confirmDelete);
+  const once = document.getElementById('confirmOnce');
+  if (yes) yes.addEventListener('click', function(){ confirmDelete('series'); });
+  if (once) once.addEventListener('click', function(){ confirmDelete('this'); });
   if (no) no.addEventListener('click', closeConfirm);
   confirmEl.addEventListener('mousedown', function(e){
     if (e.target === confirmEl) closeConfirm();       // 点遮罩空白处 = 取消
@@ -1742,7 +1849,7 @@ document.addEventListener('keydown', function(e){
     return;
   }
   if (isOpen){
-    if (e.key === 'Enter'){ e.preventDefault(); confirmDelete(); }
+    if (e.key === 'Enter'){ e.preventDefault(); confirmDelete('series'); }
     return;
   }
   if (e.key !== 'Backspace' && e.key !== 'Delete') return;
@@ -1764,13 +1871,18 @@ function makeSlot(it, index){
       '<span class="grommet l"><i class="rope-thru"></i></span>' +
       '<span class="grommet r"><i class="rope-thru"></i></span>' +
       '<div class="txt"><span class="when"></span><span class="what"></span><span class="tag"></span></div>' +
+      '<button class="edit" title="改一改这块木板">✎</button>' +
       '<button class="del" title="摘下这块木板">×</button>' +
     '</div>';
   fillSlot(slot, it);
   // 点板子选中；叉叉、右键顺延都不算选中
   slot.addEventListener('click', function(e){
-    if (e.target.closest && e.target.closest('.del')) return;
+    if (e.target.closest && (e.target.closest('.del') || e.target.closest('.edit'))) return;
     selectSlot(it.uid);
+  });
+  slot.querySelector('.edit').addEventListener('click', function(e){
+    e.stopPropagation();
+    openEdit(it.uid);
   });
   // 叉叉与键盘删除共用同一个二次确认
   slot.querySelector('.del').addEventListener('click', function(e){
@@ -2304,9 +2416,8 @@ window.dshRender = function(state){
          窗口只有 720 高），看起来就像「什么都没发生」。 */
       const known = new Set(items.map(function(it){ return it.uid; }));
       const isEmpty = items.length === 0;      // 首屏：全是新的，别滚
-      items = state.events.map(function(e){
-        return {uid:e.uid, when:e.when, what:e.what, tag:e.tag};
-      });
+      /* 保留完整字段：编辑卡要填回标题 / 起止 / 地点，还要知道是不是重复日程 */
+      items = state.events.map(function(e){ return Object.assign({}, e); });
       let fresh = -1;
       if (!isEmpty){
         items.forEach(function(it, i){ if (fresh < 0 && !known.has(it.uid)) fresh = i; });
@@ -2318,6 +2429,7 @@ window.dshRender = function(state){
       else scroller.scrollTop = top;
     }
   }
+  if (state.past) renderMemory(state.past);
   if (state.sys != null) setSys(state.sys);
   if (state.status){
     const online = !!state.status.online;
@@ -2331,6 +2443,96 @@ window.dshRender = function(state){
     if (leds[1]) leds[1].className = 'led ' + (modelOnline ? 'a' : 'red');
   }
 };
+
+/* ===== 编辑已有日程 / 过去日程小盒子（2026-11-14） ===== */
+var editingUid = null;
+function isRecurring(it){
+  return !!(it && (it.recurring === '1' || it.recurring === 1 || it.recurring === true));
+}
+function localInputValue(iso){
+  if (!iso) return '';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  var pad = function(n){ return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+       + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+function openEdit(uid){
+  var it = findItem(uid); if (!it) return;
+  editingUid = uid;
+  document.getElementById('editTitle').value = it.title || it.what || '';
+  document.getElementById('editStart').value = localInputValue(it.start);
+  document.getElementById('editEnd').value = localInputValue(it.end);
+  document.getElementById('editLocation').value = it.location || '';
+  document.getElementById('editScopeRow').hidden = !isRecurring(it);
+  document.getElementById('editScope').value = 'series';
+  document.getElementById('editOverlay').classList.add('on');
+  document.getElementById('editTitle').focus();
+}
+function closeEdit(){
+  editingUid = null;
+  document.getElementById('editOverlay').classList.remove('on');
+}
+function saveEdit(){
+  var uid = editingUid; if (!uid) return;
+  var it = findItem(uid) || {};
+  var title = document.getElementById('editTitle').value.trim();
+  var start = document.getElementById('editStart').value;
+  var end = document.getElementById('editEnd').value;
+  var location = document.getElementById('editLocation').value.trim();
+  if (!title){ setSys('标题不能为空'); return; }
+  var payload = {type:'update', uid:uid, title:title, location:location};
+  if (start) payload.start = new Date(start).toISOString();
+  if (end) payload.end = new Date(end).toISOString();
+  if (document.getElementById('editScope').value === 'this'){
+    if (!payload.start){ setSys('只改这一次要先填新的开始时间'); return; }
+    payload.scope = 'this';
+    payload.occurrence = it.occurrence || it.start || null;
+  }
+  closeEdit();
+  post(payload);
+  setSys('正在修改日程…');
+}
+document.getElementById('editSave').addEventListener('click', saveEdit);
+document.getElementById('editCancel').addEventListener('click', closeEdit);
+document.getElementById('editOverlay').addEventListener('mousedown', function(e){
+  if (e.target === this) closeEdit();
+});
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape' && editingUid){ e.preventDefault(); closeEdit(); }
+});
+
+/* 过去日程小盒子：收起时三块小木板叠着，点开盖子摊开成列表。
+   数据来自原生 pushSkeuoState 的 state.past（过去 30 天，刷新列表时拉一次）。 */
+var memoryItems = [];
+function renderMemory(past){
+  memoryItems = Array.isArray(past) ? past : [];
+  var box = document.getElementById('memoryBox');
+  var count = document.getElementById('mbCount');
+  var list = document.getElementById('memoryList');
+  if (!box || !count || !list) return;
+  count.textContent = '过去 ' + memoryItems.length + ' 条';
+  list.innerHTML = '';
+  if (!memoryItems.length){
+    var empty = document.createElement('div');
+    empty.className = 'ml-empty'; empty.textContent = '还没有过去的日程';
+    list.appendChild(empty);
+    return;
+  }
+  memoryItems.forEach(function(it){
+    var row = document.createElement('div'); row.className = 'ml-row';
+    var when = document.createElement('span'); when.className = 'ml-when';
+    when.textContent = it.when || '';
+    var what = document.createElement('span'); what.className = 'ml-what';
+    what.textContent = it.what || '';
+    row.appendChild(when); row.appendChild(what);
+    list.appendChild(row);
+  });
+}
+document.getElementById('memoryBox').addEventListener('click', function(e){
+  if (e.target.closest && e.target.closest('.memory-list')) return;
+  this.classList.toggle('open');
+});
 window.dshSys = setSys;
 
 /* 原生窗口拖动时 Swift 每帧推来窗口的速度向量（px/s）。
