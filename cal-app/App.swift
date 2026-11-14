@@ -2894,6 +2894,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 // 自检开关，只在 --snapshot 下生效，不改任何产品状态：
                 // · DSH_CAL_SNAP_SCROLL_BOTTOM=1 滚到最底，核对绳尾与底部底色
                 // · DSH_CAL_SNAP_JS="..." 在快照前跑一段 JS，核对选中 / 确认弹层等交互态
+                // · DSH_CAL_SNAP_EVAL="..." 在 JS 之后求值，把结果打到 stderr ——
+                //   用来定量核对 DOM 状态（例如小盒子的 scrollTop），不靠肉眼看图
                 // · DSH_CAL_SNAP_CLICK="x,y" 发一次真实鼠标点击（CSS 坐标，左上原点），
                 //   用来验证原生命中测试有没有把点击交给 WebView —— JS 派发 click 测不出这半边
                 // · DSH_CAL_SNAP_WAIT=<秒> JS 之后多等一会再拍，给「连续两次解析」留时间
@@ -2949,11 +2951,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                     withClick { self.renderSkeuoSnapshot(to: path) { NSApp.terminate(nil) } }
                 }
                 func afterJS(_ run: @escaping () -> Void) {
+                    // 注入 JS 之后可选地再求一次值，把 DOM 读数写进 stderr。
+                    // 只在 --snapshot 下生效，不改变任何产品状态。
+                    let evalJS = env["DSH_CAL_SNAP_EVAL"]
+                    func evalThen() {
+                        if let evalJS = evalJS, let web = web {
+                            web.evaluateJavaScript(evalJS) { res, _ in
+                                let text = (res as? String) ?? String(describing: res as Any)
+                                self.probeLog("EVAL \(text)")
+                                run()
+                            }
+                        } else { run() }
+                    }
                     if let js = js, let web = web {
                         web.evaluateJavaScript(js) { _, _ in
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25 + extraWait) { run() }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25 + extraWait) { evalThen() }
                         }
-                    } else { run() }
+                    } else { evalThen() }
                 }
                 if env["DSH_CAL_SNAP_SCROLL_BOTTOM"] == "1", let web = web {
                     web.evaluateJavaScript("window.dshScrollTo(1e9)") { _, _ in
