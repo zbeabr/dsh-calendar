@@ -9,6 +9,7 @@ import { apply as applyHolidayPhrase } from './holidays.mjs';
 import { normalizeAccount } from './credentials.mjs';
 import { inferCalendarTag, needsRefine, refineWithModel } from './llm.mjs';
 import { parseEvent, toRrule } from './nlp.mjs';
+import { extractKnownPlace, knownPlaces, learnPlaces } from './places.mjs';
 import {
   cachedCalendarNames, dequeueEvent, enqueueEvent, markAttempt, readCalendarCache, readConfig, readDeadLetter,
   readPassword, readQueue, writeCalendarCache, writeConfig,
@@ -129,7 +130,13 @@ export async function addEvent(input = {}) {
 
   if (typeof input.text === 'string' && input.text.trim() !== '') {
     const calendarNames = cachedCalendarNames();
-    const parsed = parseEvent(effectiveText, new Date(), { calendarNames });
+    let parsed = parseEvent(effectiveText, new Date(), { calendarNames });
+    // 规则没认出地点时，拿「最近写过的地方」从标题里剥一次。
+    // 只认词典里的词、边界不符就放过，猜错地点比留着不剥更糟。
+    if (!input.location && !parsed.location) {
+      const hit = extractKnownPlace(parsed.title, knownPlaces());
+      if (hit) parsed = { ...parsed, title: hit.title, location: hit.location };
+    }
     let refined;
     // 规则结果可疑（脏标题、量词残渣、残留时间词、有介词却没认出地点）就让模型兜一次；
     // 模型只出标题和地点，时间仍用规则的。「没写地点」本身不再触发，否则每句话都白调一次模型。
@@ -150,6 +157,10 @@ export async function addEvent(input = {}) {
     repeat = repeat ?? (parsed.repeat ? toRrule(parsed.repeat) : undefined);
     alarmMinutes = alarmMinutes ?? parsed.alarmMinutes ?? undefined;
   }
+
+  // 用户说过的地方就记住，下次没写「在 / 去」也认得。写失败也没关系：
+  // 这是口语里出现过的地点，不是「写入成功」的凭据。
+  if (typeof location === 'string' && location.trim() !== '') learnPlaces([location]);
 
   if (!title || String(title).trim() === '') throw new Error('缺少事件标题，请补充一句话描述，例如「明天下午三点到四点开会」');
   if (start === undefined) throw new Error('缺少开始时间');

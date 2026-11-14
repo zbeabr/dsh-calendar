@@ -21,6 +21,7 @@ import { appPasswordFormat, isIcloudHost, normalizeAccount } from './src/credent
 import { inferCalendarTag, llmConfig, llmLastError, needsRefine, probeModel, refineWithModel } from './src/llm.mjs';
 import { apply as applyHolidayPhrase } from './src/holidays.mjs';
 import { parseEvent } from './src/nlp.mjs';
+import { extractKnownPlace, knownPlaces } from './src/places.mjs';
 import { cachedCalendarNames, configPath, KEYCHAIN_SERVICE, readConfig, redact, savePassword, writeConfig } from './src/store.mjs';
 import {
   addEvent, createCalendar, deleteEvent, doctor, formatRange, listCalendars, listEvents,
@@ -282,6 +283,11 @@ async function cmdParse(text, flags) {
   text = applyHolidayPhrase(text, new Date());
   const calendarNames = nameList(flags);
   const parsed = parseEvent(text, new Date(), { calendarNames });
+  // 与 addEvent 用同一套常用地点词典，预览和写入才不会一个显示地点、一个不显示。
+  if (!parsed.location) {
+    const hit = extractKnownPlace(parsed.title, knownPlaces());
+    if (hit) { parsed.title = hit.title; parsed.location = hit.location; }
+  }
 
   let refined;
   const useModel = Boolean(flags.llm) || (!flags.fast && llmConfig().enabled);
