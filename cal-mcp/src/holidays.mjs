@@ -53,6 +53,21 @@ const NAMES = [...new Set([
 ])].sort((a, b) => b.length - a.length);
 const NAME_RE = new RegExp(`(${NAMES.map((n) => n.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|')})`, 'u');
 
+/**
+ * 「节日词」不等于「在说日期」。「买中秋月饼」「看春节联欢晚会」「去圣诞市集」
+ * 里的节日词只是名词修饰，替换成具体日期会把日程写到错误那天（实测「买中秋月饼」
+ * 曾被建成 2027-09-15 全天「买月饼」）。只有后面紧跟修饰符、时间词、标点/句尾，
+ * 或明确是「那天要做的事」的动词时，才认定它承担日期角色。
+ * 宁可放过（地点词留在标题里），也不要悄悄改掉日期 —— 报错优于猜测。
+ */
+const DATE_ROLE_TAIL = /^(?:前|后|当天|那天|这天|当日|[0-9０-９一二三四五六七八九十两]|点|半|钟|早上|上午|中午|下午|晚上|凌晨|傍晚|夜里|早|晚|[\s，,。;；!！?？、]|$|要|去|回|吃|开|做|看|聚|约|见|交|写|复习|准备|参加|休息|出发|飞|走|逛|上班|上课)/u;
+/** 前面紧挨着一个动词时，多半是「中秋月饼」这类复合名词，不是日期。 */
+const NOUN_PREFIX = /(?:买|卖|看|吃|煮|做|送|订|逛|讲|听|读|写|拍|研究|讨论|准备|参加|预订|订购|带|拿|寄|收|发|包|切|摆|挂|贴|穿|喝|尝|学|教)$/u;
+/** 用户明确说了哪一年：优先用它，不再自作主张取「下一个还没到的节日」。 */
+const EXPLICIT_YEAR = /(20\d{2})年$/u;
+const RELATIVE_YEAR = /(去年|今年|明年|后年)$/u;
+const RELATIVE_OFFSET = { 去年: -1, 今年: 0, 明年: 1, 后年: 2 };
+
 const CN_DIGITS = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
 function toNumber(raw) {
   if (/^\d+$/u.test(raw)) return Number(raw);
@@ -103,7 +118,20 @@ function readModifier(tail) {
   return { direction: null, workday: false, offset: 0, consumed: 0 };
 }
 
-function compute(name, modifier, now) {
+function compute(name, modifier, now, yearHint) {
+  // 明确给了年份就只查那一年：用户说「今年中秋」就是今年，哪怕那天已经过去；
+  // 说「2031年中秋」而表里没有 2031，就明确报错，绝不退回「下一个还没到的中秋」。
+  if (yearHint !== undefined) {
+    const base = dateFor(name, yearHint);
+    if (!base) {
+      throw new Error(`节假日表没有 ${yearHint} 年的「${name}」；请更新 src/holidays.mjs 里的年份表`);
+    }
+    let result = base;
+    if (modifier.workday) result = nearestWorkday(base, modifier.direction);
+    else if (modifier.offset) result = shift(base, (modifier.direction === '前' ? -1 : 1) * modifier.offset);
+    return result;
+  }
+
   const today = todayOf(now);
   for (let year = Math.max(now.getFullYear(), FIRST_YEAR); year <= LAST_YEAR; year += 1) {
     const base = dateFor(name, year);
@@ -126,12 +154,39 @@ export function resolve(text, now = new Date()) {
   if (!match) return null;
   const from = match.index;
   const name = match[1];
+  const prefix = text.slice(0, from);
   const tail = text.slice(from + name.length);
+
+  // ① 只有「在说那一天」才替换：后面得是修饰符 / 时间词 / 标点 / 那天要做的事，
+  //    且前面不能紧挨着「买 / 看 / 去」这类动词（那是「中秋月饼」不是日期）。
+  if (!DATE_ROLE_TAIL.test(tail) || NOUN_PREFIX.test(prefix)) return null;
+
   const modifier = readModifier(tail);
   const to = from + name.length + modifier.consumed;
-  const date = compute(name, modifier, now);
+
+  // ② 一句里还出现别的节日词（「中秋和国庆之间」）超出当前能力，
+  //    只替换第一个会留下半句残渣，索性整句不替换。
+  if (NAME_RE.test(text.slice(to))) return null;
+
+  // ③ 用户明确写了年份就听用户的：把「明年 / 2031年」一起吃掉，
+  //    再按那一年查表；表里没有就明确报错，不退回「下一个还没到的节日」。
+  let startAt = from;
+  let yearHint;
+  let yearMatch = EXPLICIT_YEAR.exec(prefix);
+  if (yearMatch) {
+    yearHint = Number(yearMatch[1]);
+    startAt = from - yearMatch[0].length;
+  } else if ((yearMatch = RELATIVE_YEAR.exec(prefix))) {
+    yearHint = now.getFullYear() + RELATIVE_OFFSET[yearMatch[1]];
+    startAt = from - yearMatch[0].length;
+  }
+
+  const date = compute(name, modifier, now, yearHint);
   const stamp = `${date.getUTCFullYear()}年${date.getUTCMonth() + 1}月${date.getUTCDate()}日`;
-  return { date, name, phrase: text.slice(from, to), from, to, text: `${text.slice(0, from)}${stamp}${text.slice(to)}` };
+  return {
+    date, name, phrase: text.slice(startAt, to), from: startAt, to,
+    text: `${text.slice(0, startAt)}${stamp}${text.slice(to)}`,
+  };
 }
 
 /** 只返回替换后的句子；没命中就原样返回。 */

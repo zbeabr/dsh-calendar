@@ -1,7 +1,12 @@
 // 节假日 / 农历短语回归。跑法：node holiday-cases.mjs
 // 表是数据，不是算法猜的：2026–2028 的传统节日公历日期按公开万年历核对内置，
 // 每年需要更新一次；没收录的年份必须明确报错，不许瞎猜（产品原则：报错优于猜测）。
+// 解析层按本地时钟解释「晚上八点」，时区不固定时 Asia/Shanghai 与 UTC 会差 8 小时，
+// 和 parse-corpus.mjs 一样固定 TZ，断言才有意义。
+process.env.TZ = 'Asia/Shanghai';
+
 import assert from 'node:assert/strict';
+import { parseEvent } from './src/nlp.mjs';
 
 const NOW = new Date('2026-11-14T10:00:00+08:00');
 let holidays;
@@ -15,7 +20,12 @@ const results = [];
 function check(name, fn) {
   try {
     if (!holidays) throw new Error('src/holidays.mjs 还不存在');
-    fn();
+    const returned = fn();
+    // 以前这里收过 async 函数：断言失败变成 rejected Promise 被静默吞掉，
+    // 明明 UTC 下结果是 20:00Z 却报 9/9 通过。同步 check 一律拒绝 Promise。
+    if (returned && typeof returned.then === 'function') {
+      throw new Error('check 收到 async 函数：断言失败会被吞进 Promise，请改成同步');
+    }
     results.push({ name, ok: true });
   } catch (error) {
     results.push({ name, ok: false, detail: error.message.split('\n')[0] });
@@ -47,8 +57,7 @@ check('「中秋晚上八点吃饭」替换后仍保留时间与标题', () => {
   assert.match(text, /晚上八点吃饭/u);
   assert.ok(!text.includes('中秋'), '节日短语本身要被吃掉，别又进标题');
 });
-check('替换结果能被现有解析器直接吃下', async () => {
-  const { parseEvent } = await import('./src/nlp.mjs');
+check('替换结果能被现有解析器直接吃下', () => {
   const text = apply('中秋前一天晚上八点吃饭', NOW);
   const parsed = parseEvent(text, NOW);
   assert.equal(parsed.start.toISOString(), '2027-09-14T12:00:00.000Z');
