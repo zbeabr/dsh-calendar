@@ -22,7 +22,10 @@ import { inferCalendarTag, llmConfig, llmLastError, needsRefine, probeModel, ref
 import { apply as applyHolidayPhrase } from './src/holidays.mjs';
 import { parseEvent } from './src/nlp.mjs';
 import { extractKnownPlace, knownPlaces } from './src/places.mjs';
-import { cachedCalendarNames, configPath, KEYCHAIN_SERVICE, readConfig, redact, savePassword, writeConfig } from './src/store.mjs';
+import {
+  cachedCalendarNames, configPath, deleteLlmApiKey, KEYCHAIN_SERVICE, readConfig, readLlmApiKey,
+  redact, saveLlmApiKey, savePassword, writeConfig,
+} from './src/store.mjs';
 import {
   addEvent, createCalendar, deleteEvent, doctor, formatRange, listCalendars, listEvents,
   pendingEvents, syncQueue, updateEvent, verifyCredentials,
@@ -77,6 +80,21 @@ function ask(prompt, { hidden = false } = {}) {
       if (hidden) process.stdout.write('\n');
       resolve(answer.trim());
     });
+  });
+}
+
+/**
+ * 读一行模型密钥：交互终端下不回显，管道输入时取第一行。
+ * 这样 `printf 'sk-…\n' | dsh-cal llm --setup --key -` 不会把密钥写进
+ * shell history，也不会打在屏幕上。密钥最终只进系统钥匙串。
+ */
+async function readLlmKeyFromStdin() {
+  if (process.stdin.isTTY) return ask('模型 API Key（输入不回显）：', { hidden: true });
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, terminal: false });
+    let line = '';
+    rl.on('line', (value) => { if (line === '') line = value; });
+    rl.on('close', () => resolve(line.trim()));
   });
 }
 
@@ -454,9 +472,34 @@ async function cmdUpdate(uid, flags) {
   return undefined;
 }
 
-/** `dsh-cal llm` —— 看看模型通不通；给一句话就看规则和模型各自读成什么。 */
+/**
+ * 写回模型配置时一律剔除 apiKey。llmConfig() 现在会从钥匙串读出密钥，
+ * 如果原样 spread 进 writeConfig，等于把刚从钥匙串取出来的值又明文落盘。
+ */
+function writeLlmConfig(next) {
+  const { apiKey: _secret, ...safe } = next;
+  writeConfig({ ...readConfig(), llm: safe });
+}
+
+/** `dsh-cal llm` —— 配置 / 测试模型；给一句话就看规则和模型各自读成什么。 */
 async function cmdLlm(text, flags) {
   const current = llmConfig();
+
+  // 设置页用的轻量状态：只看本地配置 + 有没有密钥，绝不发网络请求，
+  // 免得打开设置页要先等一个 3 秒的 /models 探测。
+  if (flags.status) {
+    const hasKey = Boolean(readLlmApiKey());
+    if (jsonMode) {
+      return out({
+        ok: true, enabled: current.enabled, provider: current.provider,
+        model: current.model, baseUrl: current.baseUrl, hasKey,
+      });
+    }
+    console.log(`模型：${current.provider} / ${current.model}（${current.enabled ? '已开启' : '未开启'}）`);
+    console.log(`端点：${current.baseUrl}`);
+    console.log(`密钥：${hasKey ? '已存钥匙串' : '未配置'}`);
+    return undefined;
+  }
 
   if (flags.warm) {
     const started = Date.now();
@@ -467,9 +510,84 @@ async function cmdLlm(text, flags) {
     return undefined;
   }
 
+  // 云端配置入口：没装本地模型的人填一次端点 / 模型 / 密钥就能用。
+  // 只写非敏感字段，密钥进钥匙串；--setup 顺手把老配置里的明文 apiKey 擦掉。
+  if (flags.setup || flags.provider !== undefined || flags.key !== undefined
+      || flags['clear-key'] || flags['base-url'] !== undefined
+      || flags.model !== undefined || flags.timeout !== undefined) {
+    const next = { ...current };
+
+    // --key - 或交互终端下的裸 --key：从 stdin 读，不进命令行历史。
+    if (flags.key === '-' || flags.key === true) {
+      if (flags.key === true && !process.stdin.isTTY) {
+        return fail('用法：--key <密钥> 或 --key -（从标准输入读一行）；也可用 DSH_CAL_LLM_KEY 环境变量');
+      }
+      flags.key = await readLlmKeyFromStdin();
+    }
+
+    if (flags.provider !== undefined) {
+      const provider = String(flags.provider).trim().toLowerCase();
+      if (provider !== 'ollama' && provider !== 'openai') return fail('provider 只能是 ollama 或 openai');
+      next.provider = provider;
+    }
+    if (flags['base-url'] !== undefined) {
+      const base = String(flags['base-url']).trim();
+      if (!/^https?:\/\//iu.test(base)) return fail('base-url 必须是 http:// 或 https:// 开头');
+      next.baseUrl = base;
+    }
+    if (flags.model !== undefined) {
+      const model = String(flags.model).trim();
+      if (!model) return fail('model 不能为空');
+      next.model = model;
+    }
+    if (flags.timeout !== undefined) {
+      const ms = Number(flags.timeout);
+      if (!Number.isFinite(ms) || ms < 1000 || ms > 60000) return fail('timeout 要在 1000–60000 毫秒之间');
+      next.timeoutMs = ms;
+    }
+    if (flags['clear-key']) {
+      deleteLlmApiKey();
+      next.enabled = false;
+    }
+    if (flags.key !== undefined) {
+      const key = String(flags.key).trim();
+      // --key 后面没跟值会被 argv() 解析成 true；同时也别让人把密钥写进 shell history。
+      if (!key || key === 'true') {
+        return fail('用法：--key <密钥>，或用 --key - 从标准输入读（不回显、不进历史）');
+      }
+      try {
+        saveLlmApiKey(key);
+      } catch (error) {
+        return fail(error.message);
+      }
+      next.provider = 'openai';
+    }
+
+    // --setup 是「我要开始用」的明确动作，顺手打开开关；只改单个字段时不动 enabled。
+    if (flags.setup && !flags['clear-key']) next.enabled = true;
+    writeLlmConfig(next);
+
+    const hasKey = Boolean(readLlmApiKey());
+    const hint = next.provider === 'openai'
+      ? (hasKey
+        ? '云端模型已配好：输入的原句会发到该端点判断标签/地点，密钥只存钥匙串。断网或超时会安静回落默认日历，不猜。'
+        : '还缺密钥：用 --key <密钥> 或设 DSH_CAL_LLM_KEY，否则云端不可用。')
+      : '已切回本地 ollama（需要本机跑着 ollama serve）。';
+    if (jsonMode) {
+      return out({
+        ok: true, provider: next.provider, model: next.model,
+        baseUrl: next.baseUrl, enabled: next.enabled, hasKey, detail: hint,
+      });
+    }
+    console.log(`✓ 模型配置已保存：${next.provider} / ${next.model}`);
+    console.log(`  ${hint}`);
+    console.log('  测通不通：dsh-cal llm');
+    return undefined;
+  }
+
   if (flags.on || flags.off) {
     const enabled = Boolean(flags.on);
-    writeConfig({ ...readConfig(), llm: { ...current, enabled } });
+    writeLlmConfig({ ...current, enabled });
     const probe = await probeModel();
     if (jsonMode) return out({ ok: true, enabled, detail: probe.detail });
     console.log(`✓ 模型兜底已${enabled ? '开启' : '关闭'}（${current.provider}/${current.model}）`);

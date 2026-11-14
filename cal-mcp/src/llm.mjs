@@ -13,7 +13,7 @@
  */
 
 import { AUTO_CANDIDATES, UNSPECIFIED, exactCalendarMatch, projectModelTag } from './calendar-policy.mjs';
-import { readConfig } from './store.mjs';
+import { readConfig, readLlmApiKey } from './store.mjs';
 
 export const LLM_DEFAULTS = {
   enabled: false,
@@ -25,7 +25,10 @@ export const LLM_DEFAULTS = {
 };
 
 export function llmConfig() {
-  return { ...LLM_DEFAULTS, ...(readConfig().llm ?? {}) };
+  const fromFile = { ...LLM_DEFAULTS, ...(readConfig().llm ?? {}) };
+  // 密钥不来自 config.json：钥匙串（或 headless 环境变量）是唯一可信来源。
+  // 调用方写回配置时必须先剔除 apiKey，否则会把读出来的值又明文落盘。
+  return { ...fromFile, apiKey: readLlmApiKey() ?? '' };
 }
 
 /** 上一次调用失败的原因，给 doctor / 调试用。 */

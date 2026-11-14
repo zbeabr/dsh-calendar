@@ -164,6 +164,69 @@ export function hasPassword(username) {
   return readPassword(username) !== undefined;
 }
 
+/**
+ * 模型 API key 在钥匙串里用固定账号，和 CalDAV 的邮箱账号分开，
+ * 免得「改了模型密钥把日历密码覆盖掉」。config.json 里从此不存明文。
+ */
+export const LLM_KEYCHAIN_ACCOUNT = 'llm-api-key';
+
+// 钥匙串查询要 spawn `security`，而 llmConfig() 每解析一句话就会调几次。
+// 进程内缓存结果，别让一次预览变成好几次外部进程；环境变量仍每次实时读，
+// 这样 CI / headless 改环境变量能立刻生效。
+let cachedLlmKey;
+
+/**
+ * 读模型密钥，优先级：环境变量（无 GUI / CI）> 钥匙串 > 旧版 config.json 明文。
+ * 最后一条只用于兼容升级前的老配置；--setup / --on 会把明文从 config.json 擦掉，
+ * 但不会让老用户在升级那一刻突然「密钥不见了」。
+ */
+export function readLlmApiKey() {
+  if (process.env.DSH_CAL_LLM_KEY) return process.env.DSH_CAL_LLM_KEY;
+  if (cachedLlmKey !== undefined) return cachedLlmKey || undefined;
+  const fromKeychain = readKeychain(LLM_KEYCHAIN_ACCOUNT);
+  const legacy = readConfig().llm?.apiKey;
+  const legacyKey = typeof legacy === 'string' && legacy.trim() !== '' ? legacy : '';
+  cachedLlmKey = fromKeychain || legacyKey || '';
+  return cachedLlmKey || undefined;
+}
+
+/** 写入钥匙串；错误消息一律脱敏，别把密钥拼进 stderr 或 --json。 */
+export function saveLlmApiKey(key) {
+  const value = String(key ?? '').trim();
+  if (!value) throw new Error('模型密钥不能为空');
+  try {
+    execFileSync('security', [
+      'add-generic-password',
+      '-s', KEYCHAIN_SERVICE,
+      '-a', LLM_KEYCHAIN_ACCOUNT,
+      '-l', 'dsh-cal LLM API key',
+      '-w', value,
+      '-U',
+    ], { stdio: ['ignore', 'ignore', 'ignore'] });
+  } catch (error) {
+    throw new Error(redact(
+      `写入钥匙串失败（${error?.status ?? error?.code ?? '未知原因'}），密钥没有保存。`
+      + '请解锁「钥匙串访问」后重试，或用 DSH_CAL_LLM_KEY 环境变量临时提供密钥。',
+      value,
+    ));
+  }
+  // cmdLlm 开头已经用 llmConfig() 读过一次密钥（缓存了旧值）。不在这里同步更新，
+  // 同一次 --setup --key 里再读就会拿到旧值，界面误报「还缺密钥」。
+  cachedLlmKey = value;
+}
+
+export function deleteLlmApiKey() {
+  try {
+    execFileSync('security', [
+      'delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', LLM_KEYCHAIN_ACCOUNT,
+    ], { stdio: 'ignore' });
+  } catch {
+    return false;
+  }
+  cachedLlmKey = '';
+  return true;
+}
+
 export function configPath() {
   return CONFIG_PATH;
 }
