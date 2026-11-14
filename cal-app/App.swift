@@ -629,8 +629,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 读不到云端日程时列表里该说的话（默认那句「没有安排」在离线时会骗人）
     private var agendaNote: String?
     private var pending = 0
-    /// 是否启用本地模型兜底（读 config.json 的 llm.enabled）
+    /// 是否启用模型兜底（读 config.json 的 llm.enabled；云端 API 也走这个开关）
     private var modelEnabled = false
+    /// 模型 provider：ollama（本机）/ openai（兼容接口），决定状态栏文案
+    private var modelProvider = "ollama"
+    /// 设置页「标签识别」那行的状态说明；切换开关后原地更新
+    private var modelStatusLabel: NSTextField?
+    /// 同一行的开关：状态刷新时同步到后端真实值（强制设置页路径没跑 refreshConfig）
+    private var modelToggle: SoftSwitch?
     /// 用户手动改过下拉框，就不再被句子里的标签覆盖
     private var manualOverride = false
     private var detectedTag: String?
@@ -1212,7 +1218,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
                 self.offline = payload["offline"] as? Bool ?? false
                 // 启动时就断网的话，从这一刻起开始盯着，等它恢复
                 if self.offline { self.startReconnectWatch() } else { self.stopReconnectWatch() }
-                self.modelEnabled = (self.readConfigFile()["llm"] as? [String: Any])?["enabled"] as? Bool ?? false
+                let llmSettings = self.readConfigFile()["llm"] as? [String: Any]
+                self.modelEnabled = llmSettings?["enabled"] as? Bool ?? false
+                self.modelProvider = llmSettings?["provider"] as? String ?? "ollama"
                 let fallback = (payload["default"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 // 没有默认日历（从没选过）时，别拿列表第一个顶上 —— 那等于替用户
                 // 决定「以后每句话都写进这个日历」，而界面上看不出任何区别。
@@ -1472,7 +1480,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         if let used = modelUsed {
             parts.append(used)
         } else if modelEnabled {
-            parts.append(LocalModel.shared.phase == .ready ? "模型待命" : "模型预热中")
+            // 云端没有「本地模型预热中」这回事：别让状态栏一直显示本地加载态。
+            parts.append(modelProvider == "openai"
+                ? "云端标签识别"
+                : (LocalModel.shared.phase == .ready ? "模型待命" : "模型预热中"))
         } else {
             parts.append("仅规则")
         }
@@ -1711,8 +1722,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         showsAppearance: Bool = false
     ) {
         // 从「设置…」打开时，底下多一块外观开关；首次连接时不需要，留白就好。
-        // 外观区现在是 5 行（多一行「玻璃浓度」），多留 36pt 免得压到上面的状态栏。
-        let lift: CGFloat = showsAppearance ? 208 : 0
+        // 外观区现在是 5 行（多一行「玻璃浓度」），上面再加「标签识别」一行 + 状态，
+        // 一共多留 72pt，免得压到上面的账号状态栏。
+        let lift: CGFloat = showsAppearance ? 244 : 0
         let height: CGFloat = 330 + lift
 
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: height))
@@ -1787,6 +1799,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     /// 界面等回到主界面再切（见 settingsAppearanceChanged / buildMain），
     /// 否则用户还在填账号密码，设置页会「啪」地消失。
     private func buildAppearanceSection(in root: NSView) {
+        // 标签识别：本地模型与云端 API 共用同一个 llm.enabled 开关。
+        // 密钥只在终端配置（--key - 隐藏输入 / DSH_CAL_LLM_KEY），设置页不碰密钥：
+        // 不把 secret 拼进子进程参数、不显示在界面上、不写回 config.json。
+        let modelRow = appearanceRow(
+            title: "标签识别",
+            detail: "自动判断日程归到哪个标签；没装本地模型也能用云端 API",
+            on: modelEnabled,
+            action: #selector(settingsModelChanged(_:)),
+            y: 238
+        )
+        root.addSubview(modelRow)
+        modelToggle = modelRow.subviews.compactMap { $0 as? SoftSwitch }.first
+        let modelStatus = makeLabel("", size: 11, weight: .regular, color: .secondaryLabelColor)
+        modelStatus.frame = NSRect(x: 24, y: 268, width: 512, height: 18)
+        modelStatus.lineBreakMode = .byTruncatingTail
+        root.addSubview(modelStatus)
+        modelStatusLabel = modelStatus
+        refreshModelStatus()
+
         let divider = NSBox(frame: NSRect(x: 24, y: 226, width: 512, height: 1))
         divider.boxType = .separator
         root.addSubview(divider)
@@ -1928,6 +1959,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
 
     @objc private func settingsGlowChanged(_ sender: SoftSwitch) {
         setGlow(sender.on, note: false)
+    }
+
+    /// 设置页的「标签识别」开关：走 CLI 的 --on/--off，只改 enabled，不碰密钥。
+    /// CLI 失败就把开关弹回原状，避免界面显示已开启、后端其实没开。
+    @objc private func settingsModelChanged(_ sender: SoftSwitch) {
+        let wanted = sender.on
+        modelEnabled = wanted
+        Engine.call(["llm", wanted ? "--on" : "--off", "--json"]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let payload) where (payload["ok"] as? Bool) == true:
+                self.setupStatus?.stringValue = wanted
+                    ? "已开启标签识别。判不准时安静回落默认日历，不会替你猜。"
+                    : "已关闭标签识别，只用规则解析。"
+            default:
+                self.modelEnabled = !wanted
+                sender.on = !wanted
+                self.setupStatus?.textColor = .systemRed
+                self.setupStatus?.stringValue = "没能改模型开关，请检查后端是否可用。"
+            }
+            self.refreshModelStatus()
+        }
+    }
+
+    /// 只读本地配置 + 钥匙串里有没有密钥；--status 刻意不探测网络，
+    /// 所以打开设置页不会先等一次 3 秒的 /models 请求。
+    private func refreshModelStatus() {
+        guard let label = modelStatusLabel else { return }
+        let payload = try? Engine.callSync(["llm", "--status", "--json"])
+        let enabled = (payload?["enabled"] as? Bool) ?? modelEnabled
+        let provider = (payload?["provider"] as? String) ?? modelProvider
+        let model = (payload?["model"] as? String) ?? ""
+        let hasKey = (payload?["hasKey"] as? Bool) ?? false
+        modelProvider = provider
+        modelEnabled = enabled
+        // 内存里的 modelEnabled 可能还没刷新（强制设置页自检路径没跑 refreshConfig），
+        // 开关却已经按旧值画好了；这里以 --status 的真实结果为准，免得显示「关」
+        // 而后端其实是开的。
+        if modelToggle?.on != enabled { modelToggle?.on = enabled }
+        if provider == "openai" {
+            label.stringValue = hasKey
+                ? "云端 API · \(model) · 密钥已存钥匙串；输入的原句会发往该端点"
+                : "云端还缺密钥：终端跑 dsh-cal llm --setup --key -（隐藏输入）"
+            label.textColor = hasKey ? .secondaryLabelColor : .systemOrange
+        } else {
+            label.stringValue = "本地 ollama · \(model)（需本机运行 ollama serve）"
+            label.textColor = .secondaryLabelColor
+        }
     }
 
     @objc private func doConnect() {
