@@ -4,6 +4,60 @@
 
 ---
 
+## [未发布 · 本地] 没装本地模型也能识别标签：云端 API 可用 + 密钥进钥匙串 — 2026-11-14（build 47）
+
+**用户选型**：无模型时的自动标签 → 接云端模型 API；词典/模型都没命中时 → 回落默认日历，不猜。
+
+### 先纠正一个判断
+
+排查时确认 `src/llm.mjs` 的 `callOpenAI` / `openai` provider **早就实现**，`inferCalendarTag` 也走这条分支。所以这轮不是「新写云端接入」，而是补上真正的两个缺口：
+
+1. `dsh-cal llm` 只有 `--on/--off/--warm`，**没有设置 provider / baseUrl / model / apiKey 的入口**——想用云端只能手工改 `config.json`；
+2. `apiKey` **明文存在 `config.json` 里**，而项目明明已有钥匙串机制（CalDAV 密码就走那儿）。
+
+顺带实测：本机 ollama 当前连不上（`Connection refused`），四句话预览的 `calendar` 全是 `null` —— 也就是说自动标签此刻在作者自己电脑上就没在工作。这不是「给别人加功能」，是补当前就存在的缺口。
+
+### 做了什么
+
+- **配置入口**：`dsh-cal llm --setup / --provider / --base-url / --model / --timeout / --key / --clear-key`，另加轻量 `--status`（只读配置与「有没有密钥」，刻意不发网络探测）。
+- **密钥安全**：密钥只进系统钥匙串（service `dsh-cal`，account `llm-api-key`），`config.json` 里从此没有 `apiKey`；`--setup` 会擦掉老配置里遗留的明文。`DSH_CAL_LLM_KEY` 供 CI / 无头场景。写回配置的 `writeLlmConfig()` 一律剔除密钥，避免刚从钥匙串读出来的值又明文落盘。
+- **不进 shell history**：`--key -` 从标准输入读一行，交互终端下不回显；密钥不会出现在命令行参数里（写入钥匙串那一下仍是 `security` 的固有窗口，与 CalDAV 密码相同，见 README）。
+- **设置页**：新增「标签识别」开关 + 状态说明，开关走 `--on/--off`（失败弹回）、状态走 `--status`；**刻意不放密钥输入框**，密钥只在终端配。状态栏在云端模式显示「云端标签识别」，不再错误地一直显示「模型预热中」。
+- **失败口径不变**：断网、超时、密钥失效、模型吐库外标签，一律安静回落默认日历，不猜、不弹错、不阻塞写入；显式 `#标签` 仍最高优先级。闭集约束在 `calendar-policy.mjs`，与「谁来猜」完全解耦，一行未动。
+
+### 旧代码先失败 / 改后
+
+```
+build 46：cloud-llm-cases.mjs  5/14 通过，9 条失败
+build 47：21/21 通过；三时区 npm test 全绿（含 396 条蓝本）
+```
+
+假云端与 `inferCalendarTag` 必须跑在**同一进程**：沙箱会掐掉子进程发往父进程本地服务的 `fetch`。用例还修了三处自身的假通过：`async` 断言传给同步 `check`、测试环境变量盖过假钥匙串、`--setup` 里读到缓存旧密钥。隐藏输入端到端用 PATH 前置的假 `security` 验证，**实测用户真实 `config.json` 与钥匙串条目均未被改动**。
+
+自检快照亲眼核过设置页：新行与账号表单、「立即补发」、外观区互不重叠；第一版开关按内存 `modelEnabled` 画成「关」而 CLI 报 `enabled=true`，已改成刷新状态时同步到 `--status` 的真实值。
+
+### 验证
+
+- `cloud-llm-cases.mjs` 21/21、`test:ui` 12/12、视觉契约 10/10、接线 13/13；像素回归 `0.076 / 0.410 / 0.765` PASS；小盒子运行时定量 `top=120 / sh=668>ch=219 / pageY=0` PASS。
+- 三时区 `npm test` 全绿；JS 语法、Swift typecheck 通过；装机 `1.3.2-47`，`codesign --deep --strict`、`x86_64 arm64`，包内 `cli.mjs / store.mjs / llm.mjs` 与源码 sha256 一致，包内 HTML `bc30e57e…` 未变。
+- 装机版引擎实测 `llm --status --json` 返回结构化状态；发行包内 `package.json` 只留 `login / doctor / mcp` 与安全占位 `test`。
+
+### 还没验证的 / 刻意不做
+
+真机上云端端点握手（不同厂商 `/models` 支持不一）、把原句发往第三方后的实际标签质量、钥匙串首次访问是否弹授权、**以及用户自己的云端密钥**都要本人试；用例里的密钥全是假的，未联任何真实服务。设置页只有开关没有密钥输入框是产品决策，不是遗漏。标签判不准时不猜、钥匙串 ACL 过宽（`security` 命令行读取）是已知且写进 README 的既有取舍。
+
+### 发布状态
+
+本地 **35 笔**未推送，最新已发布 tag 仍是 `v1.3.1`。push / 打 tag / 发 Release 仍由所有者执行，本轮未动 `dist/`。
+
+```bash
+git push origin main
+git tag -a v1.3.2 -m "v1.3.2" && git push origin v1.3.2
+# 之后再由 make-release.sh 出 dmg/zip，别动已发布 tag
+```
+
+---
+
 ## [未发布 · 本地] 过去日程小盒子内部能上下滑动了 — 2026-11-14（build 46）
 
 用户反馈原话：「按了那个盒子内部不能上下滑动」。
