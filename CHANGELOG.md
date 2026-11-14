@@ -4,6 +4,67 @@
 
 ---
 
+## [未发布 · 本地] 过去日程小盒子内部能上下滑动了 — 2026-11-14（build 46）
+
+用户反馈原话：「按了那个盒子内部不能上下滑动」。
+
+### 根因
+
+原生 `installScrollForwarder()` 为绕开 WKWebView 主滚动视图吞滚轮的老问题，
+把窗口里**所有** `scrollWheel` 事件吞掉（`return nil`），合批后只调
+`window.dshScroll(dy)`；而 `dshScroll` 只滚 `window`，从来不碰
+`.memory-list.scrollTop`。于是鼠标放在展开的木盒上滑动，动的是整页木板，
+盒子内部纹丝不动——CSS 里的 `overflow:auto` 根本收不到滚轮事件。
+
+### 旧代码先失败
+
+- `cal-app/tests/memory-scroll-cases.mjs`：**2/11 通过、9 条失败**（缺内层分支、
+  hover 判断、滚动链隔离、可见滚条、自检通道）。
+- `cal-app/tests/memory-scroll-runtime.sh`：**exit=1**，拿不到自检读数。
+
+写用例时又踩了三个用例自身的坑并当场修掉：`/return/` 匹配到函数开头的参数校验、
+`::-webkit-scrollbar` 匹配到 `html,body` 的隐藏规则（两处假通过）；
+macOS `mktemp` 不认「`XXXXXX` 后面还带 `.png` 后缀」，改用临时目录。
+
+### 修法
+
+1. `dshScroll` 先判断「鼠标停在展开的盒子上」，把 `dy` 手动喂给
+   `memoryList.scrollTop`；滚到边界就停住，不把剩余量传给整页，也不与整页叠加成双倍。
+   盒子收起时滚轮照旧回整页（静态契约里专门有一条防「修过头」）。
+2. 悬停态由 `memoryBox` 的 `mouseenter/mouseleave` 维护，放在 `window.dshMemoryHover`
+   上，离屏自检可显式注入（自检进程没有真鼠标）。
+3. `.memory-list` 加 `overscroll-behavior:contain` 挡住拖滚条时的滚动链，
+   显式 `scrollbar-width:thin` 与专属木色滚条——`html/body` 为拟物观感把滚动条全藏了，
+   用户看不出这里能滑、能拖。
+4. `App.swift` 的 `--snapshot` 自检通道新增 `DSH_CAL_SNAP_EVAL`：注入 JS 之后
+   再求一次值，把 DOM 读数打到 stderr。滚动从此可定量复跑，不必靠眼睛猜图。
+
+### 验证
+
+- 静态契约 **12/12**；真机定量 `EVAL {"top":120,"sh":668,"ch":219,"pageY":0,
+  "hover":true,"open":true}` → **PASS**（内容溢出、内层滚了、整页没动）。
+- 自检快照亲眼核过滚到中段：盒子里显示的是第 8～14 件事，不是开头几条。
+- 三时区 `npm test` 全绿（含 396 条蓝本）；视觉契约 10/10、接线 13/13、
+  像素回归 `0.052 / 0.408 / 0.765` **PASS**；JS 语法、Swift typecheck 通过。
+- 装机 `1.3.2 / build 46`、`VERSION=1.3.2-46`，`codesign --deep --strict` 通过、
+  `x86_64 arm64`、包内 HTML sha256 `bc30e57e…` 一致。
+- 常跑链：`test:ui` 加入静态契约，新增 `test:memory-scroll` 一键跑静态 + 真机；
+  发行包内 `package.json` 已核对不含缺失测试脚本。
+- 回滚资产补到 `src-build46`，`switch.sh` 支持 **34…46**，演练 46→45→46 全过，
+  装机包未触碰。
+
+### 还没验证 / 状态
+
+- 离屏快照里滚动条不明显（macOS 的 overlay 滚条可能只在滚动瞬间出现）：
+  **真机滚动时滚条是否看得见、触控板两指滑动的手感**要你亲自确认。
+- 偏好已恢复 `liquidBackdrop=0` / `glassStrength=1`，**旧 App 进程要 ⌘Q 完全退出再重开**
+  才是 build 46。退回：`zsh rollback/switch.sh 45`。
+- 本地领先 `origin/main` **31 笔**（含本笔 CHANGELOG 提交），最新已发布 tag 仍是 `v1.3.1`。
+  **没 push、没打 tag、没发 Release、`dist/` 没动**；push / tag / Release 由所有者执行：
+  `git push origin main` → `git tag v1.3.2 && git push origin v1.3.2` → 发 Release。
+
+---
+
 ## [未发布 · 本地] 先 debug 旧示例、再补新版本示例 — 2026-11-14（build 45）
 
 所有者指令：「做完以后你先自己 debug，把数据库里面的示例先跑一遍，然后再增加新版本的示例。」
