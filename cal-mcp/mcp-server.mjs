@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import {
-  addEvent, createCalendar, deleteEvent, listCalendars, listEvents, pendingEvents, syncQueue,
+  addEvent, createCalendar, deleteEvent, listCalendars, listEvents, pendingEvents, syncQueue, updateEvent,
 } from './src/tools.mjs';
 
 const PROTOCOL_VERSION = '2024-11-05';
@@ -75,6 +75,23 @@ const TOOLS = [
         dryRun: { type: 'boolean', description: '只看会删除哪些，不真的删' },
       },
       required: [],
+    },
+  },
+  {
+    name: 'calendar_update_event',
+    description: '修改一条已存在的日程。必须传 uid（先用 calendar_list_events 拿到）；只传要改的字段，'
+      + '其余内容（重复规则、提醒、备注）会原样保留。只改 start 时会按原时长自动平移 end。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        uid: { type: 'string', description: '日程 uid，必填' },
+        title: { type: 'string', description: '新标题' },
+        start: { type: 'string', description: '新开始时间，ISO 8601，例如 2026-11-04T18:30' },
+        end: { type: 'string', description: '新结束时间，ISO 8601' },
+        location: { type: 'string', description: '新地点；传空字符串表示清空地点' },
+        calendar: { type: 'string', description: '在哪个日历里找这条日程' },
+      },
+      required: ['uid'],
     },
   },
   {
@@ -150,6 +167,20 @@ async function callTool(name, args = {}) {
         confirm: asBool(args.confirm) === true,
         dryRun: asBool(args.dryRun) === true,
       }));
+    case 'calendar_update_event': {
+      // 模型很容易漏传 uid。这里先挡住，别让它拿着空 uid 去翻所有日历。
+      if (typeof args.uid !== 'string' || !args.uid.trim()) {
+        throw new Error('需要 uid 才能修改日程：先用 calendar_list_events 找到那一条，再把 uid 传进来');
+      }
+      return textResult(await updateEvent({
+        uid: args.uid.trim(),
+        title: args.title,
+        start: args.start,
+        end: args.end,
+        location: args.location,
+        calendar: args.calendar,
+      }));
+    }
     case 'calendar_sync_pending':
       return textResult(await syncQueue());
     case 'calendar_pending':
