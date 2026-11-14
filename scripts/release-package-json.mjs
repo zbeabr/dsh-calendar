@@ -6,7 +6,7 @@
  * mcp-tools / occurrence / holiday / holiday-guard / places，以及 build 47 的 cloud-llm 用例；
  * 这些文件按设计不进发行包，直接拷过去会让包内 `npm test` 报「找不到模块」。
  * 改成一个能正常退出、并说明原因的脚本。test:features / test:ui / test:memory-scroll /
- * test:pixel 同样以 test: 开头，会一起被摘掉。
+ * test:pixel / test:plank-buttons 同样以 test: 开头，会一起被摘掉。
  *
  * build.sh（App 内嵌 engine）与 make-release.sh（发行目录 cal-mcp）都调用本文件，
  * 保证两份内容完全一致；make-release.sh 的逐字节校验也拿它生成期望值。
