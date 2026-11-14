@@ -73,6 +73,8 @@ const TOOLS = [
         days: { type: 'number', description: '按标题查找时往后找几天，默认 30' },
         confirm: { type: 'boolean', description: '按标题命中多条时，确认要全部删除才传 true' },
         dryRun: { type: 'boolean', description: '只看会删除哪些，不真的删' },
+        scope: { type: 'string', enum: ['series', 'this'], description: 'series=删整个系列（默认）；this=只跳过这一次重复' },
+        occurrence: { type: 'string', description: 'scope=this 时必填：要跳过的那一次的开始时间，ISO 8601' },
       },
       required: [],
     },
@@ -80,7 +82,8 @@ const TOOLS = [
   {
     name: 'calendar_update_event',
     description: '修改一条已存在的日程。必须传 uid（先用 calendar_list_events 拿到）；只传要改的字段，'
-      + '其余内容（重复规则、提醒、备注）会原样保留。只改 start 时会按原时长自动平移 end。',
+      + '其余内容（重复规则、提醒、备注）会原样保留。只改 start 时会按原时长自动平移 end。'
+      + '改重复日程里的某一次：传 scope=this 和 occurrence（那次的开始时间），并给出新标题与新开始时间。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -90,6 +93,8 @@ const TOOLS = [
         end: { type: 'string', description: '新结束时间，ISO 8601' },
         location: { type: 'string', description: '新地点；传空字符串表示清空地点' },
         calendar: { type: 'string', description: '在哪个日历里找这条日程' },
+        scope: { type: 'string', enum: ['series', 'this'], description: 'series=改整个系列（默认）；this=只改这一次' },
+        occurrence: { type: 'string', description: 'scope=this 时必填：要改的那一次的开始时间，ISO 8601' },
       },
       required: ['uid'],
     },
@@ -166,6 +171,8 @@ async function callTool(name, args = {}) {
         days: args.days,
         confirm: asBool(args.confirm) === true,
         dryRun: asBool(args.dryRun) === true,
+        scope: args.scope,
+        occurrence: args.occurrence,
       }));
     case 'calendar_update_event': {
       // 模型很容易漏传 uid。这里先挡住，别让它拿着空 uid 去翻所有日历。
@@ -179,6 +186,8 @@ async function callTool(name, args = {}) {
         end: args.end,
         location: args.location,
         calendar: args.calendar,
+        scope: args.scope,
+        occurrence: args.occurrence,
       }));
     }
     case 'calendar_sync_pending':

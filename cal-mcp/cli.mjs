@@ -437,6 +437,8 @@ async function cmdUpdate(uid, flags) {
     end: typeof flags.end === 'string' ? flags.end : undefined,
     location: typeof flags.location === 'string' ? flags.location : undefined,
     calendar: flags.calendar,
+    scope: flags.scope,
+    occurrence: flags.occurrence,
   });
   if (jsonMode) return out(result);
   console.log(result.summary);
@@ -552,6 +554,8 @@ async function main() {
         days: flags.days,
         confirm: flags.confirm === true || flags.confirm === 'true',
         dryRun: flags['dry-run'] === true || flags['dry-run'] === 'true',
+        scope: flags.scope,
+        occurrence: flags.occurrence,
       });
       if (jsonMode) return out(result);
       console.log(result.summary);

@@ -602,6 +602,32 @@ export class CalDav {
   }
 
   /**
+   * 「只删这一次」：不 DELETE 资源，只往系列主事件里补一条 EXDATE。
+   * 和 updateEvent 一样先 GET 再 PUT，RRULE / VALARM / VTIMEZONE 全部原样保留。
+   */
+  async skipOccurrence({ uid, href, calendar, occurrence }) {
+    const zone = this.timeZone || 'Asia/Shanghai';
+    const candidates = await this.eventCandidates({ uid, href, calendar });
+    for (const candidate of candidates) {
+      const { res, text } = await this.request(candidate.url, { method: 'GET' });
+      if (res.status >= 400) continue;
+      const etag = res.headers.get('etag');
+      const body = addExdateToVevent(text.replace(/\r\n[ \t]/gu, ''), occurrence, zone);
+      const { res: putRes } = await this.request(candidate.url, {
+        method: 'PUT',
+        body: `${body.replace(/\r?\n/gu, '\r\n').replace(/\r\n+$/u, '')}\r\n`,
+        headers: {
+          'content-type': 'text/calendar; charset=utf-8',
+          ...(etag ? { 'if-match': etag } : {}),
+        },
+      });
+      if (putRes.status < 400) return { skipped: true, uid, calendar: candidate.calendar, occurrence };
+      throw new CalDavError(`排除这一次失败 HTTP ${putRes.status}`, { status: putRes.status, url: candidate.url });
+    }
+    return { skipped: false, uid };
+  }
+
+  /**
    * 原地改写一条日程：只替换传进来的字段，其余（RRULE、VALARM、DESCRIPTION）原样保留。
    * 先 GET 拿原 ics 再 PUT 回去，所以重复日程和提醒不会被改坏。
    */
@@ -725,6 +751,45 @@ function rewriteVevent(body, { title, start, end, location, zone }) {
     setField('DTEND', stamp(nextEnd), { params: startParams || `;TZID=${zone}`, after: 'DTSTART' });
   }
 
+  return lines.join('\r\n');
+}
+
+/**
+ * 给系列主 VEVENT 补一条 EXDATE（「这一次不出现」）。
+ *
+ * 不复用 rewriteVevent：那函数会顺带改 DTSTART/DTEND/SUMMARY，而这里只想加一行。
+ * 时间格式跟主事件的 DTSTART 对齐：全天用 VALUE=DATE 的本地日期，其余用 UTC 戳
+ * （parseIcsDate 认得 Z，nextOccurrence 的 skip 集合按毫秒比对，不会错位）。
+ */
+export function addExdateToVevent(body, occurrence, timeZone = 'Asia/Shanghai') {
+  const when = new Date(occurrence);
+  if (Number.isNaN(when.getTime())) throw new CalDavError('这一次的开始时间不是合法时间');
+
+  const lines = body.split(/\r?\n/u);
+  const blocks = veventBlocks(lines);
+  const master = blocks.find((block) => !blockHasField(lines, block, 'RECURRENCE-ID')) ?? blocks[0];
+  if (!master) throw new CalDavError('ICS 里没有 VEVENT');
+
+  const find = (key) => {
+    const pattern = new RegExp(`^${key}[;:]`, 'iu');
+    for (let i = master.begin + 1; i < master.end; i += 1) {
+      if (pattern.test(lines[i])) return i;
+    }
+    return -1;
+  };
+  const dtstart = find('DTSTART');
+  const params = dtstart >= 0 ? lines[dtstart].slice('DTSTART'.length, lines[dtstart].indexOf(':')) : '';
+  const allDay = /(?:^|;)VALUE=DATE(?:$|;)/iu.test(params);
+  const value = allDay ? toIcsDate(when, timeZone) : toIcsStamp(when);
+
+  const exdate = find('EXDATE');
+  if (exdate >= 0) {
+    const colon = lines[exdate].indexOf(':');
+    const existing = lines[exdate].slice(colon + 1).split(',');
+    if (!existing.includes(value)) lines[exdate] = `${lines[exdate].slice(0, colon + 1)}${existing.join(',')},${value}`;
+  } else {
+    lines.splice(master.end, 0, `EXDATE${allDay ? ';VALUE=DATE' : ''}:${value}`);
+  }
   return lines.join('\r\n');
 }
 

@@ -420,7 +420,7 @@ const MAX_CONFIRM_DELETE = 10;
  * 以前命中几条就删几条，而调这个函数的是模型，一句「把开会删了」可能清掉一整周。
  * 现在的规矩：命中 1 条直接删（用户说的就是它），命中多条只回候选、要求 confirm。
  */
-export async function deleteEvent({ uid, title, calendar, days = 30, confirm = false, dryRun = false, client: clientOverride } = {}) {
+export async function deleteEvent({ uid, title, calendar, days = 30, confirm = false, dryRun = false, scope = 'series', occurrence, client: clientOverride } = {}) {
   if (!uid && !title) throw new Error('需要 uid 或日程标题');
   // 只有布尔 true 才算确认。以前这里是 `!confirm` / `if (dryRun)`，
   // 而 MCP 的参数是模型填的，传字符串 "false" 会被当成真值 —— 命中多条也照删。
@@ -430,6 +430,23 @@ export async function deleteEvent({ uid, title, calendar, days = 30, confirm = f
   // 删除时**不**退回默认日历：事件可能在「生活」「课表-*」里，
   // 只去「学习」找会直接报「没找到 uid」，界面上的删除按钮等于失效。
   const target = calendar ?? undefined;
+
+  if (scope !== 'series' && scope !== 'this') throw new Error('scope 只能是 series（整个系列）或 this（只这一次）');
+  if (scope === 'this') {
+    if (!uid) throw new Error('只删这一次需要 uid');
+    if (!occurrence) throw new Error('只删这一次需要 occurrence：告诉我是哪一次（它的开始时间）');
+    const result = await client.skipOccurrence({ uid, calendar: target, occurrence });
+    return {
+      ok: result.skipped,
+      scope: 'this',
+      uid,
+      skipped: result.skipped ? [occurrence] : [],
+      deleted: [],
+      summary: result.skipped
+        ? `已跳过这一次（${occurrence}），整个系列还在。`
+        : `没找到 uid 为 ${uid} 的日程`,
+    };
+  }
 
   if (!uid) {
     const start = new Date();
@@ -520,9 +537,9 @@ export async function deleteEvent({ uid, title, calendar, days = 30, confirm = f
  * 改一条已存在的日程，只传要改的字段。
  * 底层先读原 ics 再写回，所以重复规则和提醒不会因为改个时间就丢掉。
  */
-export async function updateEvent({ uid, title, start, end, location, calendar } = {}) {
+export async function updateEvent({ uid, title, start, end, location, calendar, scope = 'series', occurrence, client: clientOverride, create = addEvent } = {}) {
   if (!uid) throw new Error('需要 uid 才能修改日程');
-  const { client } = getClient();
+  const client = clientOverride ?? getClient().client;
   // 同删除：按 uid 改的时候得在所有日历里找，不能只看默认日历。
   const target = calendar ?? undefined;
 
@@ -532,6 +549,33 @@ export async function updateEvent({ uid, title, start, end, location, calendar }
   if (end !== undefined) patch.end = toDate(end, '结束时间');
   if (location !== undefined) patch.location = location ?? '';
   if (Object.keys(patch).length === 0) throw new Error('没有要修改的字段');
+  if (scope !== 'series' && scope !== 'this') throw new Error('scope 只能是 series（整个系列）或 this（只这一次）');
+
+  // 「只改这一次」不做 RECURRENCE-ID 覆盖实例：那要复制整块 VEVENT、容易把
+  // RRULE / VALARM 带进单次实例。改成两步：EXDATE 把这一次从系列里排除，
+  // 再用新时间另建一条普通单次日程。新建仍走 addEvent，闭集校验与离线队列都在。
+  if (scope === 'this') {
+    if (!occurrence) throw new Error('只改这一次需要 occurrence：告诉我是哪一次（它的开始时间）');
+    if (!patch.title || !patch.start) throw new Error('只改这一次要同时给出新标题和新开始时间，才能另建那一条');
+    const skipped = await client.skipOccurrence({ uid, calendar: target, occurrence });
+    if (!skipped.skipped) return { ok: false, uid, summary: `没找到 uid 为 ${uid} 的日程` };
+    const created = await create({
+      title: patch.title,
+      start: patch.start,
+      end: patch.end,
+      location: patch.location,
+      calendar: target,
+    });
+    return {
+      ok: true,
+      uid,
+      scope: 'this',
+      skipped: [occurrence],
+      created: created.uid ?? undefined,
+      calendar: target,
+      summary: `已只改这一次：${patch.title} ${formatRange(patch.start, patch.end ?? new Date(patch.start.getTime() + 3600000))}（整个系列保留）`,
+    };
+  }
 
   const result = await client.updateEvent({ uid, calendar: target, ...patch });
   if (!result.updated) return { ok: false, uid, summary: `没找到 uid 为 ${uid} 的日程` };
