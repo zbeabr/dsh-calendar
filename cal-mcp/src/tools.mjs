@@ -289,6 +289,8 @@ export async function listEvents({ days = 7, calendar, from, to, includeUid = fa
     events: events.map((event) => ({
       ...event,
       when: formatRange(new Date(event.start), new Date(event.end)),
+      // 界面靠这个决定要不要给「只删这一次 / 只改这一次」二选一。
+      recurring: Boolean(event.rrule || event.recurrenceId),
     })),
     summary: (events.length === 0
       ? '这段时间没有日程。'

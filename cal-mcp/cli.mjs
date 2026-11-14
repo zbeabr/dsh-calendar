@@ -539,6 +539,24 @@ async function main() {
     case 'tag': return cmdTag(rest.join(' '), flags);
     case 'update': return cmdUpdate(rest[0], flags);
     case 'query': return cmdQuery(rest.join(' '), flags);
+    case 'past': {
+      // 给拟物界面的「过去日程小盒子」用：只取已经过去的一段，默认 30 天。
+      const days = Math.max(1, Number(flags.days) || 30);
+      const to = new Date();
+      const from = new Date(to.getTime() - days * 86400000);
+      const result = await listEvents({ from, to, calendar: flags.calendar, includeUid: true });
+      const payload = {
+        ok: true,
+        days,
+        count: result.count,
+        events: result.events,
+        partial: result.partial,
+        summary: result.summary,
+      };
+      if (jsonMode) return out(payload);
+      console.log(result.summary);
+      return undefined;
+    }
     case 'ls': {
       // --from today 表示从今天 00:00 起算，这样早上已经过的日程也会出现在列表里（界面要按天分组）
       let from;
