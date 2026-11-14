@@ -10,7 +10,8 @@
   "scripts": {
     "test": "node parse-cases.mjs && node safety-cases.mjs && node credentials-cases.mjs && node caldav-cases.mjs && node llm-guard-cases.mjs && node calendar-policy-cases.mjs && node calendar-model-cases.mjs && node mcp-tools-cases.mjs && node occurrence-cases.mjs && node holiday-cases.mjs && node holiday-guard-cases.mjs && node places-cases.mjs && node parse-corpus.mjs",
     "test:features": "node mcp-tools-cases.mjs && node occurrence-cases.mjs && node holiday-cases.mjs && node holiday-guard-cases.mjs && node places-cases.mjs",
-    "test:ui": "node ../cal-app/tests/glass-layout.mjs && node ../cal-app/tests/ui-bridge-cases.mjs",
+    "test:ui": "node ../cal-app/tests/glass-layout.mjs && node ../cal-app/tests/ui-bridge-cases.mjs && node ../cal-app/tests/memory-scroll-cases.mjs",
+    "test:memory-scroll": "node ../cal-app/tests/memory-scroll-cases.mjs && zsh ../cal-app/tests/memory-scroll-runtime.sh",
     "test:pixel": "zsh ../cal-app/tests/glass-pixel.sh",
     "test:llm": "node llm-cases.mjs",
     "test:llm-guard": "node llm-guard-cases.mjs",
