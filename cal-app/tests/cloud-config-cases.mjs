@@ -89,6 +89,16 @@ check('保存成功后立刻清空密钥框', () => {
   assert.match(bodyOf('func saveCloudSettings'), /cloudKeyField\?\.stringValue = ""/u);
 });
 
+check('缺密钥时提示指向上面的输入框，不再把用户打发去终端', () => {
+  const status = bodyOf('func refreshModelStatus');
+  assert.ok(!/终端跑|--key -（隐藏输入）/u.test(status),
+    '状态行还在叫用户去终端配密钥，与刚加的图形入口矛盾');
+  assert.match(status, /云端还缺密钥/u);
+  const save = bodyOf('func saveCloudSettings');
+  assert.match(save, /hasKey/u,
+    '保存回调要看后端报的 hasKey，不能没密钥也一律说「已保存」');
+});
+
 check('清除密钥 / 切回本地都走 CLI，且不带任何密钥', () => {
   const clear = bodyOf('func clearCloudKey');
   assert.match(clear, /"llm", "--clear-key", "--json"/u);

@@ -2080,7 +2080,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         if provider == "openai" {
             label.stringValue = hasKey
                 ? "云端 API · \(model) · 密钥已存钥匙串；输入的原句会发往该端点"
-                : "云端还缺密钥：终端跑 dsh-cal llm --setup --key -（隐藏输入）"
+                : "云端还缺密钥：在上面「云端 API」里填一次 API Key 再点保存"
             label.textColor = hasKey ? .secondaryLabelColor : .systemOrange
         } else {
             label.stringValue = "本地 ollama · \(model)（需本机运行 ollama serve）"
@@ -2112,8 +2112,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
             switch result {
             case .success(let payload) where (payload["ok"] as? Bool) == true:
                 self.cloudKeyField?.stringValue = ""
-                self.setupStatus?.textColor = .labelColor
-                self.setupStatus?.stringValue = "云端 API 已保存，密钥只进了钥匙串；可用「日程 → 重新加载模型」测连通。"
+                // 没填密钥时只写了端点 / 模型，云端其实还不可用，不能一律报「已保存」。
+                let hasKey = (payload["hasKey"] as? Bool) ?? false
+                self.setupStatus?.textColor = hasKey ? .labelColor : .systemOrange
+                self.setupStatus?.stringValue = hasKey
+                    ? "云端 API 已保存，密钥只进了钥匙串；可用「日程 → 重新加载模型」测连通。"
+                    : "端点 / 模型已保存，但还没有密钥，云端暂不可用：在上面填一次 API Key 再保存。"
             default:
                 self.setupStatus?.textColor = .systemRed
                 self.setupStatus?.stringValue = "保存失败：检查端点 / 模型名，或看后端是否可用。"
