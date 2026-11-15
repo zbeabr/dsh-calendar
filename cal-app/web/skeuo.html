@@ -991,9 +991,26 @@ html.glass-probe.liquid-bg body::before{
 
 /* ===== 过去日程小盒子 / 木板编辑卡（2026-11-14） =====
    木板本身保持不透明；盒子里的小木板也是实木，不用半透明。 */
-.memory-box{position:fixed;right:24px;bottom:22px;z-index:30;width:188px;
+/* 右缘抽屉：平时整只盒子滑到窗口右侧外，只留 14px 黄铜边；鼠标移到那条边
+   （或左侧 28px 透明感应区）上，mouseenter 自动挂 .open，盒子滑回来并摊开列表。
+   right:0 很关键：展开后右边缘贴窗口边，鼠标不会落在盒子右缘之外立刻触发
+   mouseleave，避免「刚滑出就收起」来回抖。 */
+.memory-box{position:fixed;right:0;bottom:22px;z-index:30;width:188px;
   font-family:"Apple Garamond","Hoefler Text",Georgia,serif;cursor:pointer;user-select:none;
-  filter:drop-shadow(0 10px 16px rgba(20,12,4,.5))}
+  filter:drop-shadow(0 10px 16px rgba(20,12,4,.5));
+  transform:translateX(calc(100% - 14px));
+  transition:transform .36s cubic-bezier(.2,.8,.3,1)}
+.memory-box.open{transform:translateX(0)}
+/* 感应区往屏幕内伸 28px，收起时正好覆盖右缘内侧那一段，不必精确瞄准 14px。 */
+.memory-box::before{content:"";position:absolute;left:-28px;top:-34px;bottom:0;width:28px;
+  background:transparent}
+/* 收起时露出来的那条黄铜边；展开后淡出，免得盒子左缘多一条亮线。 */
+.memory-box::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+  border-radius:3px 0 0 3px;
+  background:linear-gradient(180deg,#f0d79a,#8a6a24 45%,#4a3510);
+  box-shadow:0 0 7px rgba(240,215,154,.45);
+  opacity:.9;transition:opacity .25s}
+.memory-box.open::after{opacity:0}
 .memory-box .mb-body{position:relative;padding:8px 10px 12px;border-radius:4px 4px 9px 9px;
   background:linear-gradient(180deg,#5c3618,#3a200d);border:1px solid #241407;
   box-shadow:inset 0 2px 6px rgba(0,0,0,.6)}
@@ -1246,8 +1263,8 @@ html.glass-probe.liquid-bg body::before{
   </div>
 </div>
 
-<!-- 过去日程小盒子：收起时木板叠着，点开盖子摊开 -->
-<div class="memory-box" id="memoryBox" title="打开看看过去做了什么">
+<!-- 过去日程小盒子：默认缩到右缘只露一条边，鼠标移过来自动弹出 -->
+<div class="memory-box" id="memoryBox" title="鼠标移过来自动展开，移开收起">
   <div class="mb-lid"></div><div class="mb-clasp"></div>
   <div class="mb-body">
     <div class="mb-count" id="mbCount">过去 0 条</div>
@@ -2515,7 +2532,7 @@ document.addEventListener('keydown', function(e){
   if (e.key === 'Escape' && editingUid){ e.preventDefault(); closeEdit(); }
 });
 
-/* 过去日程小盒子：收起时三块小木板叠着，点开盖子摊开成列表。
+/* 过去日程小盒子：默认缩到右缘只露一条边，鼠标移过来自动滑出并摊开列表。
    数据来自原生 pushSkeuoState 的 state.past（过去 30 天，刷新列表时拉一次）。 */
 var memoryItems = [];
 function renderMemory(past){
@@ -2542,22 +2559,23 @@ function renderMemory(past){
     list.appendChild(row);
   });
 }
-document.getElementById('memoryBox').addEventListener('click', function(e){
-  if (e.target.closest && e.target.closest('.memory-list')) return;
-  this.classList.toggle('open');
-});
+/* 右缘抽屉：鼠标移到窗口右缘那条边（或左侧感应区）就自动滑出并摊开列表，
+   移开自动收起。原来要点一下盖子才开，现在不用点 —— 也别再留 click toggle，
+   否则鼠标还在盒子上、点一下就把刚弹出的盒子又关掉了。
+   hover 状态同时给 dshScroll 用：只有盒子展开且鼠标在上面，滚轮才喂内层列表。
+   离屏自检没有真鼠标，dshMemorySet 挂到 window 上供 DSH_CAL_SNAP_JS 显式注入。 */
+window.dshMemoryHover = false;
+var memoryBox = document.getElementById('memoryBox');
+function dshMemorySet(open){
+  memoryBox.classList.toggle('open', open);
+  window.dshMemoryHover = open;
+}
+window.dshMemorySet = dshMemorySet;
+memoryBox.addEventListener('mouseenter', function(){ dshMemorySet(true); });
+memoryBox.addEventListener('mouseleave', function(){ dshMemorySet(false); });
 /* 原生 installScrollForwarder() 把窗口里所有滚轮事件都吞掉，只调
    window.dshScroll(dy)。所以「滚轮该给谁」必须在网页侧自己判断：
-   鼠标停在展开的盒子上时，dshScroll 要把 dy 交给内层列表而不是整页。
-   悬停态挂在整只盒子上（盖子 / 标题上也算），离屏自检没有真鼠标，
-   因此把状态放在 window.dshMemoryHover 上，可由自检通道显式注入。 */
-window.dshMemoryHover = false;
-document.getElementById('memoryBox').addEventListener('mouseenter', function(){
-  window.dshMemoryHover = true;
-});
-document.getElementById('memoryBox').addEventListener('mouseleave', function(){
-  window.dshMemoryHover = false;
-});
+   鼠标停在展开的盒子上时，dshScroll 要把 dy 交给内层列表而不是整页。 */
 window.dshSys = setSys;
 
 /* 原生窗口拖动时 Swift 每帧推来窗口的速度向量（px/s）。
