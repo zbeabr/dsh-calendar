@@ -23,7 +23,10 @@ if (!src || !dst) {
 
 const pkg = JSON.parse(readFileSync(src, 'utf8'));
 const scripts = Object.fromEntries(
-  Object.entries(pkg.scripts ?? {}).filter(([name]) => name !== 'test' && !name.startsWith('test:')),
+  Object.entries(pkg.scripts ?? {}).filter(
+    // verify 聚合了 test + test:ui + 版本检查，包里没有这些用例文件，同样摘掉
+    ([name]) => name !== 'test' && name !== 'verify' && !name.startsWith('test:'),
+  ),
 );
 scripts.test = 'node -e "console.log(\'发行包不含测试脚本；请在源码仓库跑 npm test\')"';
 writeFileSync(dst, `${JSON.stringify({ ...pkg, scripts }, null, 2)}\n`);
