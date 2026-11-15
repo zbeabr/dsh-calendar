@@ -115,6 +115,21 @@ dsh-cal parse "周五两点到四点开会"   # parse only, no write
 dsh-cal doctor                     # check password, connectivity, calendars
 ```
 
+## Contributing
+
+This repo has been maintained by **several models in turn**, so the conventions live in files rather than in someone's head:
+
+```bash
+git config core.hooksPath scripts/hooks   # install the push guard (once per clone)
+cd cal-mcp && npm run verify              # backend + UI cases + version check in one command
+```
+
+- `AGENTS.md` — read before touching anything: red lines, code map, bug-fix workflow, report format
+- `docs/decisions.md` — the places that look like bugs but are deliberate trade-offs
+- `docs/inflight.md` — claim your files before parallel work, so nobody edits the same file
+- `docs/gui-smoke-checklist.md` — UI changes can only be verified by hand; the list lives here
+- `docs/local-env.md` — environment traps on this machine (tool dialects, packaging mounts, permissions)
+
 ## License
 
 MIT. Icons and UI are drawn for this project.

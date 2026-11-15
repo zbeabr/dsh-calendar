@@ -4,6 +4,41 @@
 
 ---
 
+## [未发布 · 本地] 交接正文入库：AGENTS.md + `npm run verify` — 2026-11-16（build 51）
+
+**动机**：这个项目一直是多个模型接力维护，但交接知识全在本机、且不入库的文件里——本地 `HANDOFF.md`（被 `.git/info/exclude` 排除）、整个 `.workbuddy/` 目录、`.git/hooks/pre-push`。换一个模型、换一台机器接手，等于从零开始：它读不到约定，拿到的远端还停在 `v1.3.1`。
+
+### 新增
+
+- **`AGENTS.md`**：任何模型（Claude Code / Codex / Cursor / WorkBuddy）自动感知的入口文件。含 7 条红线、代码地图与风险分级、修 bug 的固定动作（先让新用例在旧代码上失败）、并行认领规则、汇报格式、收尾三件事、发版流程。
+- **`npm run verify`**（在 `cal-mcp/`）：`npm test` + `test:ui` + 版本号一致性，一条命令出基线。发行包构建时会被 `scripts/release-package-json.mjs` 摘掉（包里没有用例文件）。
+- **`scripts/check-versions.mjs`**：`cal-mcp/package.json` ↔ `cal-app/Info.plist` ↔ `CHANGELOG.md` 三处版本一致性。把 package.json 故意改成 `9.9.9` 验证过——报 `版本号不一致` 且 `exit=1`。
+- **`scripts/hooks/pre-push`**：推送守卫入库（此前只存在于 `.git/hooks/`），检查项从「工作区干净 + `npm test`」升级为「工作区干净 + `npm run verify`」。安装：`git config core.hooksPath scripts/hooks`。
+- **`docs/decisions.md`**：10 条「刻意为之」的决策与被否决方案，含 D-01 解析器不接收时区参数、D-10 拟物改用 WKWebView 承载。
+- **`docs/local-env.md`**：本机环境坑，已脱敏（只用 `$HOME` / 仓库根，不含用户名与绝对路径）。
+- **`docs/inflight.md`**：认领表，并行改动前先占位。
+- **`docs/gui-smoke-checklist.md`**：28 项人工冒烟清单（从 build 51 功能面重建；早期 43 项版本在迭代中丢失）。
+- **README / README.en.md**：各加一节「参与开发 / Contributing」，指向上面这些文件。
+
+### 复核后改掉的旧结论
+
+两条来自旧交接文档的"坑"，实测已经不成立，写进新文件时改成了准确表述：
+
+```
+Bash grep 对 App.swift 静默返回空   → 实测 grep -c "func " App.swift 返回 265，正常
+不要用 sed -i                     → 准确说法是"不要用 BSD 的 sed -i ''"；
+                                    toybox 下 sed -i 's/x/y/' 可用（实测 exit=0）
+```
+
+### 验证
+
+- `cd cal-mcp && npm run verify` → 全绿，`✓ 版本号一致：1.3.2（build 51）`，`exit=0`。
+- 版本检查的失败路径单独验过（临时目录 `9.9.9` 副本，不碰真实仓库）。
+- `node scripts/release-package-json.mjs` 干跑：发行包 scripts 只剩 `login doctor mcp test`，`verify` 未残留。
+- **未验证**：`git config core.hooksPath` 装上后本机尚未触发过一次真实 push（第一次推送时观察守卫输出）。
+
+---
+
 ## [未发布 · 本地] 过去日程小盒子改成右缘抽屉 — 2026-11-15（build 51）
 
 **用户要求**：「帮我把那个装一大堆的木板的盒子自动收起到右下角的右侧边缘，只留一个边边，鼠标过去的时候自动弹出来盒子」。旧行为是盒子常驻右下角（`right:24px`、完整 188px 宽），要点一下盖子才摊开列表。

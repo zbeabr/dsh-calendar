@@ -1,0 +1,52 @@
+#!/bin/sh
+# 推送守卫：工作区干净 + 全量用例全绿 → 放行；否则拦下并说明原因。
+#
+# 目的：拦住「改坏了还硬推」「带未提交改动就推」。不是限制正常工作。
+#
+# 安装（每个新 clone 只需一次）：
+#   git config core.hooksPath scripts/hooks
+#
+# 逃生阀（明确知道原因时才用，且不要在公开仓库历史里留下绕过记录）：
+#   DSH_SKIP_CHECK=1 git push
+set -u
+
+if [ "${DSH_SKIP_CHECK:-0}" = "1" ]; then
+  echo "[推送守卫] DSH_SKIP_CHECK=1，跳过检查" >&2
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT" || exit 0
+
+dirty="$(git status --porcelain)"
+if [ -n "$dirty" ]; then
+  cat >&2 <<EOF
+
+  [推送被拦：工作区不干净]
+$dirty
+
+  先把改动提交（或清理），再推。带未提交改动推送会让远端和本地对不上号。
+  确实需要时：DSH_SKIP_CHECK=1 git push
+
+EOF
+  exit 1
+fi
+
+if [ -f cal-mcp/package.json ] && command -v node >/dev/null 2>&1; then
+  echo "[推送守卫] 跑 npm run verify（后端 + 界面 + 版本号）…" >&2
+  if ! ( cd cal-mcp && npm run verify >/tmp/dsh-pre-push-verify.log 2>&1 ); then
+    cat >&2 <<EOF
+
+  [推送被拦：verify 没通过]
+  最后 20 行输出：
+$(tail -20 /tmp/dsh-pre-push-verify.log)
+
+  修完再推。不要用 --no-verify 跳过本检查。
+
+EOF
+    exit 1
+  fi
+  echo "[推送守卫] 通过：$(tail -2 /tmp/dsh-pre-push-verify.log | tr '\n' ' ')" >&2
+fi
+
+exit 0

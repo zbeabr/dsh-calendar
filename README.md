@@ -317,6 +317,21 @@ App 专用密码是 Apple 的 CalDAV 认证方式决定的，**覆盖 iCloud 的
 - 农历/节假日只收录 **2026–2028** 的公历日期，表外年份会明确报错而不是猜；「第一个工作日」只跳周末，不猜法定调休
 - 没有 Apple 付费开发者账号，所以**没做代码签名和公证**。从 dmg 装完若被 Gatekeeper 拦，右键「打开」或 `xattr -dr com.apple.quarantine "/Applications/DSH 日历.app"`
 
+## 参与开发
+
+这个仓库由**多个模型接力**维护过，所以约定写在文件里，不靠口头传承：
+
+```bash
+git config core.hooksPath scripts/hooks   # 装推送守卫（每个 clone 一次）
+cd cal-mcp && npm run verify              # 后端 + 界面 + 版本号，一条命令出基线
+```
+
+- `AGENTS.md` —— 动手前先读：红线、代码地图、修 bug 的固定动作、汇报格式
+- `docs/decisions.md` —— 那些看着像 bug、其实是权衡结果的地方
+- `docs/inflight.md` —— 并行改动前先认领，避免两个人改同一个文件
+- `docs/gui-smoke-checklist.md` —— 界面改动只能人工验，清单在这里
+- `docs/local-env.md` —— 本机环境坑（工具方言、打包挂载点、权限）
+
 ## 许可
 
 MIT。图标与界面全部为本项目自绘。
