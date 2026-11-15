@@ -225,7 +225,10 @@ enum Engine {
         var wasFired: Bool { lock.lock(); defer { lock.unlock() }; return value }
     }
 
-    static func callSync(_ args: [String], env: [String: String] = [:]) throws -> [String: Any] {
+    /// stdin 只给「隐藏输入密钥」这类场景用：密钥不进 argv、不进 shell history，
+    /// 也不会出现在下面的调试日志里（RUN 只打印 args）。写完立刻关管道，
+    /// 否则 Node 的 readline 等不到 EOF 会一直挂着。
+    static func callSync(_ args: [String], env: [String: String] = [:], stdin: String? = nil) throws -> [String: Any] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [runner] + args
@@ -236,8 +239,10 @@ enum Engine {
 
         let outPipe = Pipe()
         let errPipe = Pipe()
+        let inPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
+        process.standardInput = inPipe
 
         let debugOn = ProcessInfo.processInfo.environment["DSH_CAL_DEBUG"] == "1"
         do {
@@ -245,6 +250,10 @@ enum Engine {
         } catch {
             throw EngineError(message: "无法启动命令：\(error.localizedDescription)")
         }
+        if let text = stdin {
+            inPipe.fileHandleForWriting.write(Data((text + "\n").utf8))
+        }
+        inPipe.fileHandleForWriting.closeFile()
 
         // 到点还在跑就 terminate：pipe 随之关闭，下面的同步读取不会永远卡住
         let timedOut = TimeoutState()
@@ -292,11 +301,12 @@ enum Engine {
     static func call(
         _ args: [String],
         env: [String: String] = [:],
+        stdin: String? = nil,
         completion: @escaping (Result<[String: Any], Error>) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let result = try callSync(args, env: env)
+                let result = try callSync(args, env: env, stdin: stdin)
                 DispatchQueue.main.async { completion(.success(result)) }
             } catch {
                 DispatchQueue.main.async { completion(.failure(error)) }
@@ -637,6 +647,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
     private var modelStatusLabel: NSTextField?
     /// 同一行的开关：状态刷新时同步到后端真实值（强制设置页路径没跑 refreshConfig）
     private var modelToggle: SoftSwitch?
+    /// 设置页「云端 API」三个输入框。密钥框只收输入，永不回填，也不写进日志 / 配置文件。
+    private var cloudBaseField: NSTextField?
+    private var cloudModelField: NSTextField?
+    private var cloudKeyField: NSSecureTextField?
     /// 用户手动改过下拉框，就不再被句子里的标签覆盖
     private var manualOverride = false
     private var detectedTag: String?
@@ -1721,10 +1735,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         noteColor: NSColor = .systemRed,
         showsAppearance: Bool = false
     ) {
-        // 从「设置…」打开时，底下多一块外观开关；首次连接时不需要，留白就好。
-        // 外观区现在是 5 行（多一行「玻璃浓度」），上面再加「标签识别」一行 + 状态，
-        // 一共多留 72pt，免得压到上面的账号状态栏。
-        let lift: CGFloat = showsAppearance ? 244 : 0
+        // 从「设置…」打开时，底下多一块外观开关 + 云端 API 配置区；首次连接时不需要，留白就好。
+        // 外观区 5 行 +「标签识别」一行/状态，原本多留 244pt；云端配置区再占 120pt，
+        // 上半部账号区跟着 lift 整体上移，才不会压到下面的输入框。
+        let lift: CGFloat = showsAppearance ? 364 : 0
         let height: CGFloat = 330 + lift
 
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: height))
@@ -1779,6 +1793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         root.addSubview(connect)
 
         if showsAppearance {
+            buildCloudSection(in: root)
             buildAppearanceSection(in: root)
         }
 
@@ -1795,13 +1810,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         applyDemoAppearance()
     }
 
+    /// 云端 API 配置区：只在「设置…」页出现。端点 / 模型是非敏感字段，正常拼 argv；
+    /// 密钥用安全输入框，保存时只经 Engine 的 stdin 管道交给 `llm --key -` 进钥匙串，
+    /// 不进 argv、不回显、不回填、不落盘、不写日志。
+    private func buildCloudSection(in root: NSView) {
+        let title = makeLabel("云端 API", size: 12, weight: .semibold, color: .secondaryLabelColor)
+        title.frame = NSRect(x: 24, y: 386, width: 96, height: 18)
+        root.addSubview(title)
+        let hint = makeLabel("密钥只进系统钥匙串，不显示在界面、不写进配置文件", size: 11,
+                            weight: .regular, color: .secondaryLabelColor)
+        hint.frame = NSRect(x: 116, y: 386, width: 420, height: 18)
+        hint.lineBreakMode = .byTruncatingTail
+        root.addSubview(hint)
+
+        let base = NSTextField(frame: NSRect(x: 24, y: 352, width: 512, height: 24))
+        base.placeholderString = "端点 https://…/v1"
+        base.font = NSFont.systemFont(ofSize: 12)
+        root.addSubview(base)
+        cloudBaseField = base
+
+        let model = NSTextField(frame: NSRect(x: 24, y: 318, width: 248, height: 24))
+        model.placeholderString = "模型名"
+        model.font = NSFont.systemFont(ofSize: 12)
+        root.addSubview(model)
+        cloudModelField = model
+
+        let key = NSSecureTextField(frame: NSRect(x: 288, y: 318, width: 248, height: 24))
+        key.placeholderString = "API Key（留空则不改）"
+        key.font = NSFont.systemFont(ofSize: 12)
+        root.addSubview(key)
+        cloudKeyField = key
+
+        let save = NSButton(title: "保存云端配置", target: self, action: #selector(saveCloudSettings(_:)))
+        save.bezelStyle = .rounded
+        save.font = NSFont.systemFont(ofSize: 11)
+        save.frame = NSRect(x: 24, y: 288, width: 128, height: 24)
+        root.addSubview(save)
+
+        let clear = NSButton(title: "清除密钥", target: self, action: #selector(clearCloudKey(_:)))
+        clear.bezelStyle = .rounded
+        clear.font = NSFont.systemFont(ofSize: 11)
+        clear.frame = NSRect(x: 160, y: 288, width: 96, height: 24)
+        root.addSubview(clear)
+
+        let local = NSButton(title: "切回本地 ollama", target: self, action: #selector(useLocalOllama(_:)))
+        local.bezelStyle = .rounded
+        local.font = NSFont.systemFont(ofSize: 11)
+        local.frame = NSRect(x: 264, y: 288, width: 136, height: 24)
+        root.addSubview(local)
+
+        let privacy = makeLabel("开启后原句会发往该端点判断标签", size: 11,
+                                weight: .regular, color: .tertiaryLabelColor)
+        privacy.frame = NSRect(x: 408, y: 290, width: 128, height: 20)
+        privacy.lineBreakMode = .byTruncatingTail
+        root.addSubview(privacy)
+    }
+
     /// 设置页底部的外观开关。外观这一项只记偏好 + 换 Dock 图标，
     /// 界面等回到主界面再切（见 settingsAppearanceChanged / buildMain），
     /// 否则用户还在填账号密码，设置页会「啪」地消失。
     private func buildAppearanceSection(in root: NSView) {
         // 标签识别：本地模型与云端 API 共用同一个 llm.enabled 开关。
-        // 密钥只在终端配置（--key - 隐藏输入 / DSH_CAL_LLM_KEY），设置页不碰密钥：
-        // 不把 secret 拼进子进程参数、不显示在界面上、不写回 config.json。
+        // 端点 / 模型 / 密钥在上面的「云端 API」配置区填；密钥只经 stdin 进钥匙串，
+        // 不拼进子进程参数、不回填、不写回 config.json。
         let modelRow = appearanceRow(
             title: "标签识别",
             detail: "自动判断日程归到哪个标签；没装本地模型也能用云端 API",
@@ -1992,6 +2063,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         let provider = (payload?["provider"] as? String) ?? modelProvider
         let model = (payload?["model"] as? String) ?? ""
         let hasKey = (payload?["hasKey"] as? Bool) ?? false
+        // 端点 / 模型从 --status 预填；密钥永远不回填，只改占位符提示「已存钥匙串」。
+        if let payload = payload {
+            cloudBaseField?.stringValue = (payload["baseUrl"] as? String) ?? ""
+            cloudModelField?.stringValue = (payload["model"] as? String) ?? ""
+        }
+        cloudKeyField?.placeholderString = hasKey
+            ? "已存钥匙串 · 留空则不改"
+            : "API Key（留空则不改）"
         modelProvider = provider
         modelEnabled = enabled
         // 内存里的 modelEnabled 可能还没刷新（强制设置页自检路径没跑 refreshConfig），
@@ -2006,6 +2085,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate, N
         } else {
             label.stringValue = "本地 ollama · \(model)（需本机运行 ollama serve）"
             label.textColor = .secondaryLabelColor
+        }
+    }
+
+    /// 保存云端配置。密钥只走 stdin（`--key -`），永远不会出现在子进程参数里；
+    /// 端点 / 模型是非敏感字段，正常拼 argv。成功后立刻把密钥框清空。
+    @objc private func saveCloudSettings(_ sender: Any?) {
+        let base = cloudBaseField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let model = cloudModelField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let key = cloudKeyField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard base.hasPrefix("http://") || base.hasPrefix("https://") else {
+            setupStatus?.textColor = .systemOrange
+            setupStatus?.stringValue = "端点要以 http:// 或 https:// 开头。"
+            return
+        }
+        guard !model.isEmpty else {
+            setupStatus?.textColor = .systemOrange
+            setupStatus?.stringValue = "模型名不能为空。"
+            return
+        }
+        var args = ["llm", "--setup", "--provider", "openai",
+                    "--base-url", base, "--model", model, "--json"]
+        if !key.isEmpty { args += ["--key", "-"] }
+        Engine.call(args, stdin: key.isEmpty ? nil : key) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let payload) where (payload["ok"] as? Bool) == true:
+                self.cloudKeyField?.stringValue = ""
+                self.setupStatus?.textColor = .labelColor
+                self.setupStatus?.stringValue = "云端 API 已保存，密钥只进了钥匙串；可用「日程 → 重新加载模型」测连通。"
+            default:
+                self.setupStatus?.textColor = .systemRed
+                self.setupStatus?.stringValue = "保存失败：检查端点 / 模型名，或看后端是否可用。"
+            }
+            self.refreshModelStatus()
+        }
+    }
+
+    /// 清掉钥匙串里的密钥并关掉标签识别（CLI 的 --clear-key 自带关闭开关）。
+    @objc private func clearCloudKey(_ sender: Any?) {
+        Engine.call(["llm", "--clear-key", "--json"]) { [weak self] result in
+            guard let self else { return }
+            self.cloudKeyField?.stringValue = ""
+            switch result {
+            case .success(let payload) where (payload["ok"] as? Bool) == true:
+                self.setupStatus?.textColor = .labelColor
+                self.setupStatus?.stringValue = "密钥已从钥匙串清除，标签识别已关闭。"
+            default:
+                self.setupStatus?.textColor = .systemRed
+                self.setupStatus?.stringValue = "清除密钥失败，请检查后端是否可用。"
+            }
+            self.refreshModelStatus()
+        }
+    }
+
+    /// 切回本机 ollama：把端点 / 模型一并恢复成项目默认值，
+    /// 否则云端 baseUrl 会残留，本地分支会拿它去请求一个不存在的地址。
+    @objc private func useLocalOllama(_ sender: Any?) {
+        Engine.call(["llm", "--setup", "--provider", "ollama",
+                     "--base-url", "http://127.0.0.1:11434",
+                     "--model", "qwen3:8b", "--json"]) { [weak self] result in
+            guard let self else { return }
+            self.cloudKeyField?.stringValue = ""
+            switch result {
+            case .success(let payload) where (payload["ok"] as? Bool) == true:
+                self.setupStatus?.textColor = .labelColor
+                self.setupStatus?.stringValue = "已切回本地 ollama（qwen3:8b，127.0.0.1:11434）。"
+            default:
+                self.setupStatus?.textColor = .systemRed
+                self.setupStatus?.stringValue = "切回本地失败，请检查后端是否可用。"
+            }
+            self.refreshModelStatus()
         }
     }
 
