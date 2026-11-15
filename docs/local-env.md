@@ -63,6 +63,18 @@ git -c credential.helper='!GH_CONFIG_DIR=/tmp/ghcfg gh auth git-credential' push
 
 `/tmp/ghcfg` 里是明文令牌，属临时状态：不提交、不截图、不外传。
 
+## 网络
+
+`git ls-remote` / `git fetch` 偶发报 `CONNECT tunnel failed, response 502` 或
+`Error in the HTTP2 framing layer`，但同一时刻 `curl https://github.com` 返回 200——是链路抖动，不是仓库或凭据的问题。
+重试一次；仍失败就加 `-c http.version=HTTP/1.1`：
+
+```bash
+git -c http.version=HTTP/1.1 fetch origin
+```
+
+**不要**因为一次 502 就改 remote 地址或重建凭据。
+
 ## 显示层
 
 本机某些工具的输出会把产品名字符串 `dsh-cal` **显示成别的字符串**，但文件里的字节是对的。

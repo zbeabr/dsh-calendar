@@ -35,7 +35,8 @@ Bash grep 对 App.swift 静默返回空   → 实测 grep -c "func " App.swift �
 - `cd cal-mcp && npm run verify` → 全绿，`✓ 版本号一致：1.3.2（build 51）`，`exit=0`。
 - 版本检查的失败路径单独验过（临时目录 `9.9.9` 副本，不碰真实仓库）。
 - `node scripts/release-package-json.mjs` 干跑：发行包 scripts 只剩 `login doctor mcp test`，`verify` 未残留。
-- **未验证**：`git config core.hooksPath` 装上后本机尚未触发过一次真实 push（第一次推送时观察守卫输出）。
+- **已验证**：`core.hooksPath` 装上后的第一次真实推送（51 笔）触发了守卫，输出 `[推送守卫] 通过：9/9 通过 ✓ 版本号一致：1.3.2（build 51）`，随后 `153077d..77a6617  main -> main`，远端与本地 `0 0`。
+- **未验证**：`scripts/hooks/pre-push` 的一份全新 clone 安装流程（本机是直接 `git config core.hooksPath`，没走 clone）。
 
 ---
 
