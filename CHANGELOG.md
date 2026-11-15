@@ -4,6 +4,46 @@
 
 ---
 
+## [未发布 · 本地] 过去日程小盒子改成右缘抽屉 — 2026-11-15（build 51）
+
+**用户要求**：「帮我把那个装一大堆的木板的盒子自动收起到右下角的右侧边缘，只留一个边边，鼠标过去的时候自动弹出来盒子」。旧行为是盒子常驻右下角（`right:24px`、完整 188px 宽），要点一下盖子才摊开列表。
+
+### 旧代码先失败
+
+```
+静态契约   1/9 通过，8 条失败（无收起位移 / 无感应区 / 无自动开合 / 还留着 click toggle…）
+真机定量   build 50 装机：idle visible=188 open=false；shown 仍 open=false、visible=188，FAIL 6 条
+```
+
+### 改法
+
+- `.memory-box` 从 `right:24px` 常驻改成 `right:0` + `transform:translateX(calc(100% - 14px))`：整只滑出窗口右侧，只留 14px 木边；`.open` 时 `translateX(0)` 滑回，`transition:transform .36s` 平滑弹出。
+- `right:0` 是刻意的：展开后右边缘贴窗口边，鼠标不会落在盒子右缘之外立刻触发 `mouseleave`，避免「刚滑出就收起」来回抖。
+- `::before` 透明感应区往屏幕内伸 28px（并向上盖住盖子），不用精确瞄准 14px 的边；`::after` 黄铜竖线作把手，展开后淡出。
+- JS：`mouseenter → dshMemorySet(true)`（挂 `.open` 并置 hover）、`mouseleave → dshMemorySet(false)`，自动滑出并摊开列表、移开自动收起；删掉原来的 `click → classList.toggle('open')`，否则鼠标还在盒子上点一下会把刚弹出的盒子关掉。`window.dshMemorySet` 供离屏自检注入。
+- 内层滚动契约不变：`dshScroll` 仍只在 `dshMemoryHover && .open` 时把滚轮喂给 `.memory-list`。`skeuo.html` 之外（`App.swift` / 后端 / `dist/`）一行未动。
+
+### 验证
+
+- 新增静态契约 9 条 + 真机定量脚本 `cal-app/tests/memory-peek-runtime.sh`（`--snapshot` 的 JS/EVAL 通道），挂进 `test:ui` 与 `test:memory-peek`。
+- 改后真机读数：
+```
+idle   {"left":746,"visible":14,"open":false,"hit":"memoryBox"}
+shown  {"left":572,"visible":188,"open":true,"hitEdge":"memoryBox"}
+hidden {"left":746,"visible":14,"open":false}
+✓ 右缘抽屉 PASS：默认只露窄边、悬停自动弹出、移开自动收起
+```
+- 收起态 / 展开态各拍一张主界面快照，**亲眼核过**：收起时右下角只剩一条窄木边、不挡木板；展开时完整木盒滑出、盒盖打开、8 条过去日程小木板清晰可见、没被右边缘裁掉。
+- 三时区 `npm test` 全绿（含 396 条蓝本）；`test:ui` 10/10 + 13/13 + 12/12 + 8/8 + 9/9 + 9/9；小盒子内层滚动运行时 PASS（`top:120, pageY:0`）；木板按钮运行时 PASS（`delCssRight:"62px"` 未变）；像素回归 `0.081 / 0.413 / 0.765` PASS；页面 JS 语法通过。装机 `1.3.2 / build 51`、`VERSION=1.3.2-51`、`codesign --deep --strict`、`x86_64 arm64`、包内 HTML sha256 `03252597…` 与源码一致。
+- 运行时脚本自身两个坑：WKWebView 会静默吞掉注入 JS 的语法/运行错误，测量改在 EVAL 里用 IIFE 一次求值返回 JSON；「鼠标还在盒子上」要用 `closest('#memoryBox')` 归一化，命中 `mb-body` / `mbCount` 等子元素也算，否则会把正常状态误判成 mouseleave。
+- **未验证**：真机上真实鼠标滑过右缘的手感、以及在盒子上滚动时的实际阻尼（离屏自检只能注入事件与量几何）。
+
+### 发布状态
+
+本地 58 笔未推送，最新已发布 tag 仍是 `v1.3.1`；未 push、未打 tag、未发 Release，`dist/` 未动。回滚：`zsh rollback/switch.sh 50`；旧进程必须 ⌘Q 完全退出再重开。
+
+---
+
 ## [未发布 · 本地] 设置页补上云端 API 配置入口 — 2026-11-15（build 50）
 
 **用户反馈**：「你说现在可以配置云端 api，但是我没看到配置入口啊」。核对后确认上一轮口径失实：build 47 的「云端 API 配置入口」是**命令行** `dsh-cal llm --setup --key -`；App 的「设置…」里只有一个「标签识别」开关 + 一行状态，`App.swift` 注释、`README.md:268` 和 `cloud-llm-cases.mjs` 的一条用例都把「设置页不碰密钥」写成了规格。加上本机 `provider=ollama`、钥匙串无密钥，状态行显示「本地 ollama · qwen3:8b」，界面上连「云端还缺密钥」的提示都不会出现。用户选定「补图形入口」。
