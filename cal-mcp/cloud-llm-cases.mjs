@@ -91,10 +91,22 @@ await check('CLI 有轻量 --status，不发网络探测', () => {
   assert.ok(block.length > 0, '找不到 status 分支');
   assert.ok(!/probeModel\(/u.test(block), 'status 分支不该调用 probeModel');
 });
-await check('设置页有标签识别开关且只读状态不碰密钥', () => {
+// 规格变更（2026-11-15，用户明确选定「补图形入口」）：
+// 旧规格「设置页只读状态、绝不碰密钥」导致 App 里根本没有云端配置入口，
+// 用户反馈「你说现在可以配置云端 api，但是我没看到配置入口啊」。
+// 新规格：设置页可以收密钥，但只能经 stdin 管道交给 `llm --key -` 进钥匙串；
+// 仍禁止把密钥拼进 argv、直接调钥匙串 API、回填输入框或写进日志。
+await check('设置页收密钥但只经 stdin 进钥匙串，不进 argv / 不回填 / 不落盘', () => {
   assert.match(app, /settingsModelChanged/u);
   assert.match(app, /"llm", "--status", "--json"/u);
-  assert.ok(!/saveLlmApiKey|"--key"/u.test(app), '设置页不该出现密钥写入或 --key 参数');
+  assert.match(app, /"--key", "-"/u);
+  assert.match(app, /Engine\.call\(args, stdin:/u);
+  assert.match(app, /NSSecureTextField/u);
+  assert.ok(!/saveLlmApiKey/u.test(app), 'App 不该直接调钥匙串 API，要走 CLI');
+  const uses = [...app.matchAll(/"--key",\s*([^\]\n]*)/gu)];
+  for (const m of uses) {
+    assert.match(m[1], /^"-"/u, '密钥被拼进子进程参数');
+  }
 });
 await check('设置页开关会同步到 --status 的真实值', () => {
   // 自检快照实测：强制设置页路径没跑 refreshConfig，开关按内存旧值画成「关」，
