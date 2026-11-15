@@ -4,6 +4,46 @@
 
 ---
 
+## [未发布 · 本地] 设置页补上云端 API 配置入口 — 2026-11-15（build 50）
+
+**用户反馈**：「你说现在可以配置云端 api，但是我没看到配置入口啊」。核对后确认上一轮口径失实：build 47 的「云端 API 配置入口」是**命令行** `dsh-cal llm --setup --key -`；App 的「设置…」里只有一个「标签识别」开关 + 一行状态，`App.swift` 注释、`README.md:268` 和 `cloud-llm-cases.mjs` 的一条用例都把「设置页不碰密钥」写成了规格。加上本机 `provider=ollama`、钥匙串无密钥，状态行显示「本地 ollama · qwen3:8b」，界面上连「云端还缺密钥」的提示都不会出现。用户选定「补图形入口」。
+
+### 旧代码先失败
+
+```
+新契约     1/8 通过，7 条失败（缺 buildCloudSection / stdin 通道 / 三个动作 / 清空密钥框…）
+规格升级   20/21 通过，1 条失败 ← The input did not match /"--key", "-"/
+```
+
+### 改法
+
+- `App.swift` 设置页（仅 `showsAppearance`，首次连接页不动）新增「云端 API」区：端点 / 模型输入框、`NSSecureTextField` 密钥框，以及「保存云端配置 / 清除密钥 / 切回本地 ollama」。设置页高度 574 → 694pt，账号区整体上移，底部外观开关保持原位不动。
+- `Engine.callSync/call` 新增 `stdin` 通道：密钥写成一行管道输入后立刻 `closeFile()`（不关会让 Node 的 readline 等不到 EOF）。保存走 `llm --setup --provider openai --base-url … --model … --key - --json`，密钥**不在 argv 里**；调试日志只打印 args。密钥框永不回填，保存 / 清除 / 切回后立刻清空，只在占位符上提示「已存钥匙串」。
+- `--status` 预填端点与模型；清除走 `--clear-key`；切回本地会把端点 / 模型一并恢复成默认 `http://127.0.0.1:11434` / `qwen3:8b`，避免云端 baseUrl 残留。
+- 规格升级（不是改测试迁就代码）：`cloud-llm-cases.mjs` 那条「设置页不碰密钥」改为「只经 stdin 进钥匙串，不进 argv / 不回填 / 不落盘」；新增 `cal-app/tests/cloud-config-cases.mjs` 8 条静态契约并挂进 `test:ui`。`README.md` 同步改口径。
+- `skeuo.html`、`dist/`、后端 `cli.mjs` / `src/*.mjs` 一行未动。
+
+### 验证
+
+- 把仓库里**原样抽取**的 `Engine`（含 `EngineError`）编译成探针，临时 HOME + 假 `security` + argv 记录脚本，真跑一次 `llm --setup --key -`：
+```
+PROBE_RESULT ["ok": 1, "hasKey": 1, "provider": openai, ...]
+RUN llm | --setup | --provider | openai | --base-url | ... | --key | - | --json
+✓ 密钥经 stdin 进了钥匙串   ✓ 子进程 argv 里没有密钥
+✓ 调试日志里没有密钥        ✓ config.json 里没有密钥
+新进程 --status：{"ok":true,...,"hasKey":true}
+```
+- `swiftc -typecheck` exit=0（仅既有 `CGWindowListCreateImage` 弃用警告）；三时区 `npm test` 全绿（含 396 条蓝本、云端 21/21）；`test:ui` 10/10 + 13/13 + 12/12 + 8/8 + 新增 8/8；像素回归 `0.097 / 0.420 / 0.765` PASS；全部 JS `node --check` 通过。
+- `--snapshot` + `DSH_CAL_FORCE_SETUP=settings` 在 `skeuo=0/1` 两种外观各拍一张设置页，**亲眼核过**：配置区、三个输入框、三个按钮完整可见，无裁切 / 重叠；`--dump-view` 显示 `NSSecureTextField 288,318 248x24`，两种外观控件数一致（54/54）。
+- 装机 `1.3.2 / build 50`，`VERSION=1.3.2-50`，`codesign -v --deep --strict` 通过，`x86_64 arm64`，包内 HTML sha256 `d2615818…` 与源码一致。
+- **未验证**：真机上手动输入密钥、点击三个按钮的交互，以及真实云端端点连通性。快照只证明控件渲染出来了，不等于交互已验证；真实 config / 钥匙串全程没被写入（探针用临时 HOME 与假钥匙串）。
+
+### 发布状态
+
+本地 53 笔未推送，最新已发布 tag 仍是 `v1.3.1`；未 push、未打 tag、未发 Release，`dist/` 未动。回滚：`zsh rollback/switch.sh 49`；旧进程必须 ⌘Q 完全退出再重开。
+
+---
+
 ## [未发布 · 本地] 删除键恢复原位，只把编辑键放到左边 — 2026-11-15（build 49）
 
 **用户纠正**：「没叫你动删除键的位置啊，删除键位置不变，编辑键放在其左侧」。上一轮（build 48）把 `.del` 从 `62px` 挪到了 `40px`、还加了 `z-index`，属于自行扩大范围，本轮**全部回退**。
