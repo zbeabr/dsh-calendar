@@ -32,3 +32,12 @@ calendars.json
 
 # ── 发行打包产物
 dist/
+
+# ── iOS：工程文件要入库，构建产物和签名文件不要
+ios/**/DerivedData/
+ios/**/build/
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+ios/**/.swiftpm/
+ios/**/*.ipa
+ios/**/*.mobileprovision

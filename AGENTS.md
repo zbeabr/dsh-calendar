@@ -15,6 +15,9 @@ macOS 桌面日历 App：**用一句中文建日程**。规则解析（毫秒级
 
 两套外观：Liquid Glass 与全拟物。切外观只换 `window.contentView`，数据与草稿不丢。
 
+iOS 端**尚未开工**，产物统一放 `ios/`（规则见 `ios/README.md`），与 `cal-app/` 不共用工程；
+拟物设计资料在 `research/ios-skeuomorphic/`。
+
 ## 1. 一条命令建基线
 
 **新 clone / 新环境先做一次**（否则推送守卫不生效）：
@@ -57,6 +60,8 @@ cal-app/build.sh /tmp/check.app     # 通用二进制，双架构，失败会 wr
 | `cal-mcp/src/llm.mjs` | 本地模型兜底（默认关闭） | 低 |
 | `cal-app/App.swift` | 全部界面，控件自绘 | **高**，见第 5 节 |
 | `cal-app/web/skeuo.html` | 拟物外观（WKWebView 承载） | 中。无桥时会走 4 条演示数据，可离线截图验证 |
+| `ios/` | iOS 端全部产物（独立 Xcode 工程） | 未开工。所有权与边界见 `ios/README.md`，**不要写进 `cal-app/`** |
+| `research/ios-skeuomorphic/` | 拟物设计资料（只读） | 低。只放文档，不放代码与产物 |
 
 ## 3. 红线（一条都不能省）
 
